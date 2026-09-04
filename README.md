@@ -8,6 +8,39 @@ get per-frame predictions back in the annotation UI to guide the next labels.
 **See [`PLAN.md`](PLAN.md) for the full design** (data contracts, feature/ML pipeline, API, on-disk
 format, milestones).
 
+## Run it
+
+No clone, no virtualenv, no install step:
+
+```bash
+uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler ~/my-projects
+```
+
+That fetches the code, resolves dependencies into a throwaway environment, starts the server and
+opens a browser. `~/my-projects` is a directory of on-disk projects; it is created on first run.
+
+```bash
+uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler --help
+```
+
+To keep it around instead of re-resolving each time:
+
+```bash
+uv tool install git+https://github.com/talmolab/laras-labeler
+laras-labeler ~/my-projects
+```
+
+Or as a normal editable checkout:
+
+```bash
+git clone https://github.com/talmolab/laras-labeler && cd laras-labeler
+uv sync && uv run laras-labeler ~/my-projects
+```
+
+Needs Python 3.11+. On Intel macOS the dependency pins in `pyproject.toml` matter — see the note
+there; without them several of `movement`'s transitive dependencies build from source and fail.
+
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement

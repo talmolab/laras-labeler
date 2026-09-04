@@ -19,13 +19,25 @@ dependencies = [
   "joblib>=1.4",
   "pydantic>=2",
   "python-multipart>=0.0.9",
+  #
+  # INTEL-macOS WHEEL FLOOR. Several of movement's transitive dependencies stopped publishing
+  # x86_64 macOS wheels, so a plain `uvx --from git+...` there tries to build LLVM, PROJ and
+  # OpenCV from source and fails. These pins select the newest version of each that still ships
+  # a wheel for that platform, and apply ONLY there -- Apple Silicon and Linux resolve normally.
+  #   llvmlite / numba   via xarray[accel]          wheels stop at llvmlite 0.45
+  #   pyproj             via xarray[viz] -> cartopy wheels stop at 3.7.0
+  #   opencv             via movement                wheels stop at 4.10
+  "llvmlite<0.46; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "numba<0.63; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "pyproj<3.7.1; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "opencv-python-headless<4.11; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
-# NOTE (see PLAN.md §1): movement 0.17 forces xarray[accel,io,viz]; the `viz` extra pulls
-# cartopy -> pyproj (needs the PROJ C lib; no Intel-macOS wheel) and fails to build there.
-# numba/llvmlite are NOT the blocker. On platforms where pyproj won't build, install movement's
-# core WITHOUT viz: `uv pip install movement --no-deps` + its runtime deps
-# (numpy pandas xarray scipy sleap-io attrs pooch tqdm shapely PyYAML loguru orjson bottleneck),
-# or add uv dependency overrides for cartopy/pyproj. Verify `import movement` in CI on the target OS.
+# NOTE (supersedes an earlier note here): movement 0.17 forces xarray[accel,io,viz]. That earlier
+# note named cartopy/pyproj as the only blocker and said numba/llvmlite were not one. Measured on
+# Intel macOS with uv, the resolution fails at llvmlite FIRST, then pyproj, then opencv -- all
+# three are blockers, and all three are fixed by the markered pins above. The alternative, if a
+# platform still cannot resolve, is to install movement's core without the viz extra
+# (`uv pip install movement --no-deps` plus its runtime deps) or to add uv dependency overrides.
 
 [project.scripts]
 laras-labeler = "laras_labeler.cli:main"
