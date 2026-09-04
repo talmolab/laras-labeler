@@ -49,7 +49,8 @@ def _open_when_ready(host: str, port: int) -> None:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="laras-labeler")
     ap.add_argument("projects_root", nargs="?", default="~/laras-projects",
-                    help="directory of on-disk projects (a 'dev' project is seeded on first run)")
+                    help="directory of on-disk projects (created on first run; starts empty "
+                         "unless LARAS_SAMPLE_SLP points at a sample .slp)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=0, help="0 = auto-pick (prefers 8760)")
     ap.add_argument("--no-browser", action="store_true")

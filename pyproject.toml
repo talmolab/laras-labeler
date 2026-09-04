@@ -2,7 +2,10 @@
 name = "laras-labeler"
 version = "0.1.0"
 description = "Local, pose-based, human-in-the-loop behavior classifier — a lightweight modern JAABA."
-requires-python = ">=3.11"
+# >=3.12, not >=3.11: movement 0.17 itself requires >=3.12, so declaring 3.11 makes the
+# resolution unsatisfiable and `uv sync` fails outright on every platform (uvx escapes it only
+# because it resolves for the one active interpreter).
+requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",

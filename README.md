@@ -10,36 +10,54 @@ format, milestones).
 
 ## Run it
 
-No clone, no virtualenv, no install step:
-
-```bash
-uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler ~/my-projects
-```
-
-That fetches the code, resolves dependencies into a throwaway environment, starts the server and
-opens a browser. `~/my-projects` is a directory of on-disk projects; it is created on first run.
-
-```bash
-uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler --help
-```
-
-To keep it around instead of re-resolving each time:
+Needs Python 3.12+ and [uv](https://docs.astral.sh/uv/). The most reliable path — one command to
+install, then a normal command to run:
 
 ```bash
 uv tool install git+https://github.com/talmolab/laras-labeler
 laras-labeler ~/my-projects
 ```
 
-Or as a normal editable checkout:
+`~/my-projects` is a directory of on-disk projects, created on first run. It starts empty: create a
+project in the UI, then add clips by uploading a video + `.slp`, or by giving server-side paths
+(`POST /api/projects/{pid}/videos` with `video_path` / `slp_path`).
+
+Without installing anything at all:
+
+```bash
+uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler ~/my-projects
+```
+
+That resolves into a throwaway environment each time (~7 s warm). **On macOS this form can fail**
+with `realpath: command not found` — uv runs the console script straight out of its archive cache
+via a shim that needs `realpath`, which older macOS does not ship. It is not specific to this
+project (any `uvx` package fails the same way). Either use `uv tool install` above, or bypass the
+shim:
+
+```bash
+uvx --from git+https://github.com/talmolab/laras-labeler python -m laras_labeler.cli ~/my-projects
+```
+
+Or as an editable checkout, to hack on it:
 
 ```bash
 git clone https://github.com/talmolab/laras-labeler && cd laras-labeler
 uv sync && uv run laras-labeler ~/my-projects
 ```
 
-Needs Python 3.11+. On Intel macOS the dependency pins in `pyproject.toml` matter — see the note
-there; without them several of `movement`'s transitive dependencies build from source and fail.
+uv fetches its own Python, so none of these need a system Python, a virtualenv, or pip. On Intel
+macOS the dependency pins in `pyproject.toml` matter — see the note there; without them several of
+`movement`'s transitive dependencies build from source and fail. Intel macOS also builds
+`bottleneck` from source, which needs the Xcode command-line tools; Apple Silicon and Linux get
+wheels for everything.
 
+Verify the core pipeline headlessly (needs a two-mouse SLEAP file with a `nose` node — the
+`mice.tracked.slp` sample lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer)
+in the vibes repo):
+
+```bash
+uv run scripts/verify_pipeline.py path/to/mice.tracked.slp
+```
 
 ## Status
 
@@ -50,36 +68,6 @@ there; without them several of `movement`'s transitive dependencies build from s
 - **Next:** labeling (paint pos/neg ranges → per-frame parquet store, ethogram timeline, undo/redo)
   → on-disk project layer (PLAN §9) → feature cache job (PLAN §4) → **v0b** train/predict loop +
   prediction heatstrip.
-
-## Run (dev)
-
-The heavy part is the `movement` install; on Intel macOS it needs the viz-free recipe (PLAN §1):
-
-```bash
-git clone https://github.com/talmolab/laras-labeler.git
-cd laras-labeler
-uv venv --python 3.12 .venv
-uv pip install --python .venv sleap-io scikit-learn fastapi "uvicorn[standard]" python-multipart \
-    pandas pyarrow joblib pydantic numpy scipy xarray
-uv pip install --python .venv movement==0.17.0 --no-deps
-uv pip install --python .venv attrs pooch tqdm shapely PyYAML loguru orjson bottleneck
-uv pip install --python .venv -e . --no-deps
-
-# launch — pass a folder for your projects (created on first run); it prints the URL and opens the browser
-.venv/bin/laras-labeler ~/laras-projects
-```
-
-Verify the core pipeline headlessly:
-
-```bash
-.venv/bin/python scripts/verify_pipeline.py
-```
-
-The app starts with no projects. Create one in the UI, then add clips either by uploading a
-video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos` with
-`video_path` / `slp_path`). A small two-mouse SLEAP sample (`mice.tracked.slp` + `mice.mp4`)
-lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
-repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
 
 ## History
 
