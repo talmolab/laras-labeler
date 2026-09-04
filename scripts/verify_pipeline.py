@@ -22,6 +22,17 @@ from movement.kinematics import compute_speed, compute_pairwise_distances
 
 SLP = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("LARAS_SAMPLE_SLP", "")
 
+if not SLP:
+    # Without this the run dies inside sleap-io with "Could not infer format from filename: ''",
+    # which says nothing about the actual mistake. The README shows this script with no argument,
+    # so an empty SLP is the FIRST thing a new reader hits.
+    raise SystemExit(
+        "usage: python scripts/verify_pipeline.py <path/to/file.slp>\n"
+        "   or: LARAS_SAMPLE_SLP=<path/to/file.slp> python scripts/verify_pipeline.py\n\n"
+        "Needs a two-mouse SLEAP file whose skeleton has a 'nose' node (step 7 selects it).\n"
+        "The mice.tracked.slp sample lives in talmolab/vibes under slp-viewer/."
+    )
+
 
 def main() -> int:
     print(f"[1] loading {SLP}")
