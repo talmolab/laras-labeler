@@ -23,8 +23,8 @@ format, milestones).
 The heavy part is the `movement` install; on Intel macOS it needs the viz-free recipe (PLAN §1):
 
 ```bash
-git clone https://github.com/talmolab/vibes.git
-cd vibes/laras-labeler          # run all commands from inside this folder
+git clone https://github.com/talmolab/laras-labeler.git
+cd laras-labeler
 uv venv --python 3.12 .venv
 uv pip install --python .venv sleap-io scikit-learn fastapi "uvicorn[standard]" python-multipart \
     pandas pyarrow joblib pydantic numpy scipy xarray
@@ -42,6 +42,18 @@ Verify the core pipeline headlessly:
 .venv/bin/python scripts/verify_pipeline.py
 ```
 
-v0a bootstraps an in-memory "dev" project pointing at
-`../slp-viewer/mice.tracked.slp`. Point it at your own data once the
-on-disk project layer lands.
+The app starts with no projects. Create one in the UI, then add clips either by uploading a
+video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos` with
+`video_path` / `slp_path`). A small two-mouse SLEAP sample (`mice.tracked.slp` + `mice.mp4`)
+lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
+repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
+
+## History
+
+This started as a subdirectory of [talmolab/vibes](https://github.com/talmolab/vibes)
+([#69](https://github.com/talmolab/vibes/pull/69),
+[#72](https://github.com/talmolab/vibes/pull/72),
+[#73](https://github.com/talmolab/vibes/pull/73)) and was extracted into its own repository on
+2026-09-04 with history preserved. It is a Python-backed local app rather than a client-side-only
+vibe, so it does not belong on vibes.tlab.sh. Mentions of `../event-annotator/`, `../slp-viewer/`
+etc. in `PLAN.md` refer to sibling directories in that repo.

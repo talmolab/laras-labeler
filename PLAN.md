@@ -7,6 +7,11 @@
 >
 > Built on **`sleap-io`** (poses + video), **`movement`** (cleaning + kinematics),
 > **`scikit-learn`** (ML), served through a vibe-style web UI, run entirely via **`uv`**.
+>
+> **Provenance:** written while this lived at `laras-labeler/` inside
+> [talmolab/vibes](https://github.com/talmolab/vibes); extracted to its own repo on 2026-09-04.
+> Relative paths such as `../event-annotator/` and `../slp-viewer/` below refer to sibling
+> directories in that repo.
 
 This document is a **self-contained handoff** for a fresh session/engineer. It captures every design
 decision, the empirically-verified library recipes, the normative data contracts, the architecture,
@@ -238,6 +243,7 @@ Confirmed empirically on the owner's machine (Intel macOS, `uv 0.11.x`):
   (`pyodbc-4.0.0_unsupported.dist-info`) poisons metadata resolution. Use **`uv run --isolated
   --with …`** or the packaged env. The shipped `pyproject.toml` + `uv.lock` sidesteps this entirely.
 - **Sample fixture for development:** `../slp-viewer/mice.tracked.slp`
+  ([talmolab/vibes → `slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer))
   (+ `mice.mp4` beside it). 1410 frames, 768×1024 grayscale, ~47 fps, **2 tracks**, 15-node mouse
   skeleton (`nose, head, earL, earR, neck, shoulderL, shoulderR, tail_base, haunchL, haunchR, trunk,
   tail0, tail1, tail2, tail_tip`; **no `centroid` node** — see §4.3), 1409 labeled frames of
@@ -818,14 +824,16 @@ packages = ["src/laras_labeler"]   # ships web/* as package data
 uv run laras-labeler ~/laras-projects              # dev, from a clone
 uv run laras-labeler ~/laras-projects --no-browser --reload
 uv tool install .                                  # day-to-day
-uvx --from git+https://github.com/…/laras-labeler laras-labeler ~/laras-projects   # zero-install
+uvx --from git+https://github.com/talmolab/laras-labeler laras-labeler ~/laras-projects   # zero-install
 ```
 
 ---
 
-## 11. Frontend & UX (reuse from vibes repo)
+## 11. Frontend & UX (reuse from the [talmolab/vibes](https://github.com/talmolab/vibes) repo)
 
-**Reuse near-wholesale from `../event-annotator/index.html`** (crib by
+**Reuse near-wholesale from
+[`../event-annotator/index.html`](https://github.com/talmolab/vibes/blob/main/event-annotator/index.html)**
+(crib by
 `file:line`):
 - Canvas video+overlay renderer: `renderFrame` (:542), `getVideoGeometry`/`constrainOffset`/
   `zoomToPoint` (:402), `drawPose` (:591), track colors `getTrackColor` (:248).
