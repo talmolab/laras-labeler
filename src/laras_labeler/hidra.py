@@ -428,6 +428,12 @@ NODE_ALIASES = {
     "centroid": "body_center", "center": "body_center", "trunk": "body_center",
     "abdomen": "body_center", "body": "body_center", "thorax_center": "body_center",
     "tailbase": "tail_base", "tail_start": "tail_base",
+    # TTI is the tail-torso interface, i.e. the tail base. Worth naming explicitly: tail_base is one
+    # of HiDRA's canonical seven, and without this entry a skeleton that calls it TTI silently
+    # supplies only six of them — our own 15-node skeleton did exactly that.
+    "tti": "tail_base", "tailtorso": "tail_base", "tail_torso": "tail_base",
+    "haunch_left": "hip_left", "haunch_right": "hip_right",
+    "haunchl": "hip_left", "haunchr": "hip_right",
     "tailtip": "tail_tip", "tail_end": "tail_tip",
     "tail_mid": "tail_midpoint", "tailmid": "tail_midpoint",
     "forepaw_l": "forepaw_left", "forepaw_r": "forepaw_right",
