@@ -37,8 +37,9 @@ git clone https://github.com/talmolab/laras-labeler && cd laras-labeler
 uv sync && uv run laras-labeler ~/my-projects
 ```
 
-Needs Python 3.11+. On Intel macOS the dependency pins in `pyproject.toml` matter — see the note
-there; without them several of `movement`'s transitive dependencies build from source and fail.
+Needs Python 3.12+ (`movement` 0.17 does not support 3.11). On Intel macOS the dependency pins
+in `pyproject.toml` matter — see the note there; without them several of `movement`'s
+transitive dependencies build from source and fail.
 
 
 ## Status

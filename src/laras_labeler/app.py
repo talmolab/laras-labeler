@@ -182,9 +182,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     _prewarm_slots = threading.Semaphore(PREWARM_MAX_INFLIGHT)
 
     def _free_gib(path) -> float:
+        # shutil.disk_usage is cross-platform (os.statvfs is POSIX-only, absent on Windows);
+        # .free is the same "available to this user" figure statvfs reports as f_bavail.
         try:
-            st = os.statvfs(path)
-            return st.f_bavail * st.f_frsize / 2 ** 30
+            return shutil.disk_usage(path).free / 2 ** 30
         except OSError:
             return float("inf")
 
