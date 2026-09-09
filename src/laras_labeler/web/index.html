@@ -2622,7 +2622,15 @@ async function train() {
     await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
     const r = s.result;
     if (r && r.metrics) timerMark(r.metrics.average_precision, bid, bname, trainMs, r.n_candidate_bouts);   // round duration + candidate-bout count, tagged with THIS model
-    if (r) {                                   // make it explicit that ALL tracks & clips were pooled, not just the active one
+    if (r && r.mode === "labtail") {
+      // A HiDRA fine-tune returns what LABTAIL produced, not the project model's frame/bout counts,
+      // so the branch below would have read "Trained on undefined+/undefined- frames · 0 tracks () ·
+      // 0 clips" after a run that actually succeeded. Say what the fine-tune did instead -- and that
+      // it is not applied yet, because this path trains without re-predicting.
+      busy(`Fine-tuned ${r.action} (${r.lab}) on ${r.bouts} reviewed bout${r.bouts === 1 ? "" : "s"}`
+        + `${r.videos ? ` from ${r.videos} clip${r.videos === 1 ? "" : "s"}` : ""} · ${r.backend}`
+        + ` · press ▶ Predict to apply it to this clip`);
+    } else if (r) {                            // make it explicit that ALL tracks & clips were pooled, not just the active one
       const tks = (r.tracks || []).map(t => `t${t}:${(r.pos_by_track || {})[t] || 0}+`).join(" ");
       // ...and equally explicit about how far the fresh model was APPLIED, which is a separate choice
       const nPred = ((r.predict || {}).videos || []).length;
