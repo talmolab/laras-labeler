@@ -118,10 +118,12 @@
   #clipBar    { order: -5; }
   #toolsCard  { order: -3; }                             /* paint / annotate tools */
   #actionRow  { order: -2; }                             /* train / predict / review / stats … */
+  #hidraSetup { order: -1; }                             /* with the controls, not below the video */
   #featSetHelp{ order: -1; }
   /* REVIEW view: pull video + rail + lanes to the top; the controls drop back below them */
   main.reviewing #loadbar, main.reviewing #clipBar,
-  main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp { order: 0; }
+  main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp,
+  main.reviewing #hidraSetup { order: 0; }
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
   main.reviewing #stageRow { gap: 16px; align-items: stretch; order: -5; margin-top: 12px; }
   main.reviewing #stage { flex: 1 1 auto; margin: 0; align-self: flex-start; }
@@ -357,6 +359,35 @@
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
   </div>
 
+  <!-- HiDRA setup. Shown ONLY when the server reports 0 heads, i.e. HiDRA is installed in this
+       labeler (it always is) but no checkout has been found. Before this, that case hid the whole
+       feature silently and a new user could not discover it existed, never mind configure it. It is
+       collapsible and the choice persists, so someone who does not want HiDRA dismisses it once. -->
+  <div id="hidraSetup" style="display:none; margin:2px 0 8px; padding:9px 13px; background:#12151b;
+       border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
+    <div class="help-hd"><b style="color:#cbd3df">HiDRA classifiers — not set up</b>
+      <button id="hidraSetupToggle" class="collapse-btn" data-target="hidraSetupBody">hide ▾</button></div>
+    <div id="hidraSetupBody" style="margin-top:6px">
+      <div>HiDRA ships <b style="color:#cbd3df">82 pretrained behaviour classifiers</b>. Point this at a
+        checkout and any of them can propose bouts for a behavior — you review the proposals here, and
+        <b>⚙ Train</b> then fine-tunes the classifier on what you accepted. Until then this labeler
+        trains its own model on pose features, which needs no setup.</div>
+      <div id="hidraWhy" style="color:#e8a33d; margin-top:7px"></div>
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center">
+        <label style="display:flex; align-items:center; gap:5px">checkout
+          <input type="text" id="hidraHomeIn" placeholder="~/code/HiDRA" style="width:270px"
+                 title="The directory holding HiDRA's predict.py."></label>
+        <label style="display:flex; align-items:center; gap:5px">interpreter with JAX
+          <input type="text" id="hidraPyIn" placeholder="~/code/HiDRA/.venv/bin/python" style="width:270px"
+                 title="A Python that can `import jax`. HiDRA is invoked as a subprocess in its own interpreter, never imported, so this labeler never needs JAX itself."></label>
+        <button id="hidraSave" class="primary">Save &amp; probe</button>
+        <span class="status" id="hidraSetupNote"></span>
+      </div>
+      <div style="margin-top:7px; color:#6b7280">Saved to <b>&lt;your projects folder&gt;/settings.json</b>,
+        so it survives a restart and travels with the projects folder. <code>HIDRA_HOME</code> /
+        <code>HIDRA_PYTHON</code> still work and are used when nothing is set here.</div>
+    </div>
+  </div>
   <div id="featSetHelp" style="margin:2px 0 8px; padding:9px 13px; background:#12151b; border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
     <div class="help-hd"><b style="color:#cbd3df">Feature set &amp; stats help</b><button id="featHelpToggle" class="collapse-btn" data-target="featHelpBody">hide ▾</button></div>
     <div id="featHelpBody" style="margin-top:6px">
@@ -1832,13 +1863,59 @@ async function hidraSave() {
   hidraReflect();
 }
 
+// The setup row: only reachable when the server answered /status, so HiDRA is present in this
+// build. `heads === 0` means no checkout was found -- which is a configuration problem the user can
+// fix, not a reason to pretend the feature does not exist.
+function hidraShowSetup(st) {
+  const box = el("hidraSetup"); if (!box) return;
+  el("hidraWhy").textContent = st.why || "No HiDRA checkout found.";
+  const home = el("hidraHomeIn"), py = el("hidraPyIn");
+  // Show the paths already in effect rather than blanks: most of the time one of them is nearly
+  // right, and a user editing a real path beats one guessing at a placeholder. Only paths the
+  // server is actually using are prefilled, so "gui"/"env" values show and a bare default does not
+  // masquerade as a choice someone made.
+  if (document.activeElement !== home) home.value = st.home_source === "default" ? "" : (st.home || "");
+  if (document.activeElement !== py) py.value = st.python_source === "default" ? "" : (st.python || "");
+  box.style.display = "block";
+}
+async function hidraSaveSetup() {
+  const note = el("hidraSetupNote");
+  note.textContent = "probing…";
+  try {
+    const r = await fetch("/api/hidra/config", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home: el("hidraHomeIn").value, python: el("hidraPyIn").value }) });
+    if (!r.ok) { note.textContent = "could not save: HTTP " + r.status; return; }
+    const st = await r.json();
+    logEvent("hidra_configure", { heads: st.heads, can_infer: !!st.can_infer,
+                                  home_source: st.home_source });
+    if (st.heads) {
+      note.textContent = `found ${st.heads} classifiers`;
+      el("hidraSetup").style.display = "none";
+      await hidraInit();                                     // populate the picker for real
+      busy(st.can_infer ? `HiDRA ready (${st.backend}) — pick a classifier for a behavior`
+                        : `${st.heads} classifiers listed, but Predict will not run yet: ${st.why}`);
+    } else {
+      note.textContent = "";
+      hidraShowSetup(st);
+    }
+  } catch (e) { note.textContent = "could not save: " + e.message; }
+}
+
 async function hidraInit() {
+  let st = null;
   try {
     const r = await fetch("/api/hidra/status");
-    if (!r.ok) return;                                       // plain install — leave everything hidden
-    HIDRA_RT = await r.json();
-    if (!HIDRA_RT.heads) return;                             // no catalogue to offer
+    if (!r.ok) return;                                       // no HiDRA in this build at all
+    st = await r.json();
   } catch { return; }
+  HIDRA_RT = st;
+  if (el("hidraSave") && !el("hidraSave").onclick) {
+    el("hidraSave").onclick = hidraSaveSetup;
+    wireCollapse("hidraSetupToggle");
+  }
+  if (!st.heads) { hidraShowSetup(st); return; }              // configurable, not absent
+  el("hidraSetup").style.display = "none";
   try { HIDRA = await (await fetch("/api/hidra/heads")).json(); } catch { return; }
   if (!HIDRA || !HIDRA.length) { HIDRA = null; return; }
 

@@ -41,6 +41,11 @@ dependencies = [
 
 [project.scripts]
 laras-labeler = "laras_labeler.cli:main"
+# Same app, a name for the HiDRA-in-the-loop workflow: pick a pretrained HiDRA head, review what it
+# proposes, fine-tune it on what you accepted. NOT a fork -- one codebase, one install. It differs
+# from `laras-labeler` only in reporting the HiDRA runtime at startup, so a missing checkout is
+# named on the terminal as well as in the GUI.
+hidra-in-the-loop = "laras_labeler.cli:hidra_main"
 
 [build-system]
 requires = ["hatchling"]

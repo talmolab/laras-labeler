@@ -42,6 +42,36 @@ in `pyproject.toml` matter — see the note there; without them several of `move
 transitive dependencies build from source and fail.
 
 
+## HiDRA classifiers (`hidra-in-the-loop`)
+
+[HiDRA](https://github.com/talmolab/HiDRA) ships 82 pretrained behaviour classifiers. A behavior in
+this labeler can be bound to one of them, and the two buttons the GUI already has then mean
+something different for that behavior: **▶ Predict** runs the head over the clip, **⚙ Train**
+fine-tunes it (LABTAIL) on the bouts you accepted in review. Everything between is unchanged — a
+HiDRA lane and a lane from the project's own model are the same artifact by the time the timeline
+and the review queue see them.
+
+```bash
+uv tool install git+https://github.com/talmolab/laras-labeler
+hidra-in-the-loop ~/my-projects
+```
+
+`hidra-in-the-loop` is the same app as `laras-labeler` — one codebase, one install, not a fork. It
+differs only in printing the HiDRA runtime at startup, so a missing checkout is named on the
+terminal as well as in the GUI. Use either command.
+
+It is **feature-detected**: with no HiDRA checkout the labeler is unchanged and trains its own model
+on pose features, which needs no setup. When a checkout is missing the GUI shows a setup box saying
+what is missing, with fields for the two paths:
+
+- **checkout** — the directory holding HiDRA's `predict.py`
+- **interpreter with JAX** — HiDRA is invoked as a subprocess in its own interpreter, never
+  imported, so this labeler never needs JAX itself
+
+Those are saved to `<your projects folder>/settings.json`, so they survive a restart and travel with
+the projects folder. `HIDRA_HOME` / `HIDRA_PYTHON` still work and apply when nothing is set in the
+GUI. `GET /api/hidra/status` reports which source is in effect and, when inference cannot run, why.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
