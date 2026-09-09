@@ -153,6 +153,9 @@
   .sbar .track { flex: 1; max-width: 320px; height: 13px; border-radius: 7px; background: #2b313d; overflow: hidden; display: flex; }
   .sbar .track i { height: 13px; display: block; }
   .sbar .cnt { color: #c2c9d4; font-variant-numeric: tabular-nums; }
+  /* field labels in the action row: visible at all times, unlike a placeholder, which vanishes as
+     soon as the field is filled -- and every one of these is a model input worth naming. */
+  #hidraGroup label.status { margin-left: 4px; }
   .rvq { font-size: 15px; line-height: 1.55; }
   .rvq b { color: #fff; }
   .hint { color: var(--mute); font-size: 12px; margin-top: 16px; line-height: 1.6;
@@ -322,15 +325,19 @@
     <span id="hidraGroup" style="display:none; align-items:center; gap:6px; flex-wrap:wrap">
       <span class="status">classifier:</span>
       <select id="hidraHead" title="Which pretrained HiDRA classifier answers this behavior. Choosing one makes ▶ Predict run that classifier over this video instead of the project&#39;s own model, and ⚙ Train fine-tune it on your reviewed labels. Pick “— none —” to go back to the project&#39;s own model.\nThe listed heads are the ones HiDRA ships (lab · action). Their shipped thresholds are calibrated on the lab that trained them and are usually far off on new video, which is what the review rate handles."></select>
+      <label class="status" for="hidraCollapse">scores:</label>
       <select id="hidraCollapse" title="HiDRA scores every ordered (subject → target) pair; a lane shows one number per animal. This decides which question that number answers, and every option looks plausible: self = is this animal doing it to itself · scene = is it happening at all (same value on every lane) · directed = is this animal the actor. scene and directed differ by more than 0.2 AUROC on the same head and labels.">
         <option value="scene">scene: is it happening</option>
         <option value="self">self-directed</option>
         <option value="directed">directed: who is acting</option>
       </select>
+      <label class="status" for="hidraRate">review rate:</label>
       <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
              title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
+      <label class="status" for="hidraFps">fps:</label>
       <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
              title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
+      <label class="status" for="hidraPpc">px/cm:</label>
       <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
