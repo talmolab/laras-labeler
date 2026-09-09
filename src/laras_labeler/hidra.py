@@ -454,14 +454,40 @@ def map_nodes(node_names: list[str]) -> tuple[dict[str, str], list[str]]:
     known = {norm(b): b for b in HIDRA_BODYPARTS}
     alias = {norm(k): v for k, v in NODE_ALIASES.items()}
     keep, dropped = {}, []
+    #: How each kept node was resolved. An exact HiDRA name is stronger evidence about what a
+    #: keypoint IS than an alias guess, and the difference decides collisions below.
+    exact: dict[str, bool] = {}
     for n in node_names:
         k = norm(n)
         if k in known:
             keep[n.lower()] = known[k]
+            exact[n.lower()] = True
         elif k in alias:
             keep[n.lower()] = alias[k]
+            exact[n.lower()] = False
         else:
             dropped.append(n)
+
+    # Two source nodes can land on one HiDRA name -- a skeleton carrying both `neck` and `thorax`
+    # hits it, and that includes this repo's own synthetic clip. Refusing the whole clip is too
+    # strong when the tie is not actually a tie: `neck` IS HiDRA's neck, while `thorax` only
+    # reaches it through an alias, so the exact match wins and the alias is dropped like any other
+    # node with no equivalent. That is the conservative direction -- dropping a keypoint costs a
+    # feature, whereas keeping the alias could move one, which is a WRONG feature the classifier
+    # cannot detect. A collision between two names of equal standing is still left to the caller,
+    # because there is no principled way to pick.
+    by_target: dict[str, list[str]] = {}
+    for src, tgt in keep.items():
+        by_target.setdefault(tgt, []).append(src)
+    for tgt, srcs in by_target.items():
+        if len(srcs) < 2:
+            continue
+        winners = [s for s in srcs if exact[s]]
+        if len(winners) == 1:
+            for s in srcs:
+                if s != winners[0]:
+                    dropped.append(s)
+                    keep.pop(s)
     return keep, dropped
 
 
@@ -555,11 +581,11 @@ def catalog(thresholds_csv: Path | None = None) -> list[dict]:
             except ValueError:
                 thr = float("nan")
             out.append({"lab": lab, "action": action, "threshold": thr,
-                        "collapse": _default_collapse(action), "category": category(action)})
+                        "collapse": default_collapse(action), "category": category(action)})
     return sorted(out, key=lambda h: (h["action"], h["lab"]))
 
 
-def _default_collapse(action: str) -> str:
+def default_collapse(action: str) -> str:
     """A first guess at what one number per animal should mean for this action.
 
     A guess only, and surfaced as an editable control: the same head scored SCENE vs DIRECTED can
@@ -647,7 +673,13 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     with jobs_csv.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["run", "lab", "action", "subject", "target"])
-        w.writerow(["1", lab, action, "", ""])                    # blank = every pair; we collapse after
+        # "*" is predict.py's wildcard, and the ONLY thing its filter accepts as "any":
+        #     keep() -> any((fs in ("*", subj)) and (ft in ("*", tgt)) for fs, ft in filt)
+        # An empty cell matches no subject and no target, so every (subject, target) pair was
+        # rejected, `frames` stayed empty, and predict.py wrote no frames parquet at all -- the
+        # per-frame probabilities this integration exists to read. It looked like a head that
+        # found nothing rather than a job sheet that asked for nothing.
+        w.writerow(["1", lab, action, "*", "*"])                  # every pair; we collapse after
 
     out.mkdir(parents=True, exist_ok=True)
     cmd = [rt["python"], str(Path(rt["home"]) / "predict.py"), str(work),
