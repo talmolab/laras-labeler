@@ -310,6 +310,23 @@
       <option value="all">predict: all clips</option>
     </select>
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
+    <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
+         unchanged and nothing here depends on HiDRA being present. -->
+    <span class="sep" id="hidraSep" style="display:none"></span>
+    <span id="hidraGroup" style="display:none; align-items:center; gap:6px; flex-wrap:wrap">
+      <span class="status">classifier:</span>
+      <select id="hidraHead" title="Which pretrained HiDRA classifier answers this behavior. Choosing one makes ▶ Predict run that classifier over this video instead of the project&#39;s own model, and ⚙ Train fine-tune it on your reviewed labels. Pick “— none —” to go back to the project&#39;s own model.\nThe listed heads are the ones HiDRA ships (lab · action). Their shipped thresholds are calibrated on the lab that trained them and are usually far off on new video, which is what the review rate handles."></select>
+      <select id="hidraCollapse" title="HiDRA scores every ordered (subject → target) pair; a lane shows one number per animal. This decides which question that number answers, and every option looks plausible: self = is this animal doing it to itself · scene = is it happening at all (same value on every lane) · directed = is this animal the actor. scene and directed differ by more than 0.2 AUROC on the same head and labels.">
+        <option value="scene">scene: is it happening</option>
+        <option value="self">self-directed</option>
+        <option value="directed">directed: who is acting</option>
+      </select>
+      <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
+             title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
+      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
+             title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
+      <span class="status" id="hidraNote"></span>
+    </span>
     <div class="sep"></div>
     <!-- ④ Review -->
     <span class="stg">④ Review</span>
@@ -586,6 +603,7 @@ async function selectProject(pid) {
   spoutRoi = projMeta.spout_roi || null;          // shared spout ROI polygon (drawn on every clip)
   cageRoi = projMeta.cage_roi || null;            // shared cage-boundary ROI polygon
   updateSpoutCtl(); updateCageCtl();
+  hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
   if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);   // most recently loaded
   else { clearStage(); metaEl.textContent = "Load a video + SLP to begin."; }
 }
@@ -1623,7 +1641,172 @@ async function selectBehavior(bid) {
   invalidateTlCache();                 // don't let playback blit the previous behavior's cached base during the awaits
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
+  hidraSyncBehavior();                 // no-op unless the HiDRA API is present
   renderTimeline();
+}
+
+// ─── HiDRA ─────────────────────────────────────────────────────────────────────────────────────
+// Bind a behavior to one of HiDRA's pretrained classifiers and the two buttons above change what
+// they run: ▶ Predict runs that classifier over this video, ⚙ Train fine-tunes it on the labels you
+// reviewed. Nothing else in this file changes — a HiDRA lane and a lane from the project's own model
+// are the same artifact by the time the timeline and the review queue see them, which is what keeps
+// the labelling workflow identical either way.
+//
+// Feature-detected: if /api/hidra/status reports no heads these controls stay hidden and the GUI is
+// the plain labeler.
+let HIDRA = null;                      // null = unavailable; otherwise the shipped head catalogue
+let HIDRA_RT = null;                   // runtime probe: can inference actually run here
+
+const hidraPick = () => (HIDRA || []).find(x => `${x.lab}|${x.action}` === el("hidraHead").value);
+
+function hidraSyncBehavior() {
+  if (!HIDRA || activeBid == null) return;
+  const b = (behaviors || []).find(x => x.id === activeBid);
+  const h = b && b.hidra;
+  el("hidraHead").value = h ? `${h.lab}|${h.action}` : "";
+  if (h) {
+    el("hidraCollapse").value = h.collapse || "scene";
+    el("hidraRate").value = h.rate ?? 0.15;
+  }
+  hidraReflect();
+}
+
+// One place decides what the controls and the two buttons say, so the GUI can never claim it will
+// run HiDRA when the behavior is unbound, or offer inference the runtime cannot do.
+function hidraReflect() {
+  const pick = hidraPick(), bound = !!pick;
+  for (const id of ["hidraCollapse", "hidraRate"]) el(id).disabled = !bound;
+
+  const predict = el("predict"), train = el("train");
+  const ppc = parseFloat(el("hidraPpc").value);
+  const needScale = bound && !(ppc > 0);
+  if (bound) {
+    predict.textContent = `▶ Predict — ${pick.action}`;
+    train.textContent = "⚙ Fine-tune HiDRA";
+    predict.disabled = !HIDRA_RT?.can_infer || needScale;
+    train.disabled = !HIDRA_RT?.can_infer;
+  } else {
+    predict.textContent = "▶ Predict this video";
+    train.textContent = "⚙ Train";
+    predict.disabled = false;
+    train.disabled = false;
+  }
+
+  el("hidraNote").textContent =
+    !bound ? "using this project's own model"
+    : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
+    : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
+    : `shipped threshold ${pick.threshold.toFixed(2)} · recalibrated to ${el("hidraRate").value} of frames`;
+  if (bound && !HIDRA_RT?.can_infer) {
+    el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
+    el("train").title = el("predict").title;
+  }
+}
+
+async function hidraSaveScale() {
+  if (!HIDRA || !vid) return;
+  const raw = el("hidraPpc").value;
+  const r = await api(`/videos/${vid}/scale`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pix_per_cm: raw === "" ? null : parseFloat(raw) }),
+  });
+  if (!r.ok) {
+    el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "bad px/cm";
+  } else {
+    // Keep the in-memory manifest in step, or switching clips and back would show the old value.
+    const stored = (await r.json()).pix_per_cm;
+    if (meta) meta.pix_per_cm = stored;
+    const m = projMeta?.videos?.find(x => x.video_id === vid);
+    if (m) m.pix_per_cm = stored;
+  }
+  hidraReflect();
+}
+
+// The scale belongs to the clip, not the behavior, so it is re-read whenever the clip changes.
+function hidraSyncVideo() {
+  if (!HIDRA) return;
+  el("hidraPpc").value = meta && meta.pix_per_cm ? meta.pix_per_cm : "";
+  hidraReflect();
+}
+
+async function hidraSave() {
+  if (!HIDRA || activeBid == null) return;
+  const [lab, action] = (el("hidraHead").value || "|").split("|");
+  const r = await fetch(`/api/projects/${PID}/behaviors/${activeBid}/hidra`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lab, action, collapse: el("hidraCollapse").value,
+                           rate: parseFloat(el("hidraRate").value) }),
+  });
+  if (r.ok) {
+    const h = await r.json();
+    const b = (behaviors || []).find(x => x.id === activeBid);
+    if (b) { if (h && h.action) b.hidra = h; else delete b.hidra; }
+  } else {
+    el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
+    return;
+  }
+  hidraReflect();
+}
+
+async function hidraInit() {
+  try {
+    const r = await fetch("/api/hidra/status");
+    if (!r.ok) return;                                       // plain install — leave everything hidden
+    HIDRA_RT = await r.json();
+    if (!HIDRA_RT.heads) return;                             // no catalogue to offer
+  } catch { return; }
+  try { HIDRA = await (await fetch("/api/hidra/heads")).json(); } catch { return; }
+  if (!HIDRA || !HIDRA.length) { HIDRA = null; return; }
+
+  // Grouped by behaviour category, the way the ethogram is organised — 99 heads over 34 actions is
+  // too many to scan alphabetically, and someone looking for "is it fighting" wants the aggressive
+  // group, not the letter a. Within a category the action is what the user is choosing; the lab
+  // suffix is which corpus trained that head, and several labs train the same action.
+  const CATS = ["investigative", "aggressive", "reproductive", "defensive", "affiliative",
+                "nonsocial", "other"];
+  const byCat = new Map();
+  for (const h of HIDRA) {
+    const c = h.category || "other";
+    if (!byCat.has(c)) byCat.set(c, []);
+    byCat.get(c).push(h);
+  }
+  const order = [...CATS.filter(c => byCat.has(c)), ...[...byCat.keys()].filter(c => !CATS.includes(c))];
+  el("hidraHead").innerHTML =
+    `<option value="">— none — use this project's own model</option>` +
+    order.map(c => {
+      const hs = byCat.get(c).slice().sort((a, b) =>
+        a.action.localeCompare(b.action) || a.lab.localeCompare(b.lab));
+      return `<optgroup label="${c}">` + hs.map(h =>
+        `<option value="${h.lab}|${h.action}">${h.action} · ${h.lab}</option>`).join("") +
+        `</optgroup>`;
+    }).join("");
+
+  el("hidraGroup").style.display = "inline-flex";
+  el("hidraSep").style.display = "";
+  el("hidraHead").onchange = () => {
+    // A newly chosen head brings its own sensible collapse; the user can still override it.
+    const pick = hidraPick();
+    if (pick) el("hidraCollapse").value = pick.collapse || "scene";
+    hidraSave();
+  };
+  for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
+  el("hidraPpc").onchange = hidraSaveScale;
+
+  // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
+  // so this same file still serves the general-purpose labeler unchanged — a plain install returns
+  // early above and never reaches here.
+  //   featSet / featSetHelp  pick which of the labeler's own 608 pose features a RandomForest is
+  //                          fitted on. A HiDRA head brings its own learned representation and
+  //                          never reads those features, so the control is inert here.
+  //   sessionTimer           a stopwatch and AP log, described in its own tooltip as a testing
+  //                          aid. Noise for someone labelling their own recordings.
+  for (const id of ["featSet", "featSetHelp", "sessionTimer"]) {
+    const n = el(id);
+    if (n) n.style.display = "none";
+  }
+
+  hidraSyncVideo();
+  hidraSyncBehavior();
 }
 function clipShortName(vidId) {
   const toks = vidId.split("_");
@@ -2937,7 +3120,9 @@ window.addEventListener("keydown", e => {
   else { const b = behaviors.find(b => b.key === e.key); if (b) togglePaint(b.id); }
 });
 
-boot().catch(err => { metaEl.textContent = "error: " + err.message; console.error(err); });
+boot()
+  .then(hidraInit)          // optional: reveals the HiDRA controls only if the server exposes them
+  .catch(err => { metaEl.textContent = "error: " + err.message; console.error(err); });
 </script>
 </body>
 </html>

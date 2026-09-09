@@ -12,12 +12,14 @@ import os
 import shutil
 import threading
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+import numpy as np
+from fastapi import Body, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
+from . import hidra, poseio
 from .config import Settings
 from .features import quick_series
 from .featurestore import FeatureStore
@@ -356,6 +358,31 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         p.save()
         return {"spout_roi": fc["spout_roi"]}
 
+    @app.put("/api/projects/{pid}/videos/{vid}/scale")
+    def set_video_scale(pid: str, vid: str, body: dict = Body(...)):
+        """Set (or clear) this clip's pixels-per-cm.
+
+        Required before HiDRA can run: its features are in centimetres and seconds, so the scale is
+        a model input, not a display setting. Deliberately never defaulted — a plausible-looking
+        wrong scale silently changes every distance and speed the classifier sees, and the result
+        looks like a bad head rather than a bad number. Set per clip because one project can hold
+        recordings from cameras at different heights."""
+        proj = _video(pid, vid)
+        entry = proj.video(vid)
+        v = body.get("pix_per_cm")
+        if v in (None, ""):
+            entry.pop("pix_per_cm", None)
+        else:
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "pix_per_cm must be a number")
+            if not 0 < v < 10000:
+                raise HTTPException(400, "pix_per_cm out of range")
+            entry["pix_per_cm"] = v
+        proj.save()
+        return {"pix_per_cm": entry.get("pix_per_cm")}
+
     @app.put("/api/projects/{pid}/videos/{vid}/spout")
     def set_video_spout(pid: str, vid: str, body: SetSpout):
         """Set (or clear) THIS clip's spout point — overrides the project-wide default for this clip
@@ -535,6 +562,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         _behavior(pid, bid)
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 
+        beh = next((b for b in store.get(pid).behaviors if b["id"] == bid), {})
+        if beh.get("hidra", {}).get("action"):
+            def hjob(progress):
+                return _hidra_train(pid, bid, beh, progress)
+            j = jobs.start("train", hjob, meta={"pid": pid, "behavior_id": bid, "hidra": True})
+            return {"job_id": j.id}
+
         def job(progress):
             r = trainer.train(pid, bid, lambda p, m: progress(int(p * 0.7), m))
             step = lambda p, m: progress(70 + int(p * 0.3), m)
@@ -592,19 +626,123 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             "bouts": [], "stale": True,
         }
 
+    # ------------------------------------------------------------------------------------------
+    # HiDRA: pretrained heads as an alternative to this project's own models
+    # ------------------------------------------------------------------------------------------
+    def _hidra_predict(pid: str, vid: str, behaviors: list[dict], progress) -> dict:
+        """Run each bound head over one video and write predictions/<vid>/<bid>.npy.
+
+        Writing the same artifact the project's own predictor writes is the whole integration: the
+        timeline, candidate queue and review keys never learn where a lane came from."""
+        proj = store.get(pid)
+        entry = proj.video(vid)
+        slp = entry.get("slp_path")
+        if not slp:
+            raise RuntimeError(f"{vid} has no tracking file")
+
+        header = poseio.read_header(slp)
+        poses = poseio.read_poses(slp, n_frames_hint=entry.get("n_frames"), header=header)
+        if poses is None:
+            import sleap_io as sio
+            poses = sio.load_slp(slp).numpy(return_confidence=True)
+        # A .slp often covers a longer recording than the clip the project holds (this project's
+        # tracking spans 54k frames for a 10.8k-frame clip). Trim to the clip: predicting past its
+        # end costs proportionally more CPU and would misalign the lanes against the timeline.
+        n_frames = int(entry.get("n_frames") or poses.shape[0])
+        if poses.shape[0] > n_frames:
+            poses = poses[:n_frames]
+        n_frames, n_animals = poses.shape[0], poses.shape[1]
+
+        # fps and scale are inputs to the model, not cosmetics: HiDRA's features are in cm and
+        # seconds. A container's declared fps can disagree with the rig's true rate (ours declares
+        # 30 for 50 fps video), so the project's recorded value wins and is reported back.
+        fps = float(entry.get("fps") or 30.0)
+        ppc = float(entry.get("pix_per_cm") or proj.meta.get("pix_per_cm") or 0) or None
+        if ppc is None:
+            raise RuntimeError(
+                "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
+                "is required — set pix_per_cm on the video or the project.")
+
+        work = proj.path / "hidra" / vid / "_work"
+        stem = Path(str(entry.get("video_path") or vid)).stem or vid
+        progress(3, "exporting tracking")
+        exported = hidra.export_tracking(poses, header.node_names, fps, ppc, stem, work)
+
+        done = []
+        for i, b in enumerate(behaviors):
+            h = b["hidra"]
+            lo = 5 + int(90 * i / max(len(behaviors), 1))
+            span = int(90 / max(len(behaviors), 1))
+            out = proj.path / "hidra" / vid / f"{h['lab']}__{h['action']}"
+            fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc,
+                             lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m))
+            lanes = hidra.to_lanes(fp, h["lab"], h["action"], h.get("collapse", "scene"),
+                                   n_frames, n_animals, h.get("rate", 0.15))
+            dest = proj.path / "predictions" / vid / f"{b['id']}.npy"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            np.save(dest, lanes)
+            done.append({"behavior_id": b["id"], "name": b.get("name"),
+                         "lab": h["lab"], "action": h["action"],
+                         "collapse": h.get("collapse", "scene"), "rate": h.get("rate", 0.15),
+                         "above_cut": int((lanes >= 0.6).sum()), "frames": n_frames})
+        progress(100, "done")
+        return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
+
+    def _hidra_train(pid: str, bid: int, beh: dict, progress) -> dict:
+        """Fine-tune a bound head on this project's reviewed labels (HiDRA's LABTAIL adaptation).
+
+        LABTAIL trains the lab embedding and the tail blocks only, leaving the SSL trunk frozen —
+        which is why it is viable on a few hundred reviewed bouts instead of a full corpus."""
+        rt = hidra.runtime()
+        if not rt["can_infer"]:
+            raise RuntimeError(rt["why"])
+        script = Path(rt["home"]) / "train_perlab_heads.py"
+        if not script.exists():
+            raise RuntimeError(f"no train_perlab_heads.py under {rt['home']}")
+
+        h = beh["hidra"]
+        proj = store.get(pid)
+        work = proj.path / "hidra" / "_labtail" / f"{h['lab']}__{h['action']}"
+        work.mkdir(parents=True, exist_ok=True)
+        progress(5, f"exporting labels for {h['action']}")
+        n = hidra.export_labels(store, pid, bid, h, work)
+        if n["bouts"] == 0:
+            raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
+                               "head's proposals first, then train")
+
+        progress(15, f"fine-tuning on {n['bouts']} bouts ({rt['backend']})")
+        return hidra.finetune(script, rt, h, work, n,
+                              lambda p, m: progress(15 + int(p * 0.85), m))
+
     @app.post("/api/projects/{pid}/videos/{vid}/predict")
     def predict_video(pid: str, vid: str):
         """Apply already-trained behavior models to one video (e.g. a newly loaded clip) without retraining."""
-        entry = _video(pid, vid).video(vid)
+        proj = _video(pid, vid)
+        entry = proj.video(vid)
         if not entry.get("has_poses"):
-            raise HTTPException(409, "video has no poses")
-        if not predictor.trained_behaviors(pid):
-            raise HTTPException(409, "no trained model yet — train a behavior first")
+            raise HTTPException(409, "video has no tracking — load a .slp first")
+
+        # Behaviors bound to a HiDRA head are answered by that head; the rest by this project's own
+        # trained models. Both write predictions/<vid>/<bid>.npy, so everything downstream — the
+        # timeline, the candidate queue, the review keys — is identical either way.
+        bound = [b for b in proj.behaviors if b.get("hidra", {}).get("action")]
+        if not bound and not predictor.trained_behaviors(pid):
+            raise HTTPException(409, "nothing to predict with — pick a HiDRA classifier for a "
+                                     "behavior, or train one of this project's own models first")
 
         def job(progress):
-            if features.status(pid, vid)["status"] != "ready":
-                features.compute(pid, vid, lambda p, m: progress(int(p * 0.6), f"features: {m}"))
-            return predictor.predict_video(pid, vid, lambda p, m: progress(60 + int(p * 0.4), m))
+            out = {}
+            if bound:
+                out["hidra"] = _hidra_predict(pid, vid, bound,
+                                              lambda p, m: progress(int(p * (70 if predictor.trained_behaviors(pid) else 100) / 100), m))
+            if predictor.trained_behaviors(pid):
+                base = 70 if bound else 0
+                span = 30 if bound else 100
+                if features.status(pid, vid)["status"] != "ready":
+                    features.compute(pid, vid, lambda p, m: progress(base + int(p * span * 0.6 / 100), f"features: {m}"))
+                out["own"] = predictor.predict_video(
+                    pid, vid, lambda p, m: progress(base + int(span * 0.6) + int(p * span * 0.4 / 100), m))
+            return out
 
         j = jobs.start("predict", job, meta={"pid": pid, "video_id": vid})
         return {"job_id": j.id}
@@ -800,5 +938,44 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return labels.source_stats(pid)
 
     web = Path(__file__).parent / "web"
+    # --- HiDRA support endpoints ---------------------------------------------------------------
+    @app.get("/api/hidra/status")
+    def hidra_status():
+        """Feature detection for the GUI. Present always; `can_infer` says whether Predict will work."""
+        rt = hidra.runtime()
+        return {**rt, "heads": len(hidra.catalog())}
+
+    @app.get("/api/hidra/heads")
+    def hidra_heads():
+        """The shipped (lab, action) heads, for the behavior->classifier picker."""
+        return hidra.catalog()
+
+    @app.put("/api/projects/{pid}/behaviors/{bid}/hidra")
+    def set_hidra_head(pid: str, bid: int, body: dict = Body(...)):
+        """Bind a behavior to a head — or unbind it by posting an empty action.
+
+        Bound is what makes Predict and Train use HiDRA for this behavior; unbound falls back to
+        this project's own model, so the two can coexist in one project."""
+        _behavior(pid, bid)
+        proj = store.get(pid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        action = (body.get("action") or "").strip()
+        if not action:
+            beh.pop("hidra", None)
+        else:
+            known = {(h["lab"], h["action"]) for h in hidra.catalog()}
+            lab = (body.get("lab") or "").strip()
+            if known and (lab, action) not in known:
+                raise HTTPException(400, f"no such head: ({lab}, {action})")
+            collapse = (body.get("collapse") or "scene").strip()
+            if collapse not in {c.value for c in hidra.Collapse}:
+                raise HTTPException(400, "collapse must be self, scene or directed")
+            rate = float(body.get("rate", 0.15))
+            if not 0 < rate < 1:
+                raise HTTPException(400, "rate must be between 0 and 1")
+            beh["hidra"] = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+        proj.save()
+        return beh.get("hidra", {})
+
     app.mount("/", StaticFiles(directory=str(web), html=True), name="web")
     return app
