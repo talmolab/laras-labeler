@@ -112,6 +112,12 @@ long to a usable model", where the Stats panel's learning curve plots accuracy p
 **⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
 the full rollup as JSON.
 
+Time that is neither labeling nor reviewing — opening the project, picking a clip, reading Stats,
+looking at what a Train just produced — is reported as `other_s` and is a denominator for nothing.
+It used to fall into `label_s` by default, which inflated the by-hand arm and biased the headline
+toward the workflow. The accuracy curve is plotted against `work_s` (labeling + reviewing), not
+against time at the machine, so waiting on a slow Train does not read as annotation effort.
+
 Both arms are priced the same way: **all the seconds the arm consumed, over the positive bouts it
 produced.** Painting *Not-happening* and rejecting a candidate are real work and are charged, but
 neither produces a bout, so neither goes in a denominator (negatives are reported beside the count,

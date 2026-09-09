@@ -817,8 +817,20 @@ by a heartbeat whose `idle_ms` (time since the last pointer/key/wheel) exceeds `
 situations where real annotation is happening, and idle time catches the same absence without the
 false negatives — `focused` is logged anyway, so a stricter analysis can still use it. A break therefore stops accruing
 time instead of being billed to the annotation; active time is a slight *under*-estimate, equally in
-both arms. Each gap is charged to the phase in effect when it started — `label_s`, `review_s`, or
-`wait_s` (watching a progress bar) — which is what makes the two workflows separable.
+both arms. Each gap is charged to the phase in effect when it started — `label_s`, `review_s`, `wait_s`
+(watching a progress bar) or `other_s` — which is what makes the two workflows separable.
+
+The phase changes **only** on an event that declares an activity; anything else inherits. That
+matters because `label_s` and `review_s` are the two numerators of the comparison: when 'label' was
+the starting phase and the catch-all, opening the app, picking a project and reading the Stats panel
+all accrued to hand-labeling, while review — bounded by explicit start/end events — had no such
+slack, so every unattributed second pushed the answer toward "review pays off". Unattributed time is
+now `other_s`: reported, inside `active_s`, and a denominator for nothing. `work_s` (= label +
+review) is annotation proper and is the axis the accuracy curve is plotted against, since
+`cum_active_min` also carries waiting and setup — a slower machine should not read as more
+annotation effort. Playback and heartbeats deliberately inherit rather than declare: the same
+`play_start` means "watching this proposal" in review and "looking for the next bout" while
+labeling, and guessing one owner would systematically credit one arm.
 
 A **round** is the stretch of work between two Trains of the same behavior: label / review, Train,
 look, repeat. `GET /timing`, `GET /timing.csv` and `scripts/annotation_timing.py` roll the log up per
