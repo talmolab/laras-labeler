@@ -516,7 +516,16 @@ def configured() -> dict:
     elif os.environ.get("HIDRA_PYTHON"):
         py, py_src = Path(os.environ["HIDRA_PYTHON"]).expanduser(), "env"
     else:
-        py, py_src = home.parent / ".venv/bin/python", "default"
+        # A venv puts its interpreter at Scripts\python.exe on Windows and bin/python elsewhere, so
+        # the posix layout alone made the default unreachable on Windows -- and it is the default
+        # that decides whether HiDRA is found with no configuration at all. Both candidates are
+        # tried so a checkout laid out either way is picked up; the posix one is the fallback so the
+        # reported path stays recognisable when neither exists.
+        cands = [home.parent / "Scripts" / "python.exe", home.parent / ".venv" / "Scripts" / "python.exe",
+                 home.parent / ".venv" / "bin" / "python", home / ".venv" / "Scripts" / "python.exe",
+                 home / ".venv" / "bin" / "python"]
+        py = next((c for c in cands if c.exists()), home.parent / ".venv" / "bin" / "python")
+        py_src = "default"
     return {"home": home, "python": py, "home_source": home_src, "python_source": py_src}
 
 
