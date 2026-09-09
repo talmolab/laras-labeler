@@ -177,7 +177,7 @@
 </head>
 <body>
 <header>
-  <h1>laras-labeler</h1>
+  <h1 id="brand">laras-labeler</h1>
   <select id="projSel" title="Switch project (workspace). Each project is a separate set of behaviors + labels + models, sharing the same clips."
           style="margin-left:4px; padding:2px 6px; font-size:12px; background:var(--surface); color:#e7eaf1; border:1px solid var(--border); border-radius:5px"></select>
   <span class="meta" id="meta">loading…</span>
@@ -370,7 +370,7 @@
     <div id="hidraSetupBody" style="margin-top:6px">
       <div>HiDRA ships <b style="color:#cbd3df">82 pretrained behaviour classifiers</b>. Point this at a
         checkout and any of them can propose bouts for a behavior — you review the proposals here, and
-        <b>⚙ Train</b> then fine-tunes the classifier on what you accepted. Until then this labeler
+        <b>⚙ HiDRA fine-tune</b> then fine-tunes the classifier on what you accepted. Until then this labeler
         trains its own model on pose features, which needs no setup.</div>
       <div id="hidraWhy" style="color:#e8a33d; margin-top:7px"></div>
       <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center">
@@ -1797,7 +1797,7 @@ function hidraReflect() {
   const needScale = bound && !(ppc > 0);
   if (bound) {
     predict.textContent = `▶ Predict — ${pick.action}`;
-    train.textContent = "⚙ Fine-tune HiDRA";
+    train.textContent = "⚙ HiDRA fine-tune";
     predict.disabled = !HIDRA_RT?.can_infer || needScale;
     train.disabled = !HIDRA_RT?.can_infer;
   } else {
@@ -1941,6 +1941,14 @@ async function hidraInit() {
         `<option value="${h.lab}|${h.action}">${h.action} · ${h.lab}</option>`).join("") +
         `</optgroup>`;
     }).join("");
+
+  // This instance IS the hidra-in-the-loop workflow once a checkout is found, so it says so --
+  // in the header and the tab title, which is what someone looking at two open windows reads.
+  // Only in HiDRA mode: with no checkout this is the plain labeler and calling it otherwise would
+  // promise a classifier it cannot run.
+  const brand = el("brand");
+  if (brand) brand.textContent = "hidra-in-the-loop";
+  document.title = "hidra-in-the-loop";
 
   el("hidraGroup").style.display = "inline-flex";
   el("hidraSep").style.display = "";

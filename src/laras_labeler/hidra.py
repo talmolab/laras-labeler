@@ -800,38 +800,46 @@ def to_lanes(frames_parquet: Path, lab: str, action: str, collapse: str,
     return lanes if rate is None else by_rate(lanes, float(rate))[0]
 
 
-def export_labels(store, pid: str, bid: int, head: dict, work: Path) -> dict:
+def export_labels(store, labels, pid: str, bid: int, head: dict, work: Path) -> dict:
     """Reviewed labels for one behavior -> the per-frame table LABTAIL fine-tuning trains on.
 
     Only frames a human actually adjudicated are written. A frame nobody looked at is not a
     negative -- treating it as one teaches the head that its own correct detections are wrong,
     which is the fastest way to make fine-tuning worse than the head it started from. The
-    `labeled` column carries that distinction so the trainer can mask."""
+    `labeled` column carries that distinction so the trainer can mask.
+
+    Reads the LabelStore, which is where labels actually live. This used to look for
+    `labels/<vid>/<bid>.json` spans, or a `Project.labels()` method -- neither of which exists: the
+    app writes `labels/<vid>.parquet`, a per-frame table, and `Project` has no such method. So the
+    export found nothing for every project, always, and the fine-tune refused with "no reviewed
+    labels for this behavior yet" no matter how much had just been reviewed. It was never possible
+    for this path to succeed.
+
+    Stored values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's span schema, and how
+    predict.py reads them). Unknown is saved but never trained on."""
     proj = store.get(pid)
     rows: list[dict] = []
     n_bouts = 0
     for v in proj.videos:
         vid = v["video_id"]
-        lab = proj.labels(vid, bid) if hasattr(proj, "labels") else None
-        if lab is None:
-            lf = proj.path / "labels" / vid / f"{bid}.json"
-            if not lf.exists():
-                continue
-            lab = json.loads(lf.read_text())
-        spans = lab.get("spans", lab) if isinstance(lab, dict) else lab
-        for sp in spans or []:
-            try:
-                a, b = int(sp["start"]), int(sp["stop"])
-                t = int(sp.get("track", 0))
-                pos = bool(sp.get("value", sp.get("positive", True)))
-            except (KeyError, TypeError, ValueError):
-                continue
-            n_bouts += pos
-            rows.append({"file": Path(str(v.get("video_path") or vid)).stem or vid,
-                         "subject": f"mouse{t + 1}", "target": "self",
-                         "lab": head["lab"], "action": head["action"],
-                         "start_frame": a, "stop_frame": b,
-                         "label": int(pos), "labeled": 1})
+        try:
+            df = labels.rows_for_behavior(pid, vid, bid)
+        except (KeyError, FileNotFoundError):
+            continue
+        if df is None or df.empty:
+            continue
+        stem = Path(str(v.get("video_path") or vid)).stem or vid
+        for t in sorted({int(x) for x in df["track"].unique()}):
+            for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
+                a, b, val = int(run[0]), int(run[1]), int(run[2])
+                if val not in (0, 1) or b <= a:
+                    continue
+                n_bouts += val == 1
+                rows.append({"file": stem,
+                             "subject": f"mouse{t + 1}", "target": "self",
+                             "lab": head["lab"], "action": head["action"],
+                             "start_frame": a, "stop_frame": b - 1,   # inclusive, as predict.py writes
+                             "label": val, "labeled": 1})
 
     work.mkdir(parents=True, exist_ok=True)
     out = work / "labels.csv"

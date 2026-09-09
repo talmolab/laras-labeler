@@ -783,7 +783,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         work = proj.path / "hidra" / "_labtail" / f"{h['lab']}__{h['action']}"
         work.mkdir(parents=True, exist_ok=True)
         progress(5, f"exporting labels for {h['action']}")
-        n = hidra.export_labels(store, pid, bid, h, work)
+        n = hidra.export_labels(store, labels, pid, bid, h, work)
         if n["bouts"] == 0:
             raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
                                "head's proposals first, then train")
