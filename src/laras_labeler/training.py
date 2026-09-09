@@ -435,7 +435,8 @@ class Trainer:
             progress(99, downgrade)
 
         progress(100, "done")
-        return {"version": version, "metrics": metrics, "n_pos": n_pos, "n_neg": n_neg,
+        return {"version": version, "trained_at": meta["trained_at"],
+                "metrics": metrics, "n_pos": n_pos, "n_neg": n_neg,
                 "downgrade_warning": downgrade,
                 "n_pos_bouts": n_pos_bouts, "n_neg_bouts": n_neg_bouts,
                 "n_seed_bouts": n_seed_bouts, "n_candidate_bouts": n_candidate_bouts,

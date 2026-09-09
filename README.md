@@ -82,6 +82,64 @@ video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos`
 lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
 repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
 
+## Measuring annotation time (human-in-the-loop vs. by hand)
+
+Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
+bout, each candidate accepted or rejected, each Train and Predict, timestamped, plus a heartbeat that
+makes it possible to tell working time from a coffee break. The server appends job durations and
+label writes itself, so compute time and every label that reached disk survive a closed browser tab.
+See [`PLAN.md` §9.1](PLAN.md) for the event list and the exact definition of "active time".
+
+The rollup groups the log into **rounds** — the stretch of work between two Trains of a behavior —
+and separates the human's time into *labeling by hand* and *reviewing model proposals*:
+
+```bash
+python scripts/annotation_timing.py ~/laras-projects --pid my-project --csv rounds.csv
+```
+
+```
+  # behavior         started            active   label  review   wait    cpu  hand  shown   ok   no  s/bout  s/dec     AP
+  1 drinking         01-15 08:00          6:12    5:44    0:00   0:17   0:17    11      0    0    0    31.3      -  0.441
+  2 drinking         01-15 08:07          3:48    0:22    3:04   0:15   0:15     1     14   11    3    22.0    13.1  0.812
+
+BY HAND    12 bouts / 900 frames (30s of video) in 6:06  ->  30.5s per bout
+IN REVIEW  14 decisions (11 accepted) on 41s of proposed video in 3:04  ->  13.1s per decision, 16.7s per accepted bout
+==> a bout cost 1.8x less human time through review (30.5s by hand vs 16.7s accepted)
+```
+
+It also prints accuracy against **cumulative human minutes** — the axis that actually answers "how
+long to a usable model", where the Stats panel's learning curve plots accuracy per *bout*. In the app,
+**⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
+the full rollup as JSON.
+
+Both arms are priced the same way: **all the seconds the arm consumed, over the positive bouts it
+produced.** Painting *Not-happening* and rejecting a candidate are real work and are charged, but
+neither produces a bout, so neither goes in a denominator (negatives are reported beside the count,
+never folded into it). Review also reports how much *fixing* the proposals needed — the share of
+decisions that ended with the model's bounds edited, plus replays — because a model whose bounds
+always need trimming costs an edit, not just a decision, and that is invisible in dwell time alone.
+
+Caveat worth repeating in any writeup: review only ever visits bouts the model already proposed, so
+part of why it is fast is that the *search* was done for you. That is the point of the workflow, but
+it makes "seconds per bout" a cost ratio, not an accuracy claim — read it next to the accuracy curve.
+
+### Verifying it on a machine with no data
+
+The loop can be driven end to end without any real recordings — useful because the numbers above are
+only as good as the events behind them:
+
+```bash
+uv run python scripts/make_synthetic_clip.py /tmp/synth     # video + .slp + ground truth
+uv pip install playwright                                   # a browser to drive
+uv run python scripts/verify_event_log.py /tmp/synth
+```
+
+`verify_event_log.py` starts a server, drives the real UI in Chromium (paint bouts by hand, Train,
+review the model's candidates, Train again — with a break in the middle), keeps its own independent
+ledger of every action and when, and then checks the rollup against it: counts, per-phase
+attribution, round boundaries, dwell times, the break not being billed as work, and each surface
+(`/timing`, `/timing.csv`, `/events.jsonl`, the **⤓ rounds** button, `annotation_timing.py`).
+
 ## History
 
 This started as a subdirectory of [talmolab/vibes](https://github.com/talmolab/vibes)

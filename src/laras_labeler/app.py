@@ -8,9 +8,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import json
-import os
 import shutil
 import threading
+import time
 
 import numpy as np
 from fastapi import Body, FastAPI, File, HTTPException, Response, UploadFile
@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import hidra, poseio
 from .config import Settings
+from .events import EventLog, rounds_csv
 from .features import quick_series
 from .featurestore import FeatureStore
 from .importers import Importer
@@ -36,6 +37,14 @@ _IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
 
 class NewProject(BaseModel):
     name: str
+
+
+class EventBatch(BaseModel):
+    """A flush from the browser's annotation-event queue (events.py). `events` stays untyped: the
+    log is append-only and read by tolerant consumers, so a new event field must never need a
+    server change to be recorded."""
+    session: str
+    events: list[dict] = Field(default_factory=list)
 
 
 class NewVideo(BaseModel):
@@ -126,6 +135,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     trainer = Trainer(store, labels, features)
     predictor = Predictor(store, features, trainer, labels)
     importer = Importer(store, labels, vm)
+    elog = EventLog(store)
     app.state.settings = settings
     app.state.store = store
     app.state.vm = vm
@@ -134,6 +144,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     app.state.jobs = jobs
     app.state.trainer = trainer
     app.state.predictor = predictor
+    app.state.events = elog
 
     def _behavior(pid: str, bid: int):
         proj = _proj(pid)
@@ -160,6 +171,56 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # effective arena landmarks for THIS clip: a per-clip value overrides the project-wide default
         eff = {k: (entry[k] if entry.get(k) is not None else fc.get(k)) for k in ("spout", "spout_roi", "cage_roi")}
         return {**vm.meta(pid, vid), "features": features.status(pid, vid), **eff}
+
+    # Every background job is timed into the annotation event log (events.py). Round timings need to
+    # separate the human's time from the machine's, and the machine's time has to be recorded where the
+    # human can't lose it — the browser is closed at the end of a session, the log is not.
+    def _timed_job(kind: str, pid: str, fn, meta: dict, summary=lambda r: {}, job_kind: str | None = None):
+        ctx = {k: v for k, v in meta.items() if k != "pid"}
+        elog.log(pid, "job_start", kind=kind, **ctx)
+
+        def wrapped(progress):
+            t0 = time.perf_counter()
+            try:
+                r = fn(progress) or {}
+            except Exception as e:  # noqa: BLE001
+                elog.log(pid, "job_done", kind=kind, status="error", error=str(e)[:300],
+                         seconds=round(time.perf_counter() - t0, 2), **ctx)
+                raise
+            # merged, not two ** expansions: a summary key that collided with a ctx key would raise
+            # TypeError here and fail a job whose work had already succeeded
+            elog.log(pid, "job_done", kind=kind, status="done",
+                     seconds=round(time.perf_counter() - t0, 2), **{**ctx, **summary(r)})
+            return r
+
+        return jobs.start(job_kind or kind, wrapped, meta=meta)
+
+    def _train_summary(r: dict) -> dict:
+        m = r.get("metrics") or {}
+        return {"version": r.get("version"), "trained_at": r.get("trained_at"),
+                "ap": m.get("average_precision"), "f1": m.get("f1"),
+                "precision": m.get("precision"), "recall": m.get("recall"),
+                "n_pos": r.get("n_pos"), "n_neg": r.get("n_neg"),
+                "n_pos_bouts": r.get("n_pos_bouts"), "n_neg_bouts": r.get("n_neg_bouts"),
+                "n_seed_bouts": r.get("n_seed_bouts"), "n_candidate_bouts": r.get("n_candidate_bouts"),
+                "train_seconds": r.get("train_seconds"), "feature_seconds": r.get("feature_seconds"),
+                "n_videos": len(r.get("videos_used") or []),
+                "predicted_videos": len((r.get("predict") or {}).get("videos") or [])}
+
+    def _hidra_train_summary(r: dict) -> dict:
+        """What a LABTAIL fine-tune produced, for the round it closes.
+
+        Deliberately no `ap`: HiDRA's fine-tune does not report one back through this path, and the
+        rounds table showing a blank there is honest, where borrowing the project model's AP would
+        not be. `engine` is what tells the two apart when a project mixes them.
+
+        `version` carries the checkpoint, because the round record has a `version` column that the
+        native path fills and this one otherwise would not: a round you cannot trace to the model
+        it produced is a row you cannot check anything against later."""
+        return {"engine": "hidra", "lab": r.get("lab"), "action": r.get("action"),
+                "version": r.get("checkpoint"), "backend": r.get("backend"),
+                "n_pos_bouts": r.get("bouts"), "n_spans": r.get("spans"),
+                "n_videos": r.get("videos")}
 
     # Feature pre-warm: the first Train computes any missing feature cache lazily (a multi-minute cold
     # cost that lands inside the human-in-the-loop window). Instead we fire that same background compute
@@ -229,7 +290,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                     with _prewarm_lock:
                         _prewarming.discard((_pid, _vid))
 
-            jobs.start("prewarm", _fn, meta={"pid": pid, "video_id": vid})
+            _timed_job("features", pid, _fn, {"pid": pid, "video_id": vid, "reason": "prewarm"},
+                       job_kind="prewarm")
             started.append(vid)
         return started
 
@@ -531,8 +593,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             raise HTTPException(409, "video has no poses")
         if features.status(pid, vid)["status"] == "ready":
             return {"status": "ready"}
-        job = jobs.start("features", lambda p: features.compute(pid, vid, p),
-                         meta={"pid": pid, "video_id": vid})
+        job = _timed_job("features", pid, lambda p: features.compute(pid, vid, p),
+                         {"pid": pid, "video_id": vid})
         return {"job_id": job.id, "status": "pending"}
 
     @app.get("/api/projects/{pid}/jobs/{jid}")
@@ -566,7 +628,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             def hjob(progress):
                 return _hidra_train(pid, bid, beh, progress)
-            j = jobs.start("train", hjob, meta={"pid": pid, "behavior_id": bid, "hidra": True})
+            # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
+            # a round in the annotation event log (events.py), so a fine-tune that skipped the log
+            # would leave the behavior's rounds open forever -- one endless round, no per-round split,
+            # no compute time. A HiDRA-bound behavior is still a behavior being annotated.
+            j = _timed_job("train", pid, hjob, {"pid": pid, "behavior_id": bid, "hidra": True},
+                           _hidra_train_summary)
             return {"job_id": j.id}
 
         def job(progress):
@@ -580,7 +647,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 r["predict"] = {"videos": [], "skipped": [], "note": "no prediction — predict_videos was empty"}
             return r
 
-        j = jobs.start("train", job, meta={"pid": pid, "behavior_id": bid})
+        j = _timed_job("train", pid, job, {"pid": pid, "behavior_id": bid}, _train_summary)
         return {"job_id": j.id}
 
     @app.get("/api/projects/{pid}/behaviors/{bid}/model")
@@ -744,7 +811,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                     pid, vid, lambda p, m: progress(base + int(span * 0.6) + int(p * span * 0.4 / 100), m))
             return out
 
-        j = jobs.start("predict", job, meta={"pid": pid, "video_id": vid})
+        j = _timed_job("predict", pid, job, {"pid": pid, "video_id": vid},
+                       lambda r: {"n_behaviors": len(r.get("behaviors") or []),
+                                  "n_skipped": len(r.get("skipped") or [])})
         return {"job_id": j.id}
 
     @app.get("/api/projects/{pid}/predict/{vid}")
@@ -922,13 +991,24 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.put("/api/projects/{pid}/labels/{vid}")
     def put_labels(pid: str, vid: str, spans: list[LabelSpan]):
         _video(pid, vid)
-        labels.put_spans(pid, vid, [s.model_dump() for s in spans])
+        rows = [s.model_dump() for s in spans]
+        labels.put_spans(pid, vid, rows)
+        # Server-side backstop for the event log: the browser's semantic events (which paint, which
+        # accept) are richer, but they live in a queue that a closed tab or a crash can lose. Every
+        # label that reaches disk is on record here regardless.
+        elog.log(pid, "label_write", video_id=vid, n_spans=len(rows),
+                 frames=sum(max(0, r["end"] - r["start"]) for r in rows),
+                 behaviors=sorted({r["behavior_id"] for r in rows}),
+                 tracks=sorted({r["track"] for r in rows}),
+                 sources=sorted({r.get("source") or "manual" for r in rows}))
         return {"ok": True}
 
     @app.delete("/api/projects/{pid}/labels/{vid}")
     def delete_labels(pid: str, vid: str, behavior: int, track: int, start: int, end: int):
         _video(pid, vid)
         labels.delete_range(pid, vid, behavior, track, start, end)
+        elog.log(pid, "label_clear", video_id=vid, behavior_id=behavior, track=track,
+                 start=start, end=end, frames=max(0, end - start))
         return {"ok": True}
 
     @app.get("/api/projects/{pid}/label-stats")
@@ -936,6 +1016,54 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         """Provenance of the current labels — per behavior/track/source bout+frame counts."""
         _proj(pid)
         return labels.source_stats(pid)
+
+    # ---- annotation event log + timing rollup (events.py) ----
+    # How long does a round of annotation actually take, and is the human-in-the-loop loop cheaper
+    # than painting labels by hand? Nothing else on disk can answer that: labels record WHAT was
+    # annotated, history.json records accuracy per bout — neither records the clock.
+    @app.post("/api/projects/{pid}/events")
+    def post_events(pid: str, body: EventBatch):
+        """Flush of the browser's event queue. Fire-and-forget from the client's point of view."""
+        _proj(pid)
+        try:
+            return elog.append(pid, body.session, body.events)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/projects/{pid}/events/sessions")
+    def list_event_sessions(pid: str):
+        _proj(pid)
+        return {"sessions": elog.sessions(pid)}
+
+    @app.get("/api/projects/{pid}/events.jsonl")
+    def download_events(pid: str, session: str | None = None):
+        """The raw log, newline-delimited JSON — for pandas/duckdb, or for archiving with the project."""
+        _proj(pid)
+        recs = elog.read(pid, [session] if session else None)
+        body = "\n".join(json.dumps(r, separators=(",", ":"), default=str) for r in recs) + "\n"
+        return Response(content=body, media_type="application/x-ndjson",
+                        headers={"Content-Disposition": f'attachment; filename="{pid}-events.jsonl"',
+                                 "Cache-Control": "no-cache"})
+
+    @app.get("/api/projects/{pid}/timing")
+    def timing(pid: str, behavior: int | None = None, session: str | None = None,
+               gap_cap_s: float = 15.0, idle_break_s: float = 120.0):
+        """Per-round human time (labeling vs reviewing), compute time, what was produced, and the
+        model that came out — plus the manual-vs-review headline. `gap_cap_s`/`idle_break_s` tune
+        what counts as working time; the defaults are deliberately conservative (see events.py)."""
+        _proj(pid)
+        return elog.summarize(pid, [session] if session else None, gap_cap_s=gap_cap_s,
+                              idle_break_s=idle_break_s, behavior_id=behavior)
+
+    @app.get("/api/projects/{pid}/timing.csv")
+    def timing_csv(pid: str, behavior: int | None = None, session: str | None = None,
+                   gap_cap_s: float = 15.0, idle_break_s: float = 120.0):
+        _proj(pid)
+        summary = elog.summarize(pid, [session] if session else None, gap_cap_s=gap_cap_s,
+                                 idle_break_s=idle_break_s, behavior_id=behavior)
+        return Response(content=rounds_csv(summary), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{pid}-rounds.csv"',
+                                 "Cache-Control": "no-cache"})
 
     web = Path(__file__).parent / "web"
     # --- HiDRA support endpoints ---------------------------------------------------------------
