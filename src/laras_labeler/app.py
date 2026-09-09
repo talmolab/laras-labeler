@@ -431,6 +431,39 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         p.save()
         return {"spout_roi": fc["spout_roi"]}
 
+    @app.put("/api/projects/{pid}/videos/{vid}/fps")
+    def set_video_fps(pid: str, vid: str, body: dict = Body(...)):
+        """Correct this clip's frame rate.
+
+        fps is read from the container at import, and a container can be wrong: ours declares 30 for
+        50 fps video. That is not cosmetic. HiDRA's features are in centimetres and SECONDS, so a
+        1.667x error puts every speed and duration it sees out by the same factor and reads as a bad
+        classifier rather than a bad number; this labeler's own feature windows are specified in
+        seconds too. Until now the container's value was the only value and nothing could override
+        it.
+
+        Changing it drops this clip's feature cache, because those features were computed with the
+        old rate baked into every window; they are rebuilt on the next prewarm or Train."""
+        proj = _video(pid, vid)
+        entry = proj.video(vid)
+        v = body.get("fps")
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "fps must be a number")
+        if not (0.1 <= v <= 1000):
+            raise HTTPException(400, "fps must be between 0.1 and 1000")
+        if v != float(entry.get("fps") or 0):
+            entry["fps"] = v
+            proj.save()
+            for f in (proj.path / "features" / f"{vid}.npy",
+                      proj.path / "features" / f"{vid}.meta.json"):
+                if f.exists():
+                    f.unlink()
+            vm.forget(pid, vid)          # its cached handle carries the old rate
+            _prewarm_features(pid, [vid])
+        return {"fps": entry["fps"], "features": features.status(pid, vid)}
+
     @app.put("/api/projects/{pid}/videos/{vid}/scale")
     def set_video_scale(pid: str, vid: str, body: dict = Body(...)):
         """Set (or clear) this clip's pixels-per-cm.

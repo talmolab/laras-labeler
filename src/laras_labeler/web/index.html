@@ -180,6 +180,8 @@
   <h1 id="brand">laras-labeler</h1>
   <select id="projSel" title="Switch project (workspace). Each project is a separate set of behaviors + labels + models, sharing the same clips."
           style="margin-left:4px; padding:2px 6px; font-size:12px; background:var(--surface); color:#e7eaf1; border:1px solid var(--border); border-radius:5px"></select>
+  <button id="projNew" title="Create a new project (workspace): its own behaviors, labels and models, sharing the same clips folder."
+          style="padding:2px 8px; font-size:12px">＋ project</button>
   <span class="meta" id="meta">loading…</span>
   <span id="sessionTimer" title="Session stopwatch (testing aid). ⏸ pause/resume · ⟲ reset. Logs the model's AP at each Train, so you can see how long it takes to reach good performance."
         style="margin-left:auto; display:flex; align-items:center; gap:6px; font-size:13px; color:#aeb6c2; white-space:nowrap">
@@ -327,6 +329,8 @@
       </select>
       <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
              title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
+      <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
+             title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
       <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
@@ -692,6 +696,24 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
     const u = new URL(location); u.searchParams.set("pid", sel.value); history.replaceState(null, "", u);
     selectProject(sel.value);
   };
+  // Creating a workspace used to be impossible from the browser -- POST /api/projects was only
+  // called as a fallback when there were zero projects, so a second one needed curl.
+  el("projNew").onclick = async () => {
+    const name = prompt("New project name");
+    if (!name || !name.trim()) return;
+    const r = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" },
+                                             body: JSON.stringify({ name: name.trim() }) });
+    if (!r.ok) { busy("could not create project: " + r.status); return; }
+    const p = await r.json();
+    const opt = document.createElement("option");
+    opt.value = p.pid; opt.textContent = p.name; sel.appendChild(opt);
+    sel.value = p.pid;
+    const u = new URL(location); u.searchParams.set("pid", p.pid); history.replaceState(null, "", u);
+    logEvent("project_create", { pid: p.pid, name: p.name });
+    await selectProject(p.pid);
+    busy(`created project "${p.name}" — load a video + SLP to begin`);
+  };
+
   await selectProject(start);
 }
 
@@ -773,6 +795,11 @@ async function openVideo(vidId) {
   activeTrack = 0;
   renderTrackBar();
   renderClipBar();
+  // px/cm and fps are PER CLIP and are model inputs, so they have to follow the clip. This was only
+  // called from openProject, so loading or switching a clip left the previous clip's scale on
+  // screen (or a blank where one was set) -- and a scale you believe is set but is not, or belongs
+  // to another clip, is exactly the failure the "never defaulted" rule exists to prevent.
+  hidraSyncVideo();
   await loadSeries();
   await loadLabels();
   await loadAllPredictions();
@@ -1841,7 +1868,21 @@ async function hidraSaveScale() {
 function hidraSyncVideo() {
   if (!HIDRA) return;
   el("hidraPpc").value = meta && meta.pix_per_cm ? meta.pix_per_cm : "";
+  if (document.activeElement !== el("hidraFps")) el("hidraFps").value = meta && meta.fps ? meta.fps : "";
   hidraReflect();
+}
+
+async function hidraSaveFps() {
+  if (!vid) return;
+  const v = parseFloat(el("hidraFps").value);
+  if (!isFinite(v)) return;
+  const r = await fetch(`/api/projects/${PID}/videos/${vid}/fps`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fps: v }) });
+  if (!r.ok) { busy("could not set fps: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+  const d = await r.json();
+  if (meta) meta.fps = d.fps;
+  logEvent("clip_fps_set", { video_id: vid, fps: d.fps });
+  busy(`fps for this clip → ${d.fps} · features rebuilding (their windows are in seconds)`);
 }
 
 async function hidraSave() {
@@ -1960,6 +2001,7 @@ async function hidraInit() {
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraPpc").onchange = hidraSaveScale;
+  el("hidraFps").onchange = hidraSaveFps;
 
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns
