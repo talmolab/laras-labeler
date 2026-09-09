@@ -1207,7 +1207,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             lab = (body.get("lab") or "").strip()
             if known and (lab, action) not in known:
                 raise HTTPException(400, f"no such head: ({lab}, {action})")
-            collapse = (body.get("collapse") or "scene").strip()
+            # Fall back to the action's own default, not a blanket "scene". The catalogue already
+            # serves that default (hidra.catalog() fills each head's `collapse` from it) and the
+            # GUI sends it back explicitly, so the two agreed only because the GUI did the work.
+            # Any other caller -- a script, a notebook, the API -- got "scene" for a self-directed
+            # action, which is a different question with a different answer: scene and directed
+            # differ by more than 0.2 AUROC on the same head and the same labels.
+            collapse = (body.get("collapse") or hidra.default_collapse(action)).strip()
             if collapse not in {c.value for c in hidra.Collapse}:
                 raise HTTPException(400, "collapse must be self, scene or directed")
             rate = float(body.get("rate", 0.15))
