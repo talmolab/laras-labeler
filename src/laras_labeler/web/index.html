@@ -184,6 +184,8 @@
     <span>⏱ <b id="timerClock" style="color:#e7eaf1; font-variant-numeric:tabular-nums">0:00</b></span>
     <button id="timerToggle" style="padding:1px 7px; font-size:12px">⏸</button>
     <button id="timerReset" style="padding:1px 7px; font-size:12px">⟲</button>
+    <button id="timingExport" title="Download the per-round annotation-timing table (CSV): how long each round took, split into hand-labeling vs candidate review, what each produced, and the model that came out. Derived from the event log this session writes to &lt;project&gt;/events/*.jsonl."
+            style="padding:1px 7px; font-size:12px">⤓ rounds</button>
     <span id="timerLog" class="status" style="color:#7b8494; font-size:11px"></span>
   </span>
 </header>
@@ -448,6 +450,10 @@
       <p><b>✏ Paint (b)</b> drags a lane to label. <b>☝ Select (v)</b>: <b>drag along the bar to scrub</b> to a bout, click a bout to select + play it (then drag the ▮ handles or [ / ] to adjust, <b>Delete</b>/🗑 to remove). Picking a paint action switches back to Paint.</p>
     </div>
     <div class="hint-box">
+      <h4>Annotation timing</h4>
+      <p>Every label, review decision, and Train is logged with a timestamp to <b>&lt;project&gt;/events/*.jsonl</b>. <b>⤓ rounds</b> (top right) downloads the per-round table: human time split into <b>hand-labeling vs candidate review</b>, machine time, and the model each round produced — that is how the human-in-the-loop cost gets compared with annotating manually. Breaks are not counted as work.</p>
+    </div>
+    <div class="hint-box">
       <h4>Video &amp; keys</h4>
       <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll. Ruler = scrub · <b>←/→</b> step (Ctrl ±30) · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
@@ -520,6 +526,7 @@ const modeName = (m = mode) => m === "pos" ? "Happening" : m === "neg" ? "Not-ha
 const modeVal = (m = mode) => m === "pos" ? 1 : m === "neg" ? 2 : 3;   // labelState: 1=Happening 2=Not-happening 3=Unknown (0=none)
 
 const api = (path, opts) => fetch(`/api/projects/${PID}${path}`, opts);
+const APP_VERSION = "0.1.0", EVENT_SCHEMA = 1;   // stamped into session_start; bump EVENT_SCHEMA when event shapes change
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 }; }
 // "Not-happening" = diagonal hatch in the behavior color over a dark base (clearly visible + distinct from solid = Happening)
 function hatchRect(ctx, x, y, w, h, color, alpha = 1) {
@@ -531,6 +538,71 @@ function hatchRect(ctx, x, y, w, h, color, alpha = 1) {
   for (let xx = x - h; xx < x + w; xx += 5) { ctx.beginPath(); ctx.moveTo(xx, y + h); ctx.lineTo(xx + h, y); ctx.stroke(); }
   ctx.restore();
 }
+
+// ---------- annotation event log (timing telemetry -> src/laras_labeler/events.py) ----------
+// Every action that costs the annotator time is logged with a wall-clock timestamp and enough context
+// to attribute it: which clip, behavior, track, frame, and — during review — which candidate bout and
+// how long the call took. The server appends each batch to <project>/events/<session>.jsonl;
+// GET /timing (or scripts/annotation_timing.py) rolls it up into per-round timings, which is how the
+// human-in-the-loop cost gets compared against labeling by hand. Buffered + batched so that logging
+// never sits in the way of the annotation it is measuring, and best-effort: a failed flush retries,
+// and a permanently unreachable server costs telemetry, never labels.
+const SESSION_ID = "s-" + new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "")
+                 + "-" + Math.random().toString(36).slice(2, 8);
+const EV_FLUSH_MS = 3000, EV_MAX_QUEUE = 40, EV_MAX_BACKLOG = 5000, EV_HEARTBEAT_MS = 10000;
+let evQueue = [], evSeq = 0, evPrevT = 0, evFlushing = false;
+let evLastInteract = Date.now(), evCounts = { keys: 0, clicks: 0, wheels: 0, frames: 0 };
+let evCandShownT = 0, evCandReplays = 0;     // dwell + replays on the candidate currently under review
+let evPlayT = 0, evPlayFrom = 0;
+function logEvent(type, data) {
+  const t = Date.now();
+  const ev = { seq: ++evSeq, type, t: new Date(t).toISOString(), t_ms: t, dt_ms: evPrevT ? t - evPrevT : 0,
+               video_id: vid, behavior_id: activeBid, track: activeTrack, frame: cur };
+  evPrevT = t;
+  if (data) Object.assign(ev, data);
+  evQueue.push(ev);
+  if (evQueue.length > EV_MAX_BACKLOG) evQueue.splice(0, evQueue.length - EV_MAX_BACKLOG);   // server gone: keep the newest
+  if (evQueue.length >= EV_MAX_QUEUE) flushEvents();
+  return ev;
+}
+async function flushEvents() {
+  if (!PID || evFlushing || !evQueue.length) return;
+  const batch = evQueue; evQueue = []; evFlushing = true;
+  try {
+    const r = await api("/events", { method: "POST", headers: { "Content-Type": "application/json" },
+                                     body: JSON.stringify({ session: SESSION_ID, events: batch }) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+  } catch (e) {
+    evQueue = batch.concat(evQueue);        // put them back — the next tick retries
+  } finally { evFlushing = false; }
+}
+function flushEventsSync() {   // teardown: sendBeacon survives unload, fetch() does not
+  if (!PID || !evQueue.length || !navigator.sendBeacon) return;
+  const body = new Blob([JSON.stringify({ session: SESSION_ID, events: evQueue })], { type: "application/json" });
+  if (navigator.sendBeacon(`/api/projects/${PID}/events`, body)) evQueue = [];
+}
+setInterval(flushEvents, EV_FLUSH_MS);
+// Heartbeat while the tab is visible, carrying how long since the last real interaction. This is what
+// makes "active time" honest: the rollup counts a gap between events as work only if it is shorter than
+// the heartbeat period, so a hidden tab (no heartbeat) or an idle one (idle_ms too large) simply stops
+// accruing time instead of billing a coffee break to the annotation.
+setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+  const c = evCounts; evCounts = { keys: 0, clicks: 0, wheels: 0, frames: 0 };
+  logEvent("heartbeat", { visible: true, focused: document.hasFocus(), idle_ms: Date.now() - evLastInteract,
+                          playing, reviewing: !!reviewCurrent, painting: !!painting, ...c });
+}, EV_HEARTBEAT_MS);
+window.addEventListener("pointerdown", () => { evLastInteract = Date.now(); evCounts.clicks++; }, true);
+window.addEventListener("keydown", () => { evLastInteract = Date.now(); evCounts.keys++; }, true);
+window.addEventListener("wheel", () => { evLastInteract = Date.now(); evCounts.wheels++; }, { capture: true, passive: true });
+document.addEventListener("visibilitychange", () => {
+  const visible = document.visibilityState === "visible";
+  logEvent(visible ? "tab_visible" : "tab_hidden", { visible });
+  visible ? flushEvents() : flushEventsSync();
+});
+window.addEventListener("pagehide", () => { logEvent("session_end", { elapsed_ms: timerElapsedMs() }); flushEventsSync(); });
+logEvent("session_start", { app_version: APP_VERSION, ua: navigator.userAgent,
+                            screen: `${screen.width}x${screen.height}`, tz_offset_min: new Date().getTimezoneOffset() });
 
 async function boot() {
   window.addEventListener("resize", renderTimeline);
@@ -576,7 +648,9 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
 }
 
 async function selectProject(pid) {
+  await flushEvents();                    // queued events belong to the project they happened in
   PID = pid;
+  evPrevT = 0;                            // don't bill the switch gap to the new project
   const sel = el("projSel"); if (sel && sel.value !== pid) sel.value = pid;   // keep switcher in sync
   resetWorkspaceState();
   projMeta = await (await api(``)).json();
@@ -586,6 +660,8 @@ async function selectProject(pid) {
   spoutRoi = projMeta.spout_roi || null;          // shared spout ROI polygon (drawn on every clip)
   cageRoi = projMeta.cage_roi || null;            // shared cage-boundary ROI polygon
   updateSpoutCtl(); updateCageCtl();
+  logEvent("project_open", { pid, name: projMeta.name, n_videos: (projMeta.videos || []).length,
+                             n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
   if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);   // most recently loaded
   else { clearStage(); metaEl.textContent = "Load a video + SLP to begin."; }
 }
@@ -657,6 +733,9 @@ async function openVideo(vidId) {
   const keepBid = behaviors.some(b => b.id === activeBid) ? activeBid : (behaviors[0] ? behaviors[0].id : null);
   if (keepBid != null) await selectBehavior(keepBid); else renderTimeline();
   show(0);
+  logEvent("video_open", { video_id: vid, n_frames: meta.n_frames, fps: meta.fps,
+                           has_poses: !!poses, n_tracks: nTracks(),
+                           features: (meta.features || {}).status });
   autoloadCageRoi();                                   // best-effort: fill a missing cage ROI from the HCM DB
 }
 async function autoloadCageRoi() {   // when a clip has no cage ROI, pull this recording's polygon from the HCM DB (no-op off-VPN)
@@ -1109,6 +1188,7 @@ async function decodeFrame(idx) {
 }
 async function show(i) {
   cur = Math.max(0, Math.min(meta.n_frames - 1, i));
+  evCounts.frames++;                       // rolled into the heartbeat, never logged per frame
   const seq = ++showSeq, target = cur;
   // UI chrome (playhead, counter) tracks the request immediately — responsive while the frame decodes.
   scrub.value = cur; counter.textContent = `${cur} / ${meta.n_frames - 1}`;
@@ -1496,8 +1576,8 @@ async function applyOp(op, vSlice, sSlice) {
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); await applyOp(op, op.beforeV, op.beforeS); }
-async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); await applyOp(op, op.afterV, op.afterS); }
+async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS); }
+async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS); }
 
 // ---------- select + delete a single annotation ----------
 function runAt(bid, f) {                       // the contiguous labeled run containing frame f (or null)
@@ -1522,6 +1602,7 @@ function nearestRun(bid, f, W) {              // run under f, else the closest r
 function selectNearest(bid, f, W) { selectedSeg = nearestRun(bid, f, W); updateSelStatus(); renderTimeline(); }
 function setTool(t) {
   if (t !== "paint" && painting) commitPaint();   // keep a pending anchor-paint (commit it), don't discard it
+  if (t !== toolMode) logEvent("tool_change", { tool: t });
   toolMode = t;
   el("toolPaint").classList.toggle("on", t === "paint");
   el("toolSelect").classList.toggle("on", t === "select");
@@ -1541,6 +1622,8 @@ function updateSelStatus() {
 async function deleteSelectedSeg() {
   if (!selectedSeg) return;
   const { bid, s, e } = selectedSeg;
+  logEvent("label_delete", { behavior_id: bid, name: bname(bid), start: s, end: e, n_frames: e - s,
+                             value: selectedSeg.val });
   selectedSeg = null; el("delSeg").disabled = true;
   await applyPaint(bid, s, e, 0);             // erase the run (undoable)
   busy(`deleted label · frames ${s}–${e}`);
@@ -1619,6 +1702,7 @@ async function cloneBehavior(withLabels) {
     : `created "${nb.name}" (0 labels) — label it from scratch; compare vs "${src.name}" in Stats`);
 }
 async function selectBehavior(bid) {
+  if (bid !== activeBid) logEvent("behavior_select", { behavior_id: bid, name: bname(bid) });
   activeBid = bid; renderBehaviorBar();
   invalidateTlCache();                 // don't let playback blit the previous behavior's cached base during the awaits
   await loadModel(); await loadCandidates(bid);
@@ -1692,6 +1776,7 @@ async function onTrackChange() {
   drawPose(); renderTimeline();
 }
 async function setActiveTrack(t) {
+  if (t !== activeTrack) logEvent("track_select", { from_track: activeTrack, to_track: t });
   activeTrack = Math.max(0, Math.min(nTracks() - 1, t));
   renderTrackBar();
   await onTrackChange();
@@ -2204,6 +2289,8 @@ async function loadCandidates(bid) {
   const n = Math.max(1, Math.min(50, parseInt(el("candN").value, 10) || 10));
   const r = await api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${n}&mode=${candidateMode}&order=${candidateOrder}`);
   reviewQueue = r.ok ? await r.json() : []; reviewIdx = 0;
+  logEvent("candidates_load", { behavior_id: bid, name: bname(bid), queue_mode: candidateMode,
+                                order: candidateOrder, requested: n, queue_len: reviewQueue.length });
   const noun = candidateMode === "mislabel" ? "mislabels" : candidateMode === "dropped" ? "filtered-out" : "candidates";
   el("review").disabled = reviewQueue.length === 0;
   el("review").textContent = reviewQueue.length ? `Review ${noun} (${reviewQueue.length})` : `Review ${noun}`;
@@ -2255,12 +2342,23 @@ async function train() {
   // Scope the post-fit prediction sweep (the fit itself always pools every labeled clip). Sweeping a
   // 17-clip project costs minutes; re-predicting just the clip under review costs seconds.
   const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid)}`;
+  logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips" });
   const r = await api(`/behaviors/${bid}/train${scope}`, { method: "POST" });
-  if (!r.ok) { busy("train error: " + (await r.json()).detail); return; }
+  if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { busy("train failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") { logEvent("train_error", { behavior_id: bid, name: bname, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("train failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
     const trainMs = Date.now() - t0;
+    { const q = s.result || {}, m = q.metrics || {};
+      // wall_ms is what the HUMAN waited (click -> UI usable); the server logs the job's own duration
+      logEvent("train_result", { behavior_id: bid, name: bname, wall_ms: trainMs, version: q.version,
+                                 ap: m.average_precision, f1: m.f1, precision: m.precision, recall: m.recall,
+                                 n_pos: q.n_pos, n_neg: q.n_neg, n_pos_bouts: q.n_pos_bouts, n_neg_bouts: q.n_neg_bouts,
+                                 n_seed_bouts: q.n_seed_bouts, n_candidate_bouts: q.n_candidate_bouts,
+                                 train_seconds: q.train_seconds, feature_seconds: q.feature_seconds,
+                                 n_videos: (q.videos_used || []).length,
+                                 predicted_videos: ((q.predict || {}).videos || []).length,
+                                 downgrade: !!q.downgrade_warning }); }
     await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
     const r = s.result;
     if (r && r.metrics) timerMark(r.metrics.average_precision, bid, bname, trainMs, r.n_candidate_bouts);   // round duration + candidate-bout count, tagged with THIS model
@@ -2278,11 +2376,16 @@ async function train() {
 }
 async function predictVideo() {   // apply existing model(s) to the current video (no retrain)
   busy("starting prediction…");
+  const pT0 = Date.now();
+  logEvent("predict_click", { video_id: vid });
   const r = await api(`/videos/${vid}/predict`, { method: "POST" });
-  if (!r.ok) { busy("predict: " + (await r.json()).detail); return; }
+  if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: vid, error: String(d).slice(0, 200) }); busy("predict: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { busy("predict failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") { logEvent("predict_error", { video_id: vid, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("predict failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    logEvent("predict_result", { video_id: vid, wall_ms: Date.now() - pT0,
+                                 n_behaviors: ((s.result || {}).behaviors || []).length,
+                                 n_skipped: ((s.result || {}).skipped || []).length });
     await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
     const res = s.result || {}, done = res.behaviors || [], skipped = res.skipped || [];
     if (skipped.length) {
@@ -2307,6 +2410,10 @@ async function importFile() {
   const r = await api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) { alert("Import failed: " + (await r.json()).detail); return; }
   const s = await r.json();
+  logEvent("import_labels", { path, kind: isJson ? "events_json" : "interval_csv",
+                              pos_frames: Object.values(s.behaviors).reduce((a, b) => a + (b.pos_frames || 0), 0),
+                              neg_frames: Object.values(s.behaviors).reduce((a, b) => a + (b.neg_frames || 0), 0),
+                              behaviors: Object.keys(s.behaviors) });
   alert("Imported:\n" + Object.entries(s.behaviors).map(([k, v]) => `${k}: ${v.pos_frames} pos / ${v.neg_frames} neg frames`).join("\n"));
   await reloadBehaviors();
 }
@@ -2372,6 +2479,21 @@ function updateReviewText() {
     + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
   el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
 }
+// Review-session counters, so a review_end says what the sitting produced without the rollup having
+// to re-derive it, and every decision carries its own dwell time (candidate shown -> call made).
+let evReviewT0 = 0, evReviewN = {};
+function logDecision(kind, extra) {
+  const c = reviewCurrent || {}, t = reviewTrim || {};
+  evReviewN[kind] = (evReviewN[kind] || 0) + 1;
+  const ts = t.s != null ? t.s : c.s, te = t.e != null ? t.e : c.e;
+  logEvent("candidate_" + kind, {
+    behavior_id: c.bid, name: bname(c.bid), start: c.s, end: c.e, trim_start: ts, trim_end: te,
+    n_frames: (te - ts) || 0, trimmed: ts !== c.s || te !== c.e, proba: c.p, candidate_kind: c.mode,
+    queue_mode: candidateMode, order: candidateOrder, idx: reviewIdx, queue_len: reviewQueue.length,
+    dwell_ms: evCandShownT ? Date.now() - evCandShownT : null, replays: evCandReplays,
+    ...(extra || {}) });
+  evCandShownT = 0; evCandReplays = 0;
+}
 async function startReview() {
   if (candidateMode === "mislabel") busy("cross-validating to find likely mislabels — first run for a behavior takes a moment…");
   if (activeBid != null) await loadCandidates(activeBid);   // refresh against CURRENT labels (queue is otherwise only reloaded on train/predict/switch)
@@ -2381,6 +2503,9 @@ async function startReview() {
          : "no unlabeled candidates — retrain after labeling more");
     return;
   }
+  evReviewT0 = Date.now(); evReviewN = {};
+  logEvent("review_start", { behavior_id: activeBid, name: bname(activeBid), queue_mode: candidateMode,
+                             order: candidateOrder, queue_len: reviewQueue.length });
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true); showCandidate(0);
 }
 // two-column review mode: video + review rail side-by-side, timeline pulled up beneath (CSS-only reflow)
@@ -2394,6 +2519,10 @@ function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lan
   reviewQueue = []; setReviewView(bt.s, bt.e);
   el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)";
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true);
+  if (!evReviewT0) { evReviewT0 = Date.now(); evReviewN = {}; }
+  evReviewN.shown = (evReviewN.shown || 0) + 1; evCandShownT = Date.now(); evCandReplays = 0;
+  logEvent("bout_review_open", { behavior_id: bid, name: bname(bid), start: bt.s, end: bt.e,
+                                 n_frames: bt.e - bt.s, proba: bt.p, candidate_kind: "new", via: "timeline" });
   renderBehaviorBar(); updateReviewText(); populateReclassifySelect(); playBout(bt.s, bt.e);   // auto-play the clicked bout
 }
 function showCandidate(i) {
@@ -2407,6 +2536,12 @@ function showCandidate(i) {
   el("rvYes").textContent = isDis ? "✓ Change (y)" : "✓ Accept (y)";
   el("rvNo").textContent = isDis ? "✗ Keep (n)" : "✗ Reject (n)";
   setReviewView(c.start, c.end);
+  evReviewN.shown = (evReviewN.shown || 0) + 1; evCandShownT = Date.now(); evCandReplays = 0;
+  logEvent("candidate_show", { behavior_id: activeBid, name: bname(activeBid), idx: i,
+                               queue_len: reviewQueue.length, start: c.start, end: c.end,
+                               n_frames: c.end - c.start, proba: c.mean_proba, candidate_kind: reviewCurrent.mode,
+                               queue_mode: candidateMode, order: candidateOrder,
+                               label_value: c.label_value, suggest_value: c.suggest_value });
   updateReviewText(); populateReclassifySelect(); playBout(c.start, c.end);   // auto-play the candidate bout under review
 }
 function populateReclassifySelect() {   // every OTHER behavior, so you can mark a candidate as one of them instead
@@ -2418,6 +2553,7 @@ function populateReclassifySelect() {   // every OTHER behavior, so you can mark
 }
 async function reclassifyCandidate(otherBid) {
   if (!reviewCurrent) return;
+  logDecision("reclassify", { to_behavior_id: otherBid, to_name: bname(otherBid) });
   snapReview();
   const { bid, s, e, mode } = reviewCurrent, t = reviewTrim || { s, e };
   if (candidateMode === "mislabel") await markReviewedCurrent();   // resolved this mislabel by reclassifying
@@ -2437,8 +2573,8 @@ function ensureTrimVisible() {   // widen the zoom window if the accept range no
 }
 // Trim clamps to [0, n_frames] — NOT the candidate bounds — so you can extend a bout past the model's
 // proposal as well as shorten it. Move the playhead to the boundary you want, then [ (start) / ] (end).
-function setTrimStart() { if (!reviewCurrent) return; reviewTrim.s = Math.max(0, Math.min(cur, reviewTrim.e - 1)); ensureTrimVisible(); updateReviewText(); renderTimeline(); }
-function setTrimEnd()   { if (!reviewCurrent) return; reviewTrim.e = Math.min(meta.n_frames, Math.max(cur + 1, reviewTrim.s + 1)); ensureTrimVisible(); updateReviewText(); renderTimeline(); }
+function setTrimStart() { if (!reviewCurrent) return; reviewTrim.s = Math.max(0, Math.min(cur, reviewTrim.e - 1)); logEvent("candidate_trim", { behavior_id: reviewCurrent.bid, edge: "start", start: reviewTrim.s, end: reviewTrim.e }); ensureTrimVisible(); updateReviewText(); renderTimeline(); }
+function setTrimEnd()   { if (!reviewCurrent) return; reviewTrim.e = Math.min(meta.n_frames, Math.max(cur + 1, reviewTrim.s + 1)); logEvent("candidate_trim", { behavior_id: reviewCurrent.bid, edge: "end", start: reviewTrim.s, end: reviewTrim.e }); ensureTrimVisible(); updateReviewText(); renderTimeline(); }
 // mark the bout under review as mislabel-reviewed (so it drops out of the mislabel queue). Uses the
 // ORIGINAL labeled-run bounds (reviewCurrent.s/.e), which is the key mislabels()/reviewed use.
 async function markReviewedCurrent() {
@@ -2451,6 +2587,7 @@ async function markReviewedCurrent() {
 }
 async function acceptCandidate() {   // "y": accept the model. new: label inner as Happening, trimmed edges Not-happening. disagree: flip inner to the model's verdict.
   if (!reviewCurrent) return;
+  logDecision("accept");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   if (reviewCurrent.mode === "disagree") {
@@ -2465,6 +2602,7 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
   if (!reviewCurrent || reviewCurrent.mode !== "new") return;   // new detections only (disagree/reviewed must not be silently relabeled by merge)
+  logDecision("merge");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const m = mergeExtent(bid, t.s, t.e);
@@ -2485,15 +2623,18 @@ async function splitCandidate() {
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const cut = cur;                                            // split at the playhead
   if (cut <= t.s + 1 || cut >= t.e - 1) { busy("move the playhead inside the bout, then Split"); return; }
+  logDecision("split", { cut });
   snapReview();
   await applyPaint(bid, t.s, cut, 1, "candidate");            // left segment = one Happening bout
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate"); // any trimmed-off left edge = Not-happening
   reviewCurrent = { ...reviewCurrent, s: cut, e };            // keep reviewing the remainder
   reviewTrim = { s: cut, e };
+  evCandShownT = Date.now();                                  // the remainder is a fresh judgement
   setReviewView(cut, e); updateReviewText(); renderTimeline(); playBout(cut, e);
 }
 async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: keep your label. reviewed: un-review.
   if (!reviewCurrent) return;
+  logDecision("reject");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   if (reviewCurrent.mode === "disagree") {
@@ -2503,9 +2644,15 @@ async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: 
   await applyPaint(bid, s, e, 2, "candidate");
   advanceReview();
 }
-function nextCandidate() { if (reviewCurrent) advanceReview(); }   // advance without writing (e.g. after painting inside)
+function nextCandidate() { if (!reviewCurrent) return; logDecision("skip"); advanceReview(); }   // advance without writing (e.g. after painting inside)
 function advanceReview() { if (reviewQueue.length) showCandidate(reviewIdx + 1); else closeReview(); }
-function closeReview() { reviewCurrent = null; reviewTrim = null; tlView = null; clearReviewUndo(); el("reviewPanel").classList.remove("on"); setReviewLayout(false); el("reviewQ").textContent = ""; renderTimeline(); }
+function closeReview() {
+  if (evReviewT0) {
+    logEvent("review_end", { behavior_id: activeBid, name: bname(activeBid), queue_mode: candidateMode,
+                             order: candidateOrder, duration_ms: Date.now() - evReviewT0, ...evReviewN });
+    evReviewT0 = 0; evReviewN = {};
+  }
+  reviewCurrent = null; reviewTrim = null; tlView = null; clearReviewUndo(); el("reviewPanel").classList.remove("on"); setReviewLayout(false); el("reviewQ").textContent = ""; renderTimeline(); }
 function endReview() { closeReview(); busy("reviewed — Train again to refine"); }
 // ---- review-level undo: a review action (accept/reject/split/merge/reclassify) is a COMPOUND edit
 // (several applyPaint writes + a queue move); snapshot the review position + the label-undo depth BEFORE
@@ -2523,6 +2670,8 @@ async function undoReview() {
   if (!s) { const u = el("rvUndo"); if (u) u.disabled = true; return; }
   while (undoStack.length > s.mark) await undo();     // revert every label write this action made
   reviewIdx = s.idx; reviewCurrent = s.cur; reviewTrim = s.trim;
+  logDecision("undo");
+  evCandShownT = Date.now();                        // back on this candidate — its dwell restarts
   const u = el("rvUndo"); if (u) u.disabled = reviewUndo.length === 0;
   if (reviewCurrent) {                                // re-open + re-show that candidate (it may have closed on the last accept)
     if (!el("reviewPanel").classList.contains("on")) { el("reviewPanel").classList.add("on"); setReviewLayout(true); }
@@ -2543,12 +2692,17 @@ function play(stopAt = null) {
   if (!videoBackend) return;
   playStopAt = Number.isFinite(stopAt) ? stopAt : null;   // null = play to end; a frame = stop there. (Guard: onclick=play would pass a MouseEvent.)
   playing = true; el("play").textContent = "❚❚ Pause";
+  evPlayT = Date.now(); evPlayFrom = cur;
+  logEvent("play_start", { from: cur, stop_at: playStopAt, speed: playbackSpeed, reviewing: !!reviewCurrent });
   playAnchorT = null; playBusy = false;              // re-anchor the wall-clock on the first tick
   renderTimeline();                                 // prime the base-bitmap cache before fast-repaint frames
   schedulePrefetch(cur);
   playRaf = requestAnimationFrame(playTick);
 }
 function stop() {
+  if (playing && evPlayT) logEvent("play_stop", { from: evPlayFrom, to: cur, frames: cur - evPlayFrom,
+                                                  ms: Date.now() - evPlayT, reviewing: !!reviewCurrent });
+  evPlayT = 0;
   playing = false; el("play").textContent = "▶ Play";
   if (playRaf) cancelAnimationFrame(playRaf);
   playRaf = null; playBusy = false; playStopAt = null;
@@ -2572,6 +2726,7 @@ function playTick(now) {
 
 // ---------- mode ----------
 function setMode(m) {
+  if (m !== mode) logEvent("mode_change", { mode: m });
   mode = m;
   el("mPos").classList.toggle("on", m === "pos");
   el("mNeg").classList.toggle("on", m === "neg");
@@ -2581,12 +2736,16 @@ function setMode(m) {
 const bname = bid => (behaviors.find(b => b.id === bid) || {}).name || "";
 function startPaint(bid, m) {
   activeBid = bid; renderBehaviorBar();
-  painting = { bid, anchor: cur, mode: m };
+  painting = { bid, anchor: cur, mode: m, t0: Date.now() };
+  logEvent("paint_start", { behavior_id: bid, name: bname(bid), mode: m, anchor: cur });
   busy(`painting ${bname(bid)} · ${modeName(m)} — move the playhead, click ${modeName(m)} again (or the hotkey) to finish · Esc cancels`);
 }
 function commitPaint() {
   if (!painting) return;
   const s = Math.min(painting.anchor, cur), e = Math.max(painting.anchor, cur) + 1;
+  logEvent("paint_commit", { behavior_id: painting.bid, name: bname(painting.bid), via: "anchor",
+                             mode: painting.mode, value: modeVal(painting.mode), start: s, end: e,
+                             n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual" });
   applyPaint(painting.bid, s, e, modeVal(painting.mode));
   busy(`marked ${bname(painting.bid)}: ${s}–${e}`); painting = null;
 }
@@ -2629,6 +2788,8 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   if (!selectedSeg || !segTrim) return;
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
+  logEvent("label_trim", { behavior_id: bid, name: bname(bid), from_start: s, from_end: e,
+                           start: ns, end: ne, n_frames: ne - ns, delta_frames: (ne - ns) - (e - s), value: val });
   if (ns > s) await applyPaint(bid, s, ns, 0);             // trimmed on the left -> unlabel [s, ns)
   if (ne < e) await applyPaint(bid, ne, e, 0);             // trimmed on the right -> unlabel [ne, e)
   await applyPaint(bid, ns, ne, val);                      // (re)label the new range (covers extensions), same value
@@ -2736,6 +2897,8 @@ tl.addEventListener("pointerup", () => {
     } else {
       clearSel();
       const s = Math.min(drag.start, drag.curFrame), e = Math.max(drag.start, drag.curFrame) + 1;
+      logEvent("paint_commit", { behavior_id: drag.bid, name: bname(drag.bid), via: "drag",
+                                 mode, value: modeVal(), start: s, end: e, n_frames: e - s, source: "manual" });
       applyPaint(drag.bid, s, e, modeVal()); show(drag.curFrame);
     }
   }
@@ -2806,6 +2969,12 @@ el("featSet").onchange = async e => {   // set the active behavior's feature sub
   const d = el("featSetDesc"); if (d) d.innerHTML = (FEATSET_DESC[fs] || FEATSET_DESC.all) + featSetComposition(fs);
   busy(`${bname(activeBid)} feature set → ${fs === "all" ? "all features" : fs} · Train to apply`);
 };
+el("timingExport").onclick = async () => {   // per-round annotation timings (events.py rollup)
+  await flushEvents();                       // include everything up to this click
+  const a = document.createElement("a");
+  a.href = `/api/projects/${PID}/timing.csv`; a.download = `${PID}-rounds.csv`; a.click();
+  busy("downloaded per-round timing CSV — raw event log: <project>/events/*.jsonl · full rollup: /api/projects/" + PID + "/timing");
+};
 el("statsBtn").onclick = openStats; el("statsClose").onclick = () => el("statsPanel").classList.remove("on");
 el("statsExport").onclick = () => {   // download the full precision-stats history for the active behavior as CSV
   const h = lastStatsHistory || [];
@@ -2828,7 +2997,12 @@ el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
-function replayCandidate() { if (reviewCurrent) playBout(reviewCurrent.s, reviewCurrent.e); }   // re-watch the bout under review from its start
+function replayCandidate() {   // re-watch the bout under review from its start
+  if (!reviewCurrent) return;
+  evCandReplays++;                                  // replays ride along on the decision event
+  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e, n: evCandReplays });
+  playBout(reviewCurrent.s, reviewCurrent.e);
+}
 el("rvReplay").onclick = replayCandidate;
 el("rvYes").onclick = acceptCandidate;
 el("rvMerge").onclick = mergeCandidate;
@@ -2908,7 +3082,7 @@ window.addEventListener("keydown", e => {
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
   if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
   if (settingCage && e.key === "Escape") { e.preventDefault(); setCageMode(false); busy("cage ROI cancelled"); return; }
-  if (e.key === "Escape" && painting) { painting = null; busy(""); renderTimeline(); return; }
+  if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedSeg) { e.preventDefault(); deleteSelectedSeg(); return; }
   if (e.key === "Tab") { e.preventDefault(); cycleTrack(e.shiftKey ? -1 : 1); return; }        // cycle tracks
   if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }

@@ -706,6 +706,16 @@ GET    /api/projects/{pid}/predict/{video_id}            octet-stream float32 [F
 GET    /api/projects/{pid}/behaviors/{bid}/suggest/{video_id}?n=&strategy=   active-learning frame picks
 ```
 
+```
+# Annotation event log & timing (§9.1) — the only record of how long annotation took
+POST   /api/projects/{pid}/events              {session, events[]}  browser flush (batched, fire-and-forget)
+GET    /api/projects/{pid}/events/sessions     [{session, n_events, start, end}]
+GET    /api/projects/{pid}/events.jsonl        the raw log (?session= to scope) — ndjson for pandas/duckdb
+GET    /api/projects/{pid}/timing              per-round rollup + manual-vs-review headline
+                                               (?behavior= ?session= ?gap_cap_s= ?idle_break_s=)
+GET    /api/projects/{pid}/timing.csv          the same per-round table as CSV (the ⤓ rounds button)
+```
+
 `suggest` strategies: `uncertainty` (default), `random`, `sparse` (uniform coverage). `predict`/train
 **refuse** a `video_id` whose `features_status != 'ready'` for the current `feature_config_hash`
 (returns 409 with the pending `job_id`).
@@ -735,7 +745,8 @@ my-project/
 ├── features/<video_id>.meta.json     feature_names[D], D, feature_config_hash, slp_content_hash, fps, status
 ├── model/<behavior_id>/<version>.joblib     trained sklearn Pipeline (per behavior)
 ├── model/<behavior_id>/meta.json            AUTHORITATIVE per-behavior model metadata (version, cv metrics, hashes)
-└── predictions/<video_id>.parquet    per-frame per-behavior float32 (column per behavior_id)
+├── predictions/<video_id>.parquet    per-frame per-behavior float32 (column per behavior_id)
+└── events/<session_id>.jsonl         append-only annotation event log (§9.1)   ← the only record of TIME
 ```
 
 ```jsonc
@@ -766,7 +777,54 @@ my-project/
 Formats: **JSON** manifest/meta; **parquet** for labels/predictions (columnar, read by
 pandas/polars/duckdb for offline analysis); **npy memmap / npz** for feature/pose caches; **joblib**
 for models. Only manual labels + behavior definitions are irreplaceable — `poses/`, `features/`,
-`predictions/`, `media/` are caches you can delete and rebuild.
+`predictions/`, `media/` are caches you can delete and rebuild. `events/` is irreplaceable too, for a
+different reason: it is a record of something that happened once and cannot be recomputed.
+
+### 9.1 Annotation event log — measuring human time (`events/<session_id>.jsonl`)
+
+The project's whole premise is that human-in-the-loop annotation is *cheaper* than annotating by
+hand. Nothing else on disk can test that claim: `labels/` records **what** was annotated,
+`model/<bid>/history.json` records accuracy **per bout** — and a bout accepted from candidate review
+and a bout painted from scratch are one bout each while costing very different amounts of a person's
+time. So the actions themselves are logged, timestamped, and time is derived from them.
+
+Append-only, one flat JSON object per line, never rewritten. The browser buffers events and flushes
+every ~3 s (and via `sendBeacon` on unload); the server appends job durations and label writes itself
+into `events/server.jsonl`, so compute time and every label that reached disk survive a closed tab.
+
+```jsonc
+{"session":"s-20260908T2011-a1b2c3","seq":41,"src":"client","t":"2026-09-08T20:11:03.412+00:00",
+ "t_ms":1789…,"dt_ms":1840,"t_srv":"…","type":"candidate_accept","video_id":"cam0","behavior_id":3,
+ "track":0,"frame":1204,"start":1180,"end":1240,"trim_start":1188,"trim_end":1240,"trimmed":true,
+ "proba":0.62,"dwell_ms":4120,"replays":1,"queue_mode":"new","order":"uncertain"}
+```
+
+What is logged, grouped by what it measures:
+
+| group | events |
+|---|---|
+| session & context | `session_start` `session_end` `heartbeat` `tab_visible` `tab_hidden` `project_open` `video_open` `behavior_select` `track_select` `mode_change` `tool_change` |
+| manual labeling | `paint_start` `paint_commit` (`via`: anchor / drag) `paint_cancel` `label_delete` `label_trim` `label_undo` `label_redo` `import_labels` |
+| the loop | `train_click` `train_result` `train_error` `predict_click` `predict_result` `candidates_load` |
+| candidate review | `review_start` `candidate_show` `bout_review_open` `candidate_accept` `candidate_reject` `candidate_merge` `candidate_split` `candidate_reclassify` `candidate_skip` `candidate_undo` `candidate_trim` `candidate_replay` `review_end` |
+| video effort | `play_start` `play_stop` (frames watched is a per-heartbeat counter, never one event per frame) |
+| server-side | `job_start` / `job_done` (`kind`: train / predict / features, with `seconds` + the model that came out) `label_write` `label_clear` |
+
+**Active time** is reconstructed, not clocked: the sum of gaps between consecutive events, each capped
+at `gap_cap_s` (default 15 s, just above the 10 s heartbeat), with the chain broken by a hidden tab or
+by a heartbeat whose `idle_ms` (time since the last pointer/key/wheel) exceeds `idle_break_s`
+(default 120 s). Deliberately *not* by window focus: `document.hasFocus()` is false in plenty of
+situations where real annotation is happening, and idle time catches the same absence without the
+false negatives — `focused` is logged anyway, so a stricter analysis can still use it. A break therefore stops accruing
+time instead of being billed to the annotation; active time is a slight *under*-estimate, equally in
+both arms. Each gap is charged to the phase in effect when it started — `label_s`, `review_s`, or
+`wait_s` (watching a progress bar) — which is what makes the two workflows separable.
+
+A **round** is the stretch of work between two Trains of the same behavior: label / review, Train,
+look, repeat. `GET /timing`, `GET /timing.csv` and `scripts/annotation_timing.py` roll the log up per
+round and end at the division the log exists for — *seconds per bout painted by hand* vs *seconds per
+bout confirmed in review* — plus accuracy against **cumulative human minutes**, the x-axis
+`history.json` cannot provide.
 
 ---
 

@@ -82,6 +82,40 @@ video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos`
 lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
 repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
 
+## Measuring annotation time (human-in-the-loop vs. by hand)
+
+Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
+bout, each candidate accepted or rejected, each Train and Predict, timestamped, plus a heartbeat that
+makes it possible to tell working time from a coffee break. The server appends job durations and
+label writes itself, so compute time and every label that reached disk survive a closed browser tab.
+See [`PLAN.md` §9.1](PLAN.md) for the event list and the exact definition of "active time".
+
+The rollup groups the log into **rounds** — the stretch of work between two Trains of a behavior —
+and separates the human's time into *labeling by hand* and *reviewing model proposals*:
+
+```bash
+python scripts/annotation_timing.py ~/laras-projects --pid my-project --csv rounds.csv
+```
+
+```
+  # behavior         started            active   label  review   wait    cpu  hand  shown   ok   no  s/bout  s/dec     AP
+  1 drinking         01-15 08:00          6:12    5:44    0:00   0:17   0:17    11      0    0    0    31.3      -  0.441
+  2 drinking         01-15 08:07          3:48    0:22    3:04   0:15   0:15     1     14   11    3    22.0    13.1  0.812
+
+BY HAND    12 bouts / 900 frames (30s of video) in 6:06  ->  30.5s per bout
+IN REVIEW  14 decisions (11 accepted) on 41s of proposed video in 3:04  ->  13.1s per decision, 16.7s per accepted bout
+==> a bout cost 1.8x less human time through review (30.5s by hand vs 16.7s accepted)
+```
+
+It also prints accuracy against **cumulative human minutes** — the axis that actually answers "how
+long to a usable model", where the Stats panel's learning curve plots accuracy per *bout*. In the app,
+**⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
+the full rollup as JSON.
+
+Caveat worth repeating in any writeup: review only ever visits bouts the model already proposed, so
+part of why it is fast is that the *search* was done for you. That is the point of the workflow, but
+it makes "seconds per bout" a cost ratio, not an accuracy claim — read it next to the accuracy curve.
+
 ## History
 
 This started as a subdirectory of [talmolab/vibes](https://github.com/talmolab/vibes)
