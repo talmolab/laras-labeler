@@ -212,10 +212,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         Deliberately no `ap`: HiDRA's fine-tune does not report one back through this path, and the
         rounds table showing a blank there is honest, where borrowing the project model's AP would
-        not be. `engine` is what tells the two apart when a project mixes them."""
+        not be. `engine` is what tells the two apart when a project mixes them.
+
+        `version` carries the checkpoint, because the round record has a `version` column that the
+        native path fills and this one otherwise would not: a round you cannot trace to the model
+        it produced is a row you cannot check anything against later."""
         return {"engine": "hidra", "lab": r.get("lab"), "action": r.get("action"),
-                "backend": r.get("backend"), "n_pos_bouts": r.get("bouts"),
-                "n_spans": r.get("spans"), "n_videos": r.get("videos")}
+                "version": r.get("checkpoint"), "backend": r.get("backend"),
+                "n_pos_bouts": r.get("bouts"), "n_spans": r.get("spans"),
+                "n_videos": r.get("videos")}
 
     # Feature pre-warm: the first Train computes any missing feature cache lazily (a multi-minute cold
     # cost that lands inside the human-in-the-loop window). Instead we fire that same background compute
