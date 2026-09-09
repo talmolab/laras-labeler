@@ -370,6 +370,28 @@
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
   </div>
 
+  <!-- Missing media. A project stores absolute paths to its video/.slp and never copies them, so a
+       project folder carried to another machine (or a share mounted somewhere else) opens with every
+       path dead. The labels, features and models are all keyed by clip id and are fine — only the
+       pointer to the pixels is stale — so the repair is to say where the files are now. -->
+  <div id="mediaFix" style="display:none; margin:2px 0 8px; padding:9px 13px; background:#1b1613;
+       border:1px solid #4a3a24; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
+    <div class="help-hd"><b style="color:#e8a33d">Media not found on this computer</b>
+      <button id="mediaFixToggle" class="collapse-btn" data-target="mediaFixBody">hide &#9662;</button></div>
+    <div id="mediaFixBody" style="margin-top:6px">
+      <div id="mediaFixWhat"></div>
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center">
+        <label style="display:flex; align-items:center; gap:5px">folder holding the videos / .slp files
+          <input type="text" id="mediaRootIn" placeholder="Z:\elise\selected_clips_9h.v3" style="width:330px"
+                 title="Searched recursively. Files are matched by name, so the folder layout does not have to match the original machine's."></label>
+        <button id="mediaFixGo" class="primary">Find media</button>
+        <span class="status" id="mediaFixNote"></span>
+      </div>
+      <div style="margin-top:7px; color:#6b7280">Run it once per folder — videos and poses can live in
+        different places, so add each in turn. Remembered per project, and re-checked on every open.
+        Nothing is copied or moved.</div>
+    </div>
+  </div>
   <!-- HiDRA setup. Shown ONLY when the server reports 0 heads, i.e. HiDRA is installed in this
        labeler (it always is) but no checkout has been found. Before this, that case hid the whole
        feature silently and a new user could not discover it existed, never mind configure it. It is
@@ -521,7 +543,23 @@
 </main>
 
 <script type="module">
-import * as sleapio from 'https://esm.sh/@talmolab/sleap-io.js@0.4.1';
+// sleap-io.js is the in-browser frame-accurate decoder. It came from a CDN as a STATIC import,
+// which made a network hiccup fatal: the module never evaluated, so nothing below ran and the whole
+// page was dead — no clips, no behaviors, no buttons — for a library only decodeFrame() needs, and
+// which loadVideoBackend() already knows how to do without (it falls back to server-rendered JPEG
+// frames). Load it lazily instead, once, and let the failure stay where it belongs.
+const SLEAPIO_URL = 'https://esm.sh/@talmolab/sleap-io.js@0.4.1';
+let _sleapio = null, _sleapioTried = false;
+async function sleapioLib() {
+  if (_sleapio || _sleapioTried) return _sleapio;
+  _sleapioTried = true;
+  try { _sleapio = await import(SLEAPIO_URL); }
+  catch (e) {
+    console.warn("in-browser video decoding unavailable (could not load sleap-io.js):", e);
+    busy("no in-browser video decoding — showing server-rendered frames (playback will be slower)");
+  }
+  return _sleapio;
+}
 // Track/animal palette — deliberately NO blue or red (those are reserved for behavior labels below),
 // so a colored skeleton/chip is never confused with a Happening/Not-happening mark. Muted tones.
 const TRACK_COLORS = ["#5aa06e", "#d9a54e", "#9a72b8", "#4fa39a", "#c4b45c", "#a8826b"];
@@ -737,6 +775,7 @@ async function selectProject(pid) {
   spoutRoi = projMeta.spout_roi || null;          // shared spout ROI polygon (drawn on every clip)
   cageRoi = projMeta.cage_roi || null;            // shared cage-boundary ROI polygon
   updateSpoutCtl(); updateCageCtl();
+  renderMediaFix(projMeta.media);       // this project may have been made on another computer
   logEvent("project_open", { pid, name: projMeta.name, n_videos: (projMeta.videos || []).length,
                              n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
   hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
@@ -1258,6 +1297,8 @@ async function loadVideoBackend() {
     // ~1–1.5s of buffer at these sizes), clamped to a sane frame count.
     const px = (meta && meta.width * meta.height) || (1280 * 1024);
     const cacheSize = Math.max(24, Math.min(128, Math.round(200e6 / (px * 4))));
+    const sleapio = await sleapioLib();
+    if (!sleapio) { videoBackend = null; return; }      // JPEG fallback; the clip is still usable
     videoBackend = await sleapio.MediaBunnyVideoBackend.fromBlob(blob, vid + ".mp4", { cacheSize });
     if (window.__leakPatch !== false) patchBackendLeak(videoBackend);   // stop the per-frame VideoSample leak (see note above); window.__leakPatch=false disables for A/B testing
     frameOrder = await buildFrameOrder(videoBackend);
@@ -1942,6 +1983,55 @@ function hidraShowSetup(st) {
   if (document.activeElement !== py) py.value = st.python_source === "default" ? "" : (st.python || "");
   box.style.display = "block";
 }
+// ---- missing media -------------------------------------------------------------------------
+// projMeta.media is the server's answer to "can this machine actually see this project's files?".
+// Rendered as a banner rather than a per-clip error because the failure is almost always all-or-
+// nothing (the project moved machines) and the fix is one folder, not one clip.
+function renderMediaFix(st) {
+  const box = el("mediaFix");
+  if (!box) return;
+  if (!st || !st.n_missing) { box.style.display = "none"; return; }
+  const names = [];
+  for (const m of st.missing) for (const f of m.files) if (names.length < 3) names.push(f);
+  el("mediaFixWhat").innerHTML =
+    `<b style="color:#cbd3df">${st.n_missing} of ${st.total} clip${st.total === 1 ? "" : "s"}</b> `
+    + `${st.n_missing === 1 ? "cannot find its" : "cannot find their"} video/pose files at the paths `
+    + `this project was set up with — most likely it was made on another computer. Your labels, `
+    + `features and models are unaffected; only playback and Predict need the files. `
+    + `Say where they live now:`
+    + `<div style="margin-top:5px; color:#6b7280">looking for e.g. <code>${names.join("</code>, <code>")}</code></div>`;
+  box.style.display = "";
+  if (!el("mediaFixGo").onclick) {
+    el("mediaFixGo").onclick = mediaRelink;
+    el("mediaRootIn").addEventListener("keydown", e => { if (e.key === "Enter") mediaRelink(); });
+    wireCollapse("mediaFixToggle");
+  }
+  if (st.media_roots && st.media_roots.length && !el("mediaRootIn").value)
+    el("mediaRootIn").value = st.media_roots[0];
+}
+
+async function mediaRelink() {
+  const note = el("mediaFixNote"), root = el("mediaRootIn").value.trim();
+  if (!root) { note.textContent = "enter a folder"; return; }
+  note.textContent = "searching…";
+  try {
+    const r = await api(`/media/relink`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root }) });
+    const st = await r.json();
+    if (!r.ok) { note.textContent = st.detail || ("HTTP " + r.status); return; }
+    const n = (st.relinked || []).length;
+    note.textContent = n ? `found ${n} clip${n === 1 ? "" : "s"}` : "nothing matching in there";
+    renderMediaFix(st);
+    if (n) {
+      projMeta = await (await api(``)).json();     // paths changed: re-read meta before reopening
+      busy(`re-pointed ${n} clip${n === 1 ? "" : "s"} at ${root}`
+           + (st.n_missing ? ` — ${st.n_missing} still missing` : " — all clips found"));
+      if (meta) await openVideo(meta.video_id);
+      else if (projMeta.videos.length) await openVideo(projMeta.videos[0].video_id);
+    }
+  } catch (e) { note.textContent = "failed: " + e.message; }
+}
+
 async function hidraSaveSetup() {
   const note = el("hidraSetupNote");
   note.textContent = "probing…";

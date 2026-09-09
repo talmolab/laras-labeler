@@ -362,6 +362,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.get("/api/projects/{pid}")
     def get_project(pid: str):
         p = _proj(pid)
+        # A project carried from another machine points at that machine's paths. Try the cheap,
+        # unambiguous repair first (its own media/ dir, and any root it was pointed at before) so a
+        # self-contained project folder just opens; whatever is still missing is reported to the GUI,
+        # which asks the user where the media lives.
+        try:
+            for r in p.relink_media().get("relinked", []):
+                vm.forget(pid, r["video_id"])
+        except Exception:  # noqa: BLE001  -- never let a media scan block opening a project
+            pass
         _prewarm_features(pid)              # warm feature caches on project open so the first Train is fast
         _autoload_missing_rois(pid)         # background-retry ROI fetch for clips still missing one (self-heals transient DB blips)
         return {
@@ -371,7 +380,37 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             "spout": p.manifest.get("feature_config", {}).get("spout"),   # [x,y] arena landmark, shared across clips
             "spout_roi": p.manifest.get("feature_config", {}).get("spout_roi"),   # [[x,y],...] polygon region
             "cage_roi": p.manifest.get("feature_config", {}).get("cage_roi"),   # [[x,y],...] cage-boundary polygon
+            "media": p.media_status(),   # which clips can't find their files here (see relink_media)
         }
+
+    @app.get("/api/projects/{pid}/media")
+    def media_status(pid: str):
+        """Which of this project's clips can find their video/.slp on this machine."""
+        return _proj(pid).media_status()
+
+    @app.post("/api/projects/{pid}/media/relink")
+    def relink_media(pid: str, body: dict = Body(...)):
+        """Point a project at its media after it has moved machines.
+
+        Searches `root` (recursively) for files with the same names the manifest is missing and
+        rewrites those paths. Labels, features and models are keyed by video_id, not by path, so they
+        all survive; only the pointer to the pixels changes.
+        """
+        proj = _proj(pid)
+        root = str(body.get("root") or "").strip()
+        if not root:
+            raise HTTPException(400, "a media folder is required")
+        rp = Path(root).expanduser()
+        if not rp.is_dir():
+            raise HTTPException(400, f"not a folder on this machine: {rp}")
+        r = proj.relink_media(rp)
+        for item in r["relinked"]:
+            vm.forget(pid, item["video_id"])          # drop the handle opened on the dead path
+        if r["relinked"]:
+            _prewarm_features(pid, [x["video_id"] for x in r["relinked"]])
+        elog.log(pid, "media_relink", root=str(rp), found=len(r["relinked"]),
+                 still_missing=r["n_missing"])
+        return r
 
     @app.get("/api/projects/{pid}/feature-sets")
     def feature_sets_info(pid: str):
