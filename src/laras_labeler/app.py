@@ -176,7 +176,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         fc = proj.manifest.get("feature_config", {})
         # effective arena landmarks for THIS clip: a per-clip value overrides the project-wide default
         eff = {k: (entry[k] if entry.get(k) is not None else fc.get(k)) for k in ("spout", "spout_roi", "cage_roi")}
-        return {**vm.meta(pid, vid), "features": features.status(pid, vid), **eff}
+        # pix_per_cm is per-clip only (never a project default -- see set_video_scale). It has to be
+        # in this payload because the GUI's HiDRA field reads it from here: without it the field was
+        # always blank and the "set px/cm" warning never cleared, so Predict looked permanently
+        # gated even on a clip whose scale was set and which Predict would have run.
+        return {**vm.meta(pid, vid), "features": features.status(pid, vid),
+                "pix_per_cm": entry.get("pix_per_cm"), **eff}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
     # separate the human's time from the machine's, and the machine's time has to be recorded where the

@@ -445,23 +445,37 @@ NODE_ALIASES = {
 def map_nodes(node_names: list[str]) -> tuple[dict[str, str], list[str]]:
     """This skeleton's node names -> HiDRA's, plus the ones with no equivalent.
 
-    Pass-through first, alias second. Nodes with no HiDRA name are dropped rather than guessed at:
-    HiDRA indexes its input by bodypart name, so a node sent under the wrong name is not a missing
-    feature but a wrong one, and the classifier has no way to tell."""
+    Nodes with no HiDRA name are dropped rather than guessed at: HiDRA indexes its input by bodypart
+    name, so a node sent under the wrong name is not a missing feature but a wrong one, and the
+    classifier has no way to tell.
+
+    EXACT NAMES WIN OVER ALIASES, in two passes, because otherwise a perfectly ordinary skeleton
+    could not run at all. `thorax` aliases to `neck` and `neck` is also a HiDRA name of its own, so
+    a rig carrying both -- common in SLEAP mouse skeletons -- mapped two nodes onto one bodypart and
+    the whole Predict failed with a collision. The exact `neck` is unambiguously the right occupant
+    of that slot; the aliased `thorax` is redundant and is reported as dropped. An alias losing to a
+    real name costs one feature. Refusing to run costs the user the feature entirely."""
     # Matching ignores case and separators, so earL, ear_l and EAR-L all reach the same entry --
     # skeletons name the same keypoint every one of those ways.
-    norm = lambda x: "".join(ch for ch in x.lower() if ch.isalnum())
+    norm = lambda x: "".join(ch for ch in x.lower() if ch.isalnum())   # noqa: E731
     known = {norm(b): b for b in HIDRA_BODYPARTS}
     alias = {norm(k): v for k, v in NODE_ALIASES.items()}
-    keep, dropped = {}, []
-    for n in node_names:
+    keep, dropped, taken = {}, [], set()
+    for n in node_names:                       # pass 1: names HiDRA already uses
         k = norm(n)
         if k in known:
             keep[n.lower()] = known[k]
-        elif k in alias:
-            keep[n.lower()] = alias[k]
+            taken.add(known[k])
+    for n in node_names:                       # pass 2: aliases, into slots still free
+        k = norm(n)
+        if k in known:
+            continue
+        target = alias.get(k)
+        if target is None or target in taken:
+            dropped.append(n)                  # no HiDRA name, or its slot is already filled
         else:
-            dropped.append(n)
+            keep[n.lower()] = target
+            taken.add(target)
     return keep, dropped
 
 
@@ -689,7 +703,12 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     with jobs_csv.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["run", "lab", "action", "subject", "target"])
-        w.writerow(["1", lab, action, "", ""])                    # blank = every pair; we collapse after
+        # "*", NOT blank, for every pair. predict.py's parse_jobs reads the sheet with pandas, so a
+        # blank field arrives as NaN; its `str(... or "*")` guard is meant to catch that but NaN is
+        # truthy, so the subject becomes the literal string "nan" and matches no pair. The run then
+        # fails SILENTLY -- five minutes of inference, exit 0, an empty bouts.csv and no frames
+        # parquet, indistinguishable from a behaviour that never occurred.
+        w.writerow(["1", lab, action, "*", "*"])                  # every pair; we collapse after
 
     out.mkdir(parents=True, exist_ok=True)
     cmd = [rt["python"], str(Path(rt["home"]) / "predict.py"), str(work),
