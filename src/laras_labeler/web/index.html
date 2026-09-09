@@ -1233,9 +1233,25 @@ async function loadVideoBackend() {
   frameOrder = null; pfStart = 0; pfEnd = -1;
   try {
     let blob = null;
+    // Retry only what retrying can fix. The backoff exists for "Failed to fetch" while a load-burst
+    // saturates the single-worker server, and for a 5xx -- both transient. A 404 is not: the clip's
+    // media is not on this machine (a project moved between machines, or a path that was right on
+    // the box that made it), and it will still be missing on the twelfth attempt. Retrying it spent
+    // ~25 s inside a call openVideo AWAITS, so the behavior chips -- and every other control drawn
+    // after it -- did not exist for that whole time, which reads as "the app is broken", not "this
+    // clip has no video".
     for (let attempt = 0; attempt < 12; attempt++) {
-      try { const r = await api(`/video/${vid}/stream.mp4`); if (!r.ok) throw new Error("http " + r.status); blob = await r.blob(); break; }
-      catch (err) { if (attempt === 11) throw err; await new Promise(res => setTimeout(res, Math.min(3000, 600 * (attempt + 1)))); }  // "Failed to fetch" while the load-burst saturates the single-worker server -> back off & retry (~25s)
+      let permanent = false;
+      try {
+        const r = await api(`/video/${vid}/stream.mp4`);
+        if (r.status >= 400 && r.status < 500) { permanent = true; throw new Error("http " + r.status); }
+        if (!r.ok) throw new Error("http " + r.status);
+        blob = await r.blob(); break;
+      }
+      catch (err) {
+        if (permanent || attempt === 11) throw err;
+        await new Promise(res => setTimeout(res, Math.min(3000, 600 * (attempt + 1))));
+      }
     }
     // Cap the decoded-frame cache by MEMORY, not a fixed count: 128 frames of 1280×1024 RGBA is ~670MB,
     // which starves GC and makes the backend's decode churn stall the main thread. Budget ~200MB (still
