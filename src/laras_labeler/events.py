@@ -58,10 +58,32 @@ ACTIVE_GAP_CAP_S = 15.0
 # `focused` stays in the log, so a stricter analysis can still filter on it.
 IDLE_BREAK_S = 120.0
 
-# Event types that mean "the human produced a label by hand" vs "…by judging a model proposal".
-_MANUAL_TYPES = {"paint_commit", "label_trim", "label_delete"}
 _REVIEW_DECISIONS = ("accept", "reject", "merge", "split", "reclassify", "skip", "undo")
 _REVIEW_TYPES = {f"candidate_{k}" for k in _REVIEW_DECISIONS}
+
+# labelState in the browser: 1 = Happening, 2 = Not-happening, 3 = Unknown (see index.html modeVal).
+_POS, _NEG = 1, 2
+
+
+def _paint_state(ev: dict) -> int:
+    """Which of the three states a paint_commit laid down.
+
+    This matters for the headline and not just for the record: `manual_bouts` is the DENOMINATOR of
+    seconds-per-hand-labeled-bout, and the review arm's numerator counts only the decisions that
+    produced a positive bout (accept/merge/split/reclassify — never a reject). Counting a
+    Not-happening paint as a "bout" on the manual side would therefore divide the same labeling
+    seconds by a bigger number and make hand-labeling look cheaper than it is, biasing the one
+    comparison this module exists to make. Negatives still cost time and that time still lands in
+    `label_s`; they are simply not the product being priced. Same on the review side, where the
+    seconds spent rejecting are charged but rejects buy no bout.
+
+    `value` is what the client sends; `mode` is the same thing spelled out. A paint_commit carrying
+    neither is read as Happening — a log old enough to lack both predates the distinction, and
+    positives are the overwhelming majority of what gets painted."""
+    v = ev.get("value")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v)
+    return {"pos": 1, "neg": 2, "unknown": 3}.get(str(ev.get("mode")), 1)
 
 
 def _now() -> str:
@@ -212,10 +234,15 @@ def _blank_round(idx: int, bid, name, start) -> dict:
         "wall_s": 0.0, "active_s": 0.0, "label_s": 0.0, "review_s": 0.0, "wait_s": 0.0,
         "compute_s": 0.0, "train_s": 0.0, "predict_s": 0.0, "feature_s": 0.0,
         "manual_bouts": 0, "manual_frames": 0, "manual_video_s": 0.0,
+        "manual_neg_bouts": 0, "manual_neg_frames": 0, "manual_unknown_bouts": 0,
         "deletes": 0, "trims": 0, "undos": 0,
         "candidates_shown": 0, "candidate_frames": 0, "candidate_video_s": 0.0,
         "decisions": {k: 0 for k in _REVIEW_DECISIONS},
         "decision_s": [], "median_decision_s": None,
+        # how much fixing the model's proposals needed: bound edits made, decisions that ended up
+        # with edited bounds, and re-watches. A model whose bounds are always trimmed is not costing
+        # a decision, it is costing an edit — and that shows up here rather than in the dwell alone.
+        "candidate_trims": 0, "decisions_trimmed": 0, "replays": 0,
         "n_sessions": 0,
         # filled in from the Train that closes the round
         "version": None, "ap": None, "f1": None, "n_pos_bouts": None, "n_neg_bouts": None,
@@ -295,9 +322,20 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
         # --- what was produced ---
         if typ == "paint_commit":
             n = int(ev.get("n_frames") or max(0, int(ev.get("end") or 0) - int(ev.get("start") or 0)))
-            r["manual_bouts"] += 1
-            r["manual_frames"] += n
-            r["manual_video_s"] += n / _fps(ev)
+            state = _paint_state(ev)
+            if state == _POS:
+                r["manual_bouts"] += 1
+                r["manual_frames"] += n
+                r["manual_video_s"] += n / _fps(ev)
+            elif state == _NEG:
+                r["manual_neg_bouts"] += 1
+                r["manual_neg_frames"] += n
+            else:
+                r["manual_unknown_bouts"] += 1
+        elif typ == "candidate_trim":
+            r["candidate_trims"] += 1
+        elif typ == "candidate_replay":
+            r["replays"] += 1
         elif typ == "label_delete":
             r["deletes"] += 1
         elif typ == "label_trim":
@@ -313,6 +351,8 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
         elif typ in _REVIEW_TYPES:
             kind = typ.split("_", 1)[1]
             r["decisions"][kind] = r["decisions"].get(kind, 0) + 1
+            if ev.get("trimmed"):
+                r["decisions_trimmed"] += 1
             dwell = ev.get("dwell_ms")
             if not isinstance(dwell, (int, float)) and bid in show_ms:
                 dwell = t - show_ms[bid]      # client didn't send one — derive it from the log
@@ -374,6 +414,7 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
     manual_video_s = sum(r["manual_video_s"] for r in rounds)
     decisions = sum(sum(r["decisions"].values()) for r in rounds)
     accepted = sum(r["accepted"] for r in rounds)
+    trimmed = sum(r["decisions_trimmed"] for r in rounds)
     cand_video_s = sum(r["candidate_video_s"] for r in rounds)
     all_dec = [x for r in rounds for x in r["decision_s"]]
 
@@ -402,9 +443,15 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
             "wait_s": round(sum(r["wait_s"] for r in rounds), 1),
             "compute_s": round(sum(r["compute_s"] for r in rounds), 1),
             "feature_s": round(sum(r["feature_s"] for r in rounds), 1),
+            # Both arms are priced the same way: all the seconds the arm consumed, over the
+            # POSITIVE bouts it produced. Painting negatives and rejecting candidates are real work
+            # and are charged, but neither yields a bout, so neither lands in a denominator.
             "manual": {
                 "bouts": manual_bouts, "frames": manual_frames,
                 "video_s": round(manual_video_s, 1),
+                "neg_bouts": sum(r["manual_neg_bouts"] for r in rounds),
+                "neg_frames": sum(r["manual_neg_frames"] for r in rounds),
+                "unknown_bouts": sum(r["manual_unknown_bouts"] for r in rounds),
                 "s_per_bout": round(label_s / manual_bouts, 1) if manual_bouts else None,
                 "s_per_video_s": round(label_s / manual_video_s, 2) if manual_video_s else None,
             },
@@ -416,6 +463,10 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
                 "s_per_accepted_bout": round(review_s / accepted, 1) if accepted else None,
                 "s_per_video_s": round(review_s / cand_video_s, 2) if cand_video_s else None,
                 "median_decision_s": round(median(all_dec), 2) if all_dec else None,
+                # how often the model's bounds had to be fixed rather than taken as proposed
+                "trimmed": trimmed, "replays": sum(r["replays"] for r in rounds),
+                "candidate_trims": sum(r["candidate_trims"] for r in rounds),
+                "frac_trimmed": round(trimmed / decisions, 2) if decisions else None,
             },
             # the headline: how much cheaper (or not) a bout is through review than by hand
             "speedup_per_bout": (round((label_s / manual_bouts) / (review_s / accepted), 2)
@@ -428,8 +479,10 @@ ROUND_CSV_COLS = [
     "round", "behavior_id", "behavior", "start", "end", "wall_s", "active_s", "label_s", "review_s",
     "wait_s", "compute_s", "train_s", "predict_s", "feature_s",
     "manual_bouts", "manual_frames", "manual_video_s",
+    "manual_neg_bouts", "manual_neg_frames", "manual_unknown_bouts",
     "deletes", "trims", "undos", "candidates_shown", "candidate_frames", "candidate_video_s",
     "accept", "reject", "merge", "split", "reclassify", "skip", "undo", "accepted",
+    "candidate_trims", "decisions_trimmed", "replays",
     "median_decision_s", "s_per_manual_bout", "s_per_decision",
     "cum_active_min", "cum_manual_bouts", "cum_accepted_bouts",
     "version", "ap", "f1", "n_pos_bouts", "n_neg_bouts", "n_seed_bouts", "n_candidate_bouts", "trained_at",

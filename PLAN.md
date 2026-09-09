@@ -826,6 +826,18 @@ round and end at the division the log exists for — *seconds per bout painted b
 bout confirmed in review* — plus accuracy against **cumulative human minutes**, the x-axis
 `history.json` cannot provide.
 
+Both arms of that division are priced the same way: **every second the arm consumed, over the
+positive bouts it produced.** Painting *Not-happening* and rejecting a candidate are real work and
+are charged to `label_s` / `review_s`, but neither produces a bout, so neither enters a denominator —
+`manual_bouts` counts Happening paints only (negatives are reported beside it as `manual_neg_bouts`),
+exactly as the review arm's `accepted` counts only the calls that yield a bout. Mixing them would
+divide the same seconds by a bigger number on one side and quietly tilt the comparison.
+
+Alongside the clock, review carries **how much fixing the proposals needed** — `candidate_trims`
+(bound edits), `decisions_trimmed` / `frac_trimmed` (calls that ended with edited bounds) and
+`replays`. A model whose bounds always need trimming is not costing a decision, it is costing an
+edit, and that cost is invisible in dwell time alone.
+
 ---
 
 ## 10. Project layout, packaging, launch (D7)

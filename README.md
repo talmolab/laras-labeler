@@ -112,9 +112,33 @@ long to a usable model", where the Stats panel's learning curve plots accuracy p
 **⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
 the full rollup as JSON.
 
+Both arms are priced the same way: **all the seconds the arm consumed, over the positive bouts it
+produced.** Painting *Not-happening* and rejecting a candidate are real work and are charged, but
+neither produces a bout, so neither goes in a denominator (negatives are reported beside the count,
+never folded into it). Review also reports how much *fixing* the proposals needed — the share of
+decisions that ended with the model's bounds edited, plus replays — because a model whose bounds
+always need trimming costs an edit, not just a decision, and that is invisible in dwell time alone.
+
 Caveat worth repeating in any writeup: review only ever visits bouts the model already proposed, so
 part of why it is fast is that the *search* was done for you. That is the point of the workflow, but
 it makes "seconds per bout" a cost ratio, not an accuracy claim — read it next to the accuracy curve.
+
+### Verifying it on a machine with no data
+
+The loop can be driven end to end without any real recordings — useful because the numbers above are
+only as good as the events behind them:
+
+```bash
+uv run python scripts/make_synthetic_clip.py /tmp/synth     # video + .slp + ground truth
+uv pip install playwright                                   # a browser to drive
+uv run python scripts/verify_event_log.py /tmp/synth
+```
+
+`verify_event_log.py` starts a server, drives the real UI in Chromium (paint bouts by hand, Train,
+review the model's candidates, Train again — with a break in the middle), keeps its own independent
+ledger of every action and when, and then checks the rollup against it: counts, per-phase
+attribution, round boundaries, dwell times, the break not being billed as work, and each surface
+(`/timing`, `/timing.csv`, `/events.jsonl`, the **⤓ rounds** button, `annotation_timing.py`).
 
 ## History
 

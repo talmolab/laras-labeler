@@ -128,8 +128,12 @@ def main(argv=None) -> int:
           f"reviewing {_fmt(t['review_s'])} | waiting on jobs {_fmt(t['wait_s'])})")
     print(f"machine time {_fmt(t['compute_s'])} waited-for + {_fmt(t['feature_s'])} background")
     print()
+    # Both lines price the arm the same way: all its seconds over the POSITIVE bouts it produced.
+    # Painting Not-happening and rejecting a candidate cost time (charged) but buy no bout (not in
+    # the denominator) — see events.py:_paint_state.
     print("BY HAND    "
           f"{m['bouts']} bouts / {m['frames']} frames ({m['video_s']:.0f}s of video) in {_fmt(t['label_s'])}"
+          + (f" (+{m['neg_bouts']} negative)" if m["neg_bouts"] else "")
           + (f"  ->  {m['s_per_bout']}s per bout, {m['s_per_video_s']}s of work per second of video"
              if m["s_per_bout"] else "  ->  n/a"))
     print("IN REVIEW  "
@@ -137,10 +141,22 @@ def main(argv=None) -> int:
           f"video in {_fmt(t['review_s'])}"
           + (f"  ->  {rv['s_per_decision']}s per decision, {rv['s_per_accepted_bout']}s per accepted bout"
              if rv["s_per_decision"] else "  ->  n/a"))
+    if rv["frac_trimmed"] is not None:
+        print(f"           the model's bounds were edited on {rv['frac_trimmed']:.0%} of those "
+              f"decisions ({rv['candidate_trims']} edits, {rv['replays']} replays)")
     if t["speedup_per_bout"]:
+        # speedup_per_bout = (cost by hand) / (cost in review), so >1 means review was cheaper and
+        # <1 means it was NOT. Report the direction the number actually has: a line that says "less"
+        # either way turns a measurement that came out against the workflow into a claim for it.
+        x = t["speedup_per_bout"]
         print()
-        print(f"==> a bout cost {t['speedup_per_bout']}x less human time through review "
-              f"({m['s_per_bout']}s by hand vs {rv['s_per_accepted_bout']}s accepted)")
+        if x >= 1:
+            print(f"==> a bout cost {x}x LESS human time through review "
+                  f"({m['s_per_bout']}s by hand vs {rv['s_per_accepted_bout']}s accepted)")
+        else:
+            print(f"==> a bout cost {round(1 / x, 2)}x MORE human time through review "
+                  f"({m['s_per_bout']}s by hand vs {rv['s_per_accepted_bout']}s accepted) — "
+                  f"review did not pay off here")
     elif not (m["bouts"] and rv["accepted"]):
         print()
         print("==> not comparable yet: the log needs BOTH hand-painted bouts and accepted candidates "
@@ -149,9 +165,10 @@ def main(argv=None) -> int:
     if s["curve"]:
         print()
         print("accuracy per minute of human time:")
+        num = lambda v: "-" if v is None else format(v, ".3f")   # noqa: E731
         for c in s["curve"]:
             print(f"  round {c['round']:>2}  {c['cum_active_min']:>6.1f} min  "
-                  f"AP {c['ap'] if c['ap'] is not None else '-'}  f1 {c['f1'] if c['f1'] is not None else '-'}  "
+                  f"AP {num(c['ap'])}  f1 {num(c['f1'])}  "
                   f"({c['n_pos_bouts']} pos bouts: {c['n_seed_bouts']} seed + {c['n_candidate_bouts']} from review)")
     for ms in s["milestones"]:
         print(f"  reached AP {ms['ap']} after {ms['cum_active_min']} min of human time (round {ms['round']})")
