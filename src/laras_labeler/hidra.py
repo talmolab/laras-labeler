@@ -465,17 +465,59 @@ def map_nodes(node_names: list[str]) -> tuple[dict[str, str], list[str]]:
     return keep, dropped
 
 
+# Where the checkout is. Normally HIDRA_HOME / HIDRA_PYTHON, but the GUI can set these and persist
+# them (config.py -> <projects_root>/settings.json), because requiring a terminal to find two paths
+# is the difference between "a new user can use HiDRA" and "a new user never learns it is there".
+# An explicit setting wins over the environment: the env var came from whatever shell happened to
+# launch the server, and silently overriding what someone just typed into the GUI is worse than
+# ignoring a stale variable. `source` says which one won, so it is never a mystery.
+_OVERRIDE: dict[str, str] = {}
+
+DEFAULT_HOME = Path.home() / "code/hidra-review/HiDRA"
+
+
+def configure(home: str | None = None, python: str | None = None) -> None:
+    """Set (or clear, with an empty value) the paths the integration uses."""
+    import os
+    for key, val in (("home", home), ("python", python)):
+        val = (val or "").strip()
+        if val:
+            _OVERRIDE[key] = str(Path(val).expanduser())
+        else:
+            _OVERRIDE.pop(key, None)
+    os.environ.pop("_HIDRA_CACHE", None)   # nothing cached today; kept as the one place to clear
+
+
+def configured() -> dict:
+    """The two paths in effect, and where each came from: 'gui', 'env' or 'default'."""
+    import os
+    if "home" in _OVERRIDE:
+        home, home_src = Path(_OVERRIDE["home"]), "gui"
+    elif os.environ.get("HIDRA_HOME"):
+        home, home_src = Path(os.environ["HIDRA_HOME"]).expanduser(), "env"
+    else:
+        home, home_src = DEFAULT_HOME, "default"
+    if "python" in _OVERRIDE:
+        py, py_src = Path(_OVERRIDE["python"]), "gui"
+    elif os.environ.get("HIDRA_PYTHON"):
+        py, py_src = Path(os.environ["HIDRA_PYTHON"]).expanduser(), "env"
+    else:
+        py, py_src = home.parent / ".venv/bin/python", "default"
+    return {"home": home, "python": py, "home_source": home_src, "python_source": py_src}
+
+
 def runtime() -> dict:
     """Can inference actually run here, and if not, exactly what is missing.
 
     Reported to the GUI so a bound head whose runtime is absent says so in the picker rather than
-    failing only once the user presses Predict."""
-    import os
+    failing only once the user presses Predict -- and so the GUI can offer to fix it, which is why
+    `why` is a sentence a user can act on rather than a boolean."""
     import subprocess
 
-    home = Path(os.environ.get("HIDRA_HOME", str(Path.home() / "code/hidra-review/HiDRA")))
-    py = Path(os.environ.get("HIDRA_PYTHON", str(home.parent / ".venv/bin/python")))
-    info = {"home": str(home), "python": str(py), "can_infer": False, "backend": None, "why": None}
+    cfg = configured()
+    home, py = cfg["home"], cfg["python"]
+    info = {"home": str(home), "python": str(py), "can_infer": False, "backend": None, "why": None,
+            "home_source": cfg["home_source"], "python_source": cfg["python_source"]}
 
     if not (home / "predict.py").exists():
         info["why"] = f"no predict.py under {home} — set HIDRA_HOME to your HiDRA checkout"
@@ -533,7 +575,7 @@ def catalog(thresholds_csv: Path | None = None) -> list[dict]:
     not (see the module docstring on calibration)."""
     import os
     p = thresholds_csv or Path(os.environ.get(
-        "HIDRA_THRESHOLDS", str(Path(runtime()["home"]) / "derived_thresholds_train.csv")))
+        "HIDRA_THRESHOLDS", str(configured()["home"] / "derived_thresholds_train.csv")))
     if not p.exists():
         return []
     runnable = runnable_labs()

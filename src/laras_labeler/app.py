@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import hidra, poseio
+from . import config, hidra, poseio
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series
@@ -136,6 +136,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     predictor = Predictor(store, features, trainer, labels)
     importer = Importer(store, labels, vm)
     elog = EventLog(store)
+
+    # Persisted HiDRA paths (set from the GUI) take effect before the first probe, so a restart
+    # comes back configured instead of looking unconfigured until someone re-enters them.
+    _saved = config.load_app_settings(settings.projects_root)
+    if _saved.get("hidra_home") or _saved.get("hidra_python"):
+        hidra.configure(_saved.get("hidra_home"), _saved.get("hidra_python"))
     app.state.settings = settings
     app.state.store = store
     app.state.vm = vm
@@ -1069,7 +1075,36 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     # --- HiDRA support endpoints ---------------------------------------------------------------
     @app.get("/api/hidra/status")
     def hidra_status():
-        """Feature detection for the GUI. Present always; `can_infer` says whether Predict will work."""
+        """Feature detection for the GUI. Present always; `can_infer` says whether Predict will work.
+
+        `heads` is 0 until a checkout is found, which is what used to make the GUI hide the whole
+        feature with no explanation. It now shows the setup row instead, driven by `why` and by
+        `home_source`/`python_source` (gui / env / default), so a new user can see that HiDRA exists,
+        what is missing, and where the current paths came from."""
+        rt = hidra.runtime()
+        return {**rt, "heads": len(hidra.catalog())}
+
+    @app.put("/api/hidra/config")
+    def set_hidra_config(body: dict = Body(...)):
+        """Point the integration at a checkout, from the GUI, and re-probe.
+
+        Persisted to <projects_root>/settings.json so it survives a restart. Returns the same shape
+        as /status, already re-probed, so the GUI can show the outcome of the change immediately
+        rather than asking the user to reload and guess.
+
+        Note what this does NOT do: it never installs anything and never runs the checkout. The
+        probe executes the interpreter once as `<python> -c "import jax"` -- the same thing
+        HIDRA_PYTHON already caused before this endpoint existed. The server binds 127.0.0.1 for a
+        single local user, the same trust level under which it already accepts server-side video
+        paths."""
+        home, py = body.get("home"), body.get("python")
+        for label, val in (("home", home), ("python", py)):
+            if val is not None and not isinstance(val, str):
+                raise HTTPException(400, f"{label} must be a string path")
+        config.save_app_settings(settings.projects_root,
+                                 {"hidra_home": (home or "").strip(),
+                                  "hidra_python": (py or "").strip()})
+        hidra.configure(home, py)
         rt = hidra.runtime()
         return {**rt, "heads": len(hidra.catalog())}
 
