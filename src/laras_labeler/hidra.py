@@ -565,18 +565,36 @@ def runtime() -> dict:
         info["why"] = f"no predict.py under {home} — set HIDRA_HOME to your HiDRA checkout"
         return info
     if not py.exists():
-        info["why"] = f"no interpreter at {py} — set HIDRA_PYTHON to one with JAX installed"
+        info["why"] = f"no interpreter at {py} — set HIDRA_PYTHON to one with HiDRA's runtime installed"
         return info
+    # Probe for a usable backend. HiDRA's PyTorch rewrite is the default now (no JAX, and it uses the
+    # GPU on Windows, which the JAX build could not); the original was JAX-only. Accept either,
+    # preferring torch, and report which — plus, for torch, whether CUDA is live — so the GUI can say
+    # so and so a bound head does not look broken on a machine whose backend simply changed.
+    probe = (
+        "import sys\n"
+        "try:\n"
+        "    import torch\n"
+        "    print('torch:' + ('cuda' if torch.cuda.is_available() else 'cpu')); sys.exit(0)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "try:\n"
+        "    import jax\n"
+        "    print('jax:' + jax.default_backend())\n"
+        "except Exception as e:\n"
+        "    sys.stderr.write(repr(e)); sys.exit(3)\n"
+    )
     try:
-        r = subprocess.run([str(py), "-c", "import jax; print(jax.default_backend())"],
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run([str(py), "-c", probe], capture_output=True, text=True, timeout=180)
     except (subprocess.SubprocessError, OSError) as e:
         info["why"] = f"could not probe {py}: {e}"
         return info
     if r.returncode != 0:
-        info["why"] = f"JAX is not importable in {py} — install it there ({r.stderr.strip().splitlines()[-1:] or ['']}[0])"
+        last = (r.stderr.strip().splitlines()[-1:] or [""])[0]
+        info["why"] = (f"neither PyTorch nor JAX is importable in {py} — install HiDRA's runtime there "
+                       f"(e.g. `uv pip install 'hidra[torch]'`) ({last})")
         return info
-    info["backend"] = r.stdout.strip()
+    info["backend"] = r.stdout.strip()          # e.g. 'torch:cuda', 'torch:cpu', 'jax:cpu'
     info["can_infer"] = True
     return info
 
@@ -591,20 +609,23 @@ def runnable_labs(home: Path | None = None) -> set[str]:
     labeler's own interpreter, which has no JAX."""
     import ast
     home = home or Path(runtime()["home"])
-    src = home / "predict.py"
-    if not src.exists():
-        return set()
-    try:
-        tree = ast.parse(src.read_text())
-    except SyntaxError:
-        return set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "ALL_LABS" for t in node.targets):
-            try:
-                return set(ast.literal_eval(node.value))
-            except (ValueError, TypeError):
-                return set()
+    # ALL_LABS moved from predict.py into the package (src/hidra/cli.py) in the PyTorch rewrite; the
+    # original checkout still has it in predict.py. Try both so this reads the real list either way.
+    for rel in ("src/hidra/cli.py", "predict.py"):
+        src = home / rel
+        if not src.exists():
+            continue
+        try:
+            tree = ast.parse(src.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "ALL_LABS" for t in node.targets):
+                try:
+                    return set(ast.literal_eval(node.value))
+                except (ValueError, TypeError):
+                    pass
     return set()
 
 
@@ -616,9 +637,14 @@ def catalog(thresholds_csv: Path | None = None) -> list[dict]:
     what a user would otherwise assume applies to their videos, and out of domain it usually does
     not (see the module docstring on calibration)."""
     import os
-    p = thresholds_csv or Path(os.environ.get(
-        "HIDRA_THRESHOLDS", str(configured()["home"] / "derived_thresholds_train.csv")))
-    if not p.exists():
+    home = configured()["home"]
+    # The shipped table moved to src/hidra/assets/ when HiDRA became an installable package; the
+    # original checkout kept it at the root. HIDRA_THRESHOLDS still overrides both.
+    cand = [os.environ.get("HIDRA_THRESHOLDS"),
+            home / "src" / "hidra" / "assets" / "derived_thresholds_train.csv",
+            home / "derived_thresholds_train.csv"]
+    p = thresholds_csv or next((Path(c) for c in cand if c and Path(c).exists()), None)
+    if p is None or not Path(p).exists():
         return []
     runnable = runnable_labs()
     # The shipped table keys each head as `Lab__action` in an unnamed first column.
