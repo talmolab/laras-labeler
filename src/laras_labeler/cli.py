@@ -90,7 +90,7 @@ def hidra_main(argv: list[str] | None = None) -> None:
     n = len(hidra.catalog())
     print(f"hidra-in-the-loop -> HiDRA checkout: {rt['home']}  ({rt['home_source']})")
     if n and rt["can_infer"]:
-        print(f"  {n} classifiers available · JAX backend: {rt['backend']}")
+        print(f"  {n} classifiers available · backend: {rt['backend']}")
     elif n:
         print(f"  {n} classifiers listed, but inference will not run: {rt['why']}")
     else:
