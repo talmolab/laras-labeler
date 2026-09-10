@@ -345,6 +345,15 @@
     <div class="sep"></div>
     <!-- ④ Review -->
     <span class="stg">④ Review</span>
+    <!-- Detection threshold. Ann Kennedy's JAABA workflow: bias toward false positives with a low
+         threshold, then remove by hand. Drives the SAME hysteresis the timeline's clickable bouts use
+         (boutsFromProba), per behavior, live — so lowering it surfaces more detections to review and
+         raising it hides the marginal ones. Works for a HiDRA lane and the project's own model alike. -->
+    <label class="status" for="predThresh" title="Only prediction frames at or above this probability start a detected bout. Lower = more bouts (more false positives to remove by hand); higher = only the confident ones. Per behavior; does not retrain, just re-reads the same prediction.">detect ≥</label>
+    <input type="range" id="predThresh" min="0.05" max="0.95" step="0.05" value="0.6" style="width:104px; vertical-align:middle"
+           title="Detection threshold for the clickable predicted bouts. Lower to catch more (bias to false positives, then delete the wrong ones); raise to keep only confident calls. Per behavior.">
+    <span class="status" id="predThreshVal" style="min-width:2.4em; display:inline-block; font-variant-numeric:tabular-nums">0.60</span>
+    <span class="status" id="predThreshCount" style="color:#7b8494"></span>
     <select id="candMode" title="What to review — newly-detected bouts, labeled bouts the model thinks you got wrong, or bouts the filters removed">
       <option value="new">New detections</option>
       <option value="mislabel">Correct mislabels</option>
@@ -592,6 +601,9 @@ function fitCanvas(c, W, H, dpr) {   // size to W×H CSS px @dpr WITHOUT realloc
 }
 let featureSeries = { names: [], data: {} }, activeTrack = 0;
 let predictedBouts = new Map(), reviewCurrent = null;   // bid -> [{s,e,p}], and the bout under review
+const DEFAULT_THRESH = 0.6;                             // matches boutsFromProba's historical hi=0.6
+let predThresh = new Map();                             // bid -> detection threshold (Ann's tunable cut)
+const behThresh = bid => (predThresh.has(bid) ? predThresh.get(bid) : DEFAULT_THRESH);
 const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metricsEl = el("metrics");
 
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
@@ -1459,7 +1471,7 @@ function renderTimeline() {
         const p = proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // map into the VISIBLE window (zoom-aware), matching the labels/playhead
         const m = Math.abs(2 * p - 1);
         if (m < 0.04) continue;
-        const col = p >= 0.5 ? cH : cN;
+        const col = p >= behThresh(b.id) ? cH : cN;
         tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${Math.pow(m, 0.6).toFixed(3)})`;
         tctx.fillRect(x, hy, 1, hh);
       }
@@ -1848,6 +1860,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
 }
 
@@ -2684,11 +2697,12 @@ function unlabeledSubruns(bouts, arr, minBout = 3) {
 function recomputeBouts(bid) {   // refresh the clickable predicted bouts from cached proba minus current labels
   const p = predsByBeh.get(bid);
   if (!p) { predictedBouts.delete(bid); return; }
-  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p), labelState.get(bid)));
+  const hi = behThresh(bid), lo = Math.max(0.05, hi - 0.2);
+  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p, hi, lo), labelState.get(bid)));
 }
 async function loadPredictions(bid) {
   const r = await api(`/predict/${vid}?behavior=${bid}&track=${activeTrack}`);
-  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); }
+  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout(); }
   else { predsByBeh.delete(bid); predictedBouts.delete(bid); }
 }
 async function loadAllPredictions() { for (const b of behaviors) await loadPredictions(b.id); }
@@ -2708,6 +2722,45 @@ function boutsFromProba(proba, hi = 0.6, lo = 0.4, smooth = 5, minBout = 3) {
   }
   return bouts;
 }
+// ---- detection threshold (Ann Kennedy's tunable cut) ------------------------------------------
+// Governs the clickable predicted bouts on the timeline for the ACTIVE behavior. Pure client-side:
+// it re-reads cached per-frame probabilities through the same hysteresis, so it is instant and
+// needs no server round-trip or retrain.
+function fracAbove(bid) {
+  const p = predsByBeh.get(bid);
+  if (!p || !p.length) return null;
+  const thr = behThresh(bid);
+  let n = 0, tot = 0;
+  for (let i = 0; i < p.length; i++) { if (!Number.isNaN(p[i])) { tot++; if (p[i] >= thr) n++; } }
+  return tot ? n / tot : null;
+}
+function renderThreshReadout() {
+  const val = el("predThreshVal"), cnt = el("predThreshCount"), sl = el("predThresh");
+  if (!val || !sl) return;
+  const bid = activeBid;
+  const thr = bid == null ? DEFAULT_THRESH : behThresh(bid);
+  sl.value = thr; val.textContent = (+thr).toFixed(2);
+  if (bid == null || !predsByBeh.has(bid)) { cnt.textContent = ""; return; }
+  const nB = (predictedBouts.get(bid) || []).length;
+  const fr = fracAbove(bid);
+  cnt.textContent = `${nB} bout${nB === 1 ? "" : "s"}` + (fr == null ? "" : ` · ${(fr * 100).toFixed(1)}% of frames`);
+}
+// Live while dragging (recompute + redraw); log once on release so the event log isn't spammed.
+function onThreshInput() {
+  if (activeBid == null) { renderThreshReadout(); return; }
+  predThresh.set(activeBid, parseFloat(el("predThresh").value));
+  recomputeBouts(activeBid);
+  renderTimeline();
+  renderThreshReadout();
+}
+function onThreshCommit() {
+  if (activeBid == null) return;
+  const thr = behThresh(activeBid);
+  logEvent("pred_threshold_set", { behavior_id: activeBid, name: bname(activeBid),
+                                   threshold: thr, n_bouts: (predictedBouts.get(activeBid) || []).length });
+  busy(`detection threshold ${(+thr).toFixed(2)} — ${(predictedBouts.get(activeBid) || []).length} bouts on this clip/track`);
+}
+
 async function loadCandidates(bid) {
   const n = Math.max(1, Math.min(50, parseInt(el("candN").value, 10) || 10));
   const r = await api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${n}&mode=${candidateMode}&order=${candidateOrder}`);
@@ -3384,6 +3437,8 @@ el("toolPaint").onclick = () => setTool("paint");
 el("toolSelect").onclick = () => setTool("select");
 el("delSeg").onclick = deleteSelectedSeg;
 el("train").onclick = train; el("predict").onclick = predictVideo; el("importBtn").onclick = importFile; el("review").onclick = startReview;
+el("predThresh").oninput = onThreshInput;
+el("predThresh").onchange = onThreshCommit;
 el("candMode").onchange = async e => { candidateMode = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candOrder").onchange = async e => { candidateOrder = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candN").value = localStorage.getItem("ll_candN") || "10";

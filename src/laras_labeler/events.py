@@ -236,7 +236,7 @@ _PHASE_OF.update(dict.fromkeys(
 _PHASE_OF.update(dict.fromkeys(
     ("session_start", "project_open", "video_open", "behavior_select", "track_select",
      "review_end", "review_close", "candidates_load", "hidra_configure",
-     "project_create", "clip_fps_set", "media_relink",
+     "project_create", "clip_fps_set", "media_relink", "pred_threshold_set",
      "train_result", "predict_result", "train_error", "predict_error"), "other"))
 
 # Deliberately NOT in the map, so they inherit: `heartbeat`, `play_start`/`play_stop`,
