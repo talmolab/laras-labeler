@@ -740,6 +740,20 @@ def export_tracking(poses: np.ndarray, node_names: list[str], fps: float,
             "bodyparts": names, "dropped_nodes": dropped}
 
 
+def _subproc_env(extra: dict | None = None) -> dict:
+    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR so HiDRA's work_root()
+    returns before its POSIX-only os.getuid() call (which raises AttributeError on Windows and
+    aborts inference before it writes anything). A user-set HIDRA_WORKDIR still wins. On Linux this
+    changes nothing, leaving HiDRA free to prefer /dev/shm."""
+    import os, tempfile
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if os.name == "nt":
+        env.setdefault("HIDRA_WORKDIR", os.path.join(tempfile.gettempdir(), "hidra-work"))
+    if extra:
+        env.update(extra)
+    return env
+
+
 def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: float,
           progress=lambda p, m: None) -> Path:
     """Run one (lab, action) head over the exported folder. Returns the frames parquet.
@@ -773,7 +787,7 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
 
     proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                            env=_subproc_env())
     tail: list[str] = []
     for line in proc.stdout or []:
         line = line.rstrip()
@@ -917,8 +931,7 @@ def finetune(script: Path, rt: dict, head: dict, work: Path, counts: dict,
 
     proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1",
-                                 "PERLAB_WORKDIR": str(work / "_perlab")})
+                            env=_subproc_env({"PERLAB_WORKDIR": str(work / "_perlab")}))
     tail: list[str] = []
     for line in proc.stdout or []:
         line = line.rstrip()
