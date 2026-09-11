@@ -561,28 +561,36 @@ def runtime() -> dict:
     info = {"home": str(home), "python": str(py), "can_infer": False, "backend": None, "why": None,
             "home_source": cfg["home_source"], "python_source": cfg["python_source"]}
 
-    if not (home / "predict.py").exists():
-        info["why"] = f"no predict.py under {home} — set HIDRA_HOME to your HiDRA checkout"
-        return info
     if not py.exists():
         info["why"] = f"no interpreter at {py} — set HIDRA_PYTHON to one with HiDRA's runtime installed"
         return info
-    # Probe for a usable backend. HiDRA's PyTorch rewrite is the default now (no JAX, and it uses the
-    # GPU on Windows, which the JAX build could not); the original was JAX-only. Accept either,
-    # preferring torch, and report which — plus, for torch, whether CUDA is live — so the GUI can say
-    # so and so a bound head does not look broken on a machine whose backend simply changed.
+    # Probe for a usable backend AND whether the refactored `hidra` package is importable. The PyTorch
+    # rewrite is a pip-installable package, so a source checkout is no longer required: when `hidra`
+    # imports we drive it through its higher-level entrypoints (`python -m hidra.cli` / `hidra.finetune`,
+    # what the console scripts call), and only fall back to a checkout's root shim scripts otherwise.
+    # Backend: prefer torch (GPU on Windows, which the JAX build could not); accept jax; report which —
+    # and for torch whether CUDA is live — so a bound head doesn't look broken when the backend changed.
     probe = (
         "import sys\n"
+        "hp = '0'\n"
         "try:\n"
-        "    import torch\n"
-        "    print('torch:' + ('cuda' if torch.cuda.is_available() else 'cpu')); sys.exit(0)\n"
+        "    import hidra  # noqa: F401\n"
+        "    hp = '1'\n"
         "except Exception:\n"
         "    pass\n"
+        "be = None\n"
         "try:\n"
-        "    import jax\n"
-        "    print('jax:' + jax.default_backend())\n"
-        "except Exception as e:\n"
-        "    sys.stderr.write(repr(e)); sys.exit(3)\n"
+        "    import torch\n"
+        "    be = 'torch:' + ('cuda' if torch.cuda.is_available() else 'cpu')\n"
+        "except Exception:\n"
+        "    pass\n"
+        "if be is None:\n"
+        "    try:\n"
+        "        import jax\n"
+        "        be = 'jax:' + jax.default_backend()\n"
+        "    except Exception as e:\n"
+        "        sys.stderr.write(repr(e)); sys.exit(3)\n"
+        "print(be + '|hidra=' + hp)\n"
     )
     try:
         r = subprocess.run([str(py), "-c", probe], capture_output=True, text=True, timeout=180)
@@ -594,9 +602,28 @@ def runtime() -> dict:
         info["why"] = (f"neither PyTorch nor JAX is importable in {py} — install HiDRA's runtime there "
                        f"(e.g. `uv pip install 'hidra[torch]'`) ({last})")
         return info
-    info["backend"] = r.stdout.strip()          # e.g. 'torch:cuda', 'torch:cpu', 'jax:cpu'
+    backend, _, hp = r.stdout.strip().partition("|hidra=")
+    info["backend"] = backend                    # e.g. 'torch:cuda', 'torch:cpu', 'jax:cpu'
+    info["has_package"] = hp.strip() == "1"      # can we use `python -m hidra.*` entrypoints?
+    # We need a way to invoke HiDRA: the installed package, or a checkout's root shim scripts.
+    if not info["has_package"] and not (home / "predict.py").exists():
+        info["why"] = (f"the `hidra` package is not importable in {py}, and there is no predict.py "
+                       f"under {home} — install it (`uv pip install 'hidra[torch]'`) or point "
+                       f"HIDRA_HOME at a HiDRA checkout")
+        return info
     info["can_infer"] = True
     return info
+
+
+def _hidra_cmd(rt: dict, module: str, shim: str) -> list[str]:
+    """Command prefix for a HiDRA subprocess: the refactored package's higher-level entrypoint
+    (`python -m hidra.<module>`, what the `hidra-*` console scripts call) when the package is
+    importable — layout-independent, and the interface HiDRA now intends callers to use — else the
+    checkout's root shim script, for an un-installed source checkout."""
+    py = str(rt["python"])
+    if rt.get("has_package"):
+        return [py, "-m", module]
+    return [py, str(Path(rt["home"]) / shim)]
 
 
 def runnable_labs(home: Path | None = None) -> set[str]:
@@ -786,7 +813,7 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
         w.writerow(["1", lab, action, "*", "*"])                  # every pair; we collapse after
 
     out.mkdir(parents=True, exist_ok=True)
-    cmd = [rt["python"], str(Path(rt["home"]) / "predict.py"), str(work),
+    cmd = _hidra_cmd(rt, "hidra.cli", "predict.py") + [str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
            "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
     if weights:
@@ -794,7 +821,8 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     progress(5, f"{action} ({lab}) on {rt['backend']}"
                 + (" [fine-tuned]" if weights else ""))
 
-    proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE,
+    _home = Path(rt["home"])
+    proc = subprocess.Popen(cmd, cwd=str(_home) if _home.exists() else None, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
                             env=_subproc_env())
     tail: list[str] = []
@@ -978,20 +1006,22 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     import subprocess
 
     home = Path(rt["home"])
-    script = home / "finetune.py"
-    if not script.exists():
+    if not rt.get("has_package") and not (home / "finetune.py").exists():
         raise RuntimeError(
-            f"no finetune.py under {home} — this HiDRA checkout predates the PyTorch fine-tuner. "
-            f"Update it to current main (the rewrite that ships finetune.py prepare/train).")
+            f"the `hidra` package is not importable and there is no finetune.py under {home} — this "
+            f"HiDRA is either not installed or predates the PyTorch fine-tuner. Update it to current "
+            f"main / `uv pip install 'hidra[torch]'`.")
+    entry = _hidra_cmd(rt, "hidra.finetune", "finetune.py")   # `python -m hidra.finetune`, or the shim
 
     data_root = Path(data_root)
     staged = data_root / "staged"
     models = data_root / "models"
     workdir = data_root / "_work"          # MUST be set on Windows: train defaults it to /dev/shm
+    cwd = str(home) if home.exists() else None
 
     def _stream(cmd, label, lo, hi):
         progress(lo, f"{label} …")
-        proc = subprocess.Popen(cmd, cwd=home, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1, env=_subproc_env())
         seen: list[str] = []
         for line in proc.stdout or []:
@@ -1005,13 +1035,13 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
         return seen
 
     # 1. prepare -----------------------------------------------------------------------------------
-    prepare = [rt["python"], str(script), "prepare",
+    prepare = entry + ["prepare",
                "--tracking", str(tracking_dir), "--annotations", str(annotations_csv),
                "--lab", head["lab"], "--out", str(staged), "--drop-unsupported"]
     log = _stream(prepare, "prepare", 2, 20)
 
     # 2. train -------------------------------------------------------------------------------------
-    train = [rt["python"], str(script), "train",
+    train = entry + ["train",
              "--data", str(staged), "--lab", head["lab"], "--actions", head["action"],
              "--out", str(models), "--tag", tag, "--mode", mode,
              "--backend", "torch", "--workdir", str(workdir)]

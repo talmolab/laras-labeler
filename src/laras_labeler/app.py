@@ -864,10 +864,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         rt = hidra.runtime()
         if not rt["can_infer"]:
             raise RuntimeError(rt["why"])
-        if not (Path(rt["home"]) / "finetune.py").exists():
+        if not rt.get("has_package") and not (Path(rt["home"]) / "finetune.py").exists():
             raise RuntimeError(
-                f"no finetune.py under {rt['home']} — this HiDRA checkout predates the PyTorch "
-                "fine-tuner. Update it to current main.")
+                f"the hidra package is not importable and there is no finetune.py under {rt['home']} "
+                "— install HiDRA (uv pip install 'hidra[torch]') or update the checkout to current main.")
 
         h = beh["hidra"]
         proj = store.get(pid)
