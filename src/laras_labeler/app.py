@@ -824,7 +824,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             lo = 5 + int(90 * i / max(len(behaviors), 1))
             span = int(90 / max(len(behaviors), 1))
             out = proj.path / "hidra" / vid / f"{h['lab']}__{h['action']}"
-            fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc,
+            fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc, h.get("weights"),
                              lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m))
             lanes = hidra.to_lanes(fp, h["lab"], h["action"], h.get("collapse", "scene"),
                                    n_frames, n_animals, h.get("rate", 0.15))
@@ -834,35 +834,113 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             done.append({"behavior_id": b["id"], "name": b.get("name"),
                          "lab": h["lab"], "action": h["action"],
                          "collapse": h.get("collapse", "scene"), "rate": h.get("rate", 0.15),
+                         "finetuned": bool(h.get("weights")),
                          "above_cut": int((lanes >= 0.6).sum()), "frames": n_frames})
         progress(100, "done")
         return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress) -> dict:
-        """Fine-tune a bound head on this project's reviewed labels (HiDRA's LABTAIL adaptation).
+        """Fine-tune a bound head on this project's reviewed labels, via HiDRA's PyTorch fine-tuner
+        (finetune.py prepare/train — the old single-shot LABTAIL CLI is gone).
 
-        LABTAIL trains the lab embedding and the tail blocks only, leaving the SSL trunk frozen —
-        which is why it is viable on a few hundred reviewed bouts instead of a full corpus."""
+        The new fine-tuner stages the tracking parquets AND a positives-only bout CSV, then warm-
+        starts the adopted head and adapts it (mode 'tail' by default — the lab tail + embedding +
+        head, the LABTAIL analogue). Every non-bout frame of a staged video is a NEGATIVE, so only
+        videos with reviewed positives for this behavior are staged; the caller must have reviewed
+        them exhaustively (see hidra.export_bouts). The resulting per-config checkpoints are recorded
+        on the behavior as `weights`, so the next Predict loads the adapted head automatically."""
         rt = hidra.runtime()
         if not rt["can_infer"]:
             raise RuntimeError(rt["why"])
-        script = Path(rt["home"]) / "train_perlab_heads.py"
-        if not script.exists():
-            raise RuntimeError(f"no train_perlab_heads.py under {rt['home']}")
+        if not (Path(rt["home"]) / "finetune.py").exists():
+            raise RuntimeError(
+                f"no finetune.py under {rt['home']} — this HiDRA checkout predates the PyTorch "
+                "fine-tuner. Update it to current main.")
 
         h = beh["hidra"]
         proj = store.get(pid)
-        work = proj.path / "hidra" / "_labtail" / f"{h['lab']}__{h['action']}"
-        work.mkdir(parents=True, exist_ok=True)
-        progress(5, f"exporting labels for {h['action']}")
-        n = hidra.export_labels(store, labels, pid, bid, h, work)
-        if n["bouts"] == 0:
+        data_root = proj.path / "hidra" / "_finetune" / f"{h['lab']}__{h['action']}"
+        tracking = data_root / "tracking"
+        tracking.mkdir(parents=True, exist_ok=True)
+
+        # Stage the tracking parquet for every video that has a reviewed POSITIVE for this behavior.
+        # Reading the poses here also gives n_animals per video, which export_bouts needs to
+        # reconstruct the partner of a directed head (the per-lane labels do not record it).
+        progress(3, f"staging tracking for {h['action']}")
+        n_by: dict[str, int] = {}
+        meta_rows: list[tuple] = []
+        for v in proj.videos:
+            vid = v["video_id"]
+            try:
+                df = labels.rows_for_behavior(pid, vid, bid)
+            except (KeyError, FileNotFoundError):
+                df = None
+            if df is None or df.empty:
+                continue
+            has_pos = any(
+                int(run[2]) == 1 and int(run[1]) > int(run[0])
+                for t in {int(x) for x in df["track"].unique()}
+                for run in labels.get_runs(pid, vid, t, bid).get(bid, []))
+            if not has_pos:
+                continue
+            entry = proj.video(vid)
+            slp = entry.get("slp_path")
+            if not slp:
+                continue
+            header = poseio.read_header(slp)
+            poses = poseio.read_poses(slp, n_frames_hint=entry.get("n_frames"), header=header)
+            if poses is None:
+                import sleap_io as sio
+                poses = sio.load_slp(slp).numpy(return_confidence=True)
+            n_frames = int(entry.get("n_frames") or poses.shape[0])
+            if poses.shape[0] > n_frames:
+                poses = poses[:n_frames]
+            n_by[vid] = int(poses.shape[1])
+            fps = float(entry.get("fps") or 30.0)
+            ppc = float(entry.get("pix_per_cm") or proj.meta.get("pix_per_cm") or 0) or None
+            if ppc is None:
+                raise RuntimeError(
+                    f"no pixels-per-cm for {vid}. HiDRA's features are in centimetres, so a scale "
+                    "is required — set pix_per_cm on the video or the project.")
+            stem = Path(str(entry.get("video_path") or vid)).stem or vid
+            hidra.export_tracking(poses, header.node_names, fps, ppc, stem, tracking)
+            meta_rows.append((f"{stem}.parquet", fps, ppc))
+
+        if not meta_rows:
             raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
                                "head's proposals first, then train")
 
-        progress(15, f"fine-tuning on {n['bouts']} bouts ({rt['backend']})")
-        return hidra.finetune(script, rt, h, work, n,
-                              lambda p, m: progress(15 + int(p * 0.85), m))
+        # export_tracking rewrites metadata.csv on every call, so it ends up holding only the last
+        # video. Write one combined table (per-file fps/pix_per_cm) so `prepare` reads them all.
+        import csv as _csv
+        with (tracking / "metadata.csv").open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["file", "fps", "pix_per_cm"])
+            w.writerows(meta_rows)
+
+        progress(12, "collecting reviewed bouts")
+        ann = hidra.export_bouts(store, labels, pid, bid, h, data_root / "bouts.csv", n_by)
+        if ann["bouts"] == 0:
+            raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
+                               "head's proposals first, then train")
+
+        tag = "".join(c if c.isalnum() else "_" for c in f"{proj.id}_{bid}_{h['action']}")[:48]
+        mode = h.get("finetune_mode") or "tail"
+        progress(15, f"fine-tuning {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
+        r = hidra.finetune(rt, h, tracking, data_root / "bouts.csv", data_root, tag, ann,
+                           mode=mode, progress=lambda p, m: progress(15 + int(p * 0.85), m))
+
+        # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
+        # passes h["weights"] through to predict.py --weights). Re-fetch the live behavior off the
+        # project before saving, rather than trusting the dict handed in.
+        live = next((b for b in proj.behaviors if b["id"] == bid), None)
+        if live is not None:
+            live.setdefault("hidra", {})["weights"] = r["weights"]
+            live["hidra"]["finetune_mode"] = mode
+            proj.save()
+        if ann.get("directed_ambiguous"):
+            r["directed_ambiguous"] = ann["directed_ambiguous"]
+        return r
 
     @app.post("/api/projects/{pid}/videos/{vid}/predict")
     def predict_video(pid: str, vid: str):

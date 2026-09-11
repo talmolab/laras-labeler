@@ -755,11 +755,17 @@ def _subproc_env(extra: dict | None = None) -> dict:
 
 
 def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: float,
-          progress=lambda p, m: None) -> Path:
+          weights: str | None = None, progress=lambda p, m: None) -> Path:
     """Run one (lab, action) head over the exported folder. Returns the frames parquet.
 
     Scoped to a single head by a one-row job sheet: the default is all 82, which on CPU is the
-    difference between minutes and hours for a result the user did not ask for."""
+    difference between minutes and hours for a result the user did not ask for.
+
+    `weights` is an optional checkpoint template with a `{config}` placeholder (what
+    `finetune()` returns). When set, predict.py loads the project's fine-tuned per-lab
+    weights instead of the shipped ones, so a Predict after a Train uses the adapted head. It
+    is passed through untouched -- predict.py requires the `{config}` placeholder and resolves
+    it against its config ensemble."""
     import os
     import subprocess
 
@@ -783,7 +789,10 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     cmd = [rt["python"], str(Path(rt["home"]) / "predict.py"), str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
            "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
-    progress(5, f"{action} ({lab}) on {rt['backend']}")
+    if weights:
+        cmd += ["--weights", weights]
+    progress(5, f"{action} ({lab}) on {rt['backend']}"
+                + (" [fine-tuned]" if weights else ""))
 
     proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -860,26 +869,41 @@ def to_lanes(frames_parquet: Path, lab: str, action: str, collapse: str,
     return lanes if rate is None else by_rate(lanes, float(rate))[0]
 
 
-def export_labels(store, labels, pid: str, bid: int, head: dict, work: Path) -> dict:
-    """Reviewed labels for one behavior -> the per-frame table LABTAIL fine-tuning trains on.
+def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
+                 n_animals_by_video: dict | None = None) -> dict:
+    """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.
 
-    Only frames a human actually adjudicated are written. A frame nobody looked at is not a
-    negative -- treating it as one teaches the head that its own correct detections are wrong,
-    which is the fastest way to make fine-tuning worse than the head it started from. The
-    `labeled` column carries that distinction so the trainer can mask.
+    HiDRA's PyTorch fine-tuner takes a bout CSV with one row per positive span --
+    ``file,agent,target,action,start_frame,stop_frame`` with stop EXCLUSIVE -- and treats every
+    OTHER frame of a staged video as a negative for the (agent, target, action) combinations that
+    video annotates. That is the opposite of the old per-frame `labeled`-mask export: the trainer
+    no longer masks un-adjudicated frames, so exhaustiveness is now the CALLER's contract. Only
+    stage videos that were reviewed end to end -- a video skimmed in part teaches the head that its
+    own un-reviewed, correct detections are negatives, the fastest way to make fine-tuning worse
+    than the head it started from.
 
-    Reads the LabelStore, which is where labels actually live. This used to look for
-    `labels/<vid>/<bid>.json` spans, or a `Project.labels()` method -- neither of which exists: the
-    app writes `labels/<vid>.parquet`, a per-frame table, and `Project` has no such method. So the
-    export found nothing for every project, always, and the fine-tune refused with "no reviewed
-    labels for this behavior yet" no matter how much had just been reviewed. It was never possible
-    for this path to succeed.
+    TARGET, because the labeler's labels are per (video, track) -- one animal's lane -- while HiDRA
+    scores ordered (agent -> target) pairs and `prepare` needs a concrete target:
+      - a self-directed head (collapse == 'self') takes ``target = self``;
+      - a directed/scene head in a two-animal clip takes the OTHER animal as the target, which is
+        the only unambiguous reconstruction the per-lane labels allow;
+      - a directed/scene head with more than two animals has no recoverable target, so those rows
+        fall back to ``self`` and the count is reported in `directed_ambiguous` for the caller to
+        surface -- the labeler cannot know which partner a directed bout was aimed at.
 
-    Stored values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's span schema, and how
-    predict.py reads them). Unknown is saved but never trained on."""
+    Stored span values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's schema); only 1
+    is written. Our runs are half-open [start, stop), which is exactly `prepare`'s exclusive
+    stop_frame, so no +/-1 fudge and no --stop-inclusive.
+
+    Returns counts plus `video_ids`, the videos carrying at least one positive -- exactly the set of
+    tracking parquets the caller must stage alongside this CSV."""
     proj = store.get(pid)
+    n_by = n_animals_by_video or {}
+    self_directed = head.get("collapse") == "self"
     rows: list[dict] = []
+    vids: set[str] = set()
     n_bouts = 0
+    ambiguous = 0
     for v in proj.videos:
         vid = v["video_id"]
         try:
@@ -889,63 +913,112 @@ def export_labels(store, labels, pid: str, bid: int, head: dict, work: Path) -> 
         if df is None or df.empty:
             continue
         stem = Path(str(v.get("video_path") or vid)).stem or vid
-        for t in sorted({int(x) for x in df["track"].unique()}):
+        n_animals = int(n_by.get(vid) or v.get("n_animals") or 0)
+        tracks = sorted({int(x) for x in df["track"].unique()})
+        for t in tracks:
+            agent = f"mouse{t + 1}"
+            if self_directed:
+                target = "self"
+            elif n_animals == 2:
+                target = f"mouse{2 if t == 0 else 1}"      # the other animal
+            else:
+                target = "self"                            # unrecoverable partner; see docstring
             for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
                 a, b, val = int(run[0]), int(run[1]), int(run[2])
-                if val not in (0, 1) or b <= a:
+                if val != 1 or b <= a:                     # positives only; negatives are implicit
                     continue
-                n_bouts += val == 1
-                rows.append({"file": stem,
-                             "subject": f"mouse{t + 1}", "target": "self",
-                             "lab": head["lab"], "action": head["action"],
-                             "start_frame": a, "stop_frame": b - 1,   # inclusive, as predict.py writes
-                             "label": val, "labeled": 1})
+                n_bouts += 1
+                if not self_directed and n_animals != 2:
+                    ambiguous += 1
+                vids.add(vid)
+                rows.append({"file": f"{stem}.parquet", "agent": agent, "target": target,
+                             "action": head["action"], "start_frame": a, "stop_frame": b})
 
-    work.mkdir(parents=True, exist_ok=True)
-    out = work / "labels.csv"
-    with out.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "subject", "target", "lab", "action",
-                                          "start_frame", "stop_frame", "label", "labeled"])
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["file", "agent", "target", "action",
+                                          "start_frame", "stop_frame"])
         w.writeheader()
         w.writerows(rows)
-    return {"bouts": n_bouts, "spans": len(rows), "path": str(out),
-            "videos": len({r["file"] for r in rows})}
+    return {"bouts": n_bouts, "spans": len(rows), "path": str(out_csv),
+            "videos": len(vids), "video_ids": sorted(vids),
+            "directed_ambiguous": ambiguous}
 
 
-def finetune(script: Path, rt: dict, head: dict, work: Path, counts: dict,
+def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
+             tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
              progress=lambda p, m: None) -> dict:
-    """HiDRA's LABTAIL adaptation on this project's reviewed labels.
+    """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
+    ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
+    ``train_perlab_heads.py --mode labtail`` CLI is gone).
 
-    LABTAIL trains the lab embedding, three tail blocks and the per-lab output projection while the
-    self-supervised trunk stays frozen. That is what makes it viable here: a few hundred reviewed
-    bouts is nowhere near enough to move a trunk, but it is enough to re-aim a tail."""
-    import os
+    Two subprocess steps:
+      1. ``prepare`` stages the tracking parquets in `tracking_dir` and the bout CSV
+         (`annotations_csv`, written by `export_bouts`) into ``{data_root}/staged``.
+      2. ``train`` warm-starts from the shipped head and fine-tunes it, writing one checkpoint per
+         config to ``{data_root}/models`` as ``{config}__{tag}.pkl``.
+
+    `mode` chooses what is adapted (this is the LABTAIL family):
+      - ``tail`` (default): the per-lab LSTM/FF tail + lab embedding + head projection -- the
+        closest analogue to the old LABTAIL, the strongest adaptation, and the one the user asks for
+        by name. It makes the OTHER labs' heads in the checkpoint unusable, which is why Predict must
+        pass ``--labs {lab}`` (the labeler always infers one head, so this is a non-issue here).
+      - ``head``: only the linear head (leaves every other lab intact; needs the least data).
+      - ``embedding``: the lab embedding + head.
+
+    Predict averages all five config checkpoints, so `train` writes all five by default; pass a
+    subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
+    ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads."""
     import subprocess
 
-    ckpt = work / "checkpoint"
-    ckpt.mkdir(parents=True, exist_ok=True)
-    cmd = [rt["python"], str(script), "--mode", "labtail",
-           "--labels", str(work / "labels.csv"), "--lab", head["lab"],
-           "--action", head["action"], "--out", str(ckpt)]
-    progress(0, "starting LABTAIL")
+    home = Path(rt["home"])
+    script = home / "finetune.py"
+    if not script.exists():
+        raise RuntimeError(
+            f"no finetune.py under {home} — this HiDRA checkout predates the PyTorch fine-tuner. "
+            f"Update it to current main (the rewrite that ships finetune.py prepare/train).")
 
-    proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1,
-                            env=_subproc_env({"PERLAB_WORKDIR": str(work / "_perlab")}))
-    tail: list[str] = []
-    for line in proc.stdout or []:
-        line = line.rstrip()
-        if not line:
-            continue
-        tail = (tail + [line])[-40:]
-        progress(min(95, len(tail) * 2), line[:120])
-    if proc.wait() != 0:
-        raise RuntimeError("LABTAIL fine-tuning failed:\n" + "\n".join(tail[-15:]))
+    data_root = Path(data_root)
+    staged = data_root / "staged"
+    models = data_root / "models"
+    workdir = data_root / "_work"          # MUST be set on Windows: train defaults it to /dev/shm
 
+    def _stream(cmd, label, lo, hi):
+        progress(lo, f"{label} …")
+        proc = subprocess.Popen(cmd, cwd=home, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=_subproc_env())
+        seen: list[str] = []
+        for line in proc.stdout or []:
+            line = line.rstrip()
+            if not line:
+                continue
+            seen = (seen + [line])[-40:]
+            progress(min(hi - 1, lo + len(seen)), line[:120])
+        if proc.wait() != 0:
+            raise RuntimeError(f"HiDRA {label} failed:\n" + "\n".join(seen[-15:]))
+        return seen
+
+    # 1. prepare -----------------------------------------------------------------------------------
+    prepare = [rt["python"], str(script), "prepare",
+               "--tracking", str(tracking_dir), "--annotations", str(annotations_csv),
+               "--lab", head["lab"], "--out", str(staged), "--drop-unsupported"]
+    log = _stream(prepare, "prepare", 2, 20)
+
+    # 2. train -------------------------------------------------------------------------------------
+    train = [rt["python"], str(script), "train",
+             "--data", str(staged), "--lab", head["lab"], "--actions", head["action"],
+             "--out", str(models), "--tag", tag, "--mode", mode,
+             "--backend", "torch", "--workdir", str(workdir)]
+    if configs:
+        train += ["--configs", ",".join(configs)]
+    log += _stream(train, "train", 20, 100)
+
+    weights = str(models / ("{config}__" + tag + ".pkl"))
     progress(100, "done")
-    return {"mode": "labtail", "lab": head["lab"], "action": head["action"],
-            "checkpoint": str(ckpt), "backend": rt["backend"], **counts,
-            "log": tail[-15:]}
+    return {"mode": mode, "lab": head["lab"], "action": head["action"],
+            "checkpoint": weights, "weights": weights, "backend": rt["backend"],
+            "bouts": counts.get("bouts"), "spans": counts.get("spans"),
+            "videos": counts.get("videos"), "log": log[-15:]}
 
 
 # Behaviour categories, for grouping the classifier picker the way the ethogram is organised rather
