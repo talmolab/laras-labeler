@@ -938,6 +938,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         progress(12, "collecting reviewed bouts")
         ann = hidra.export_bouts(store, labels, pid, bid, h, data_root / "bouts.csv", n_by)
         if ann["bouts"] == 0:
+            if ann.get("directed_ambiguous"):
+                raise RuntimeError(
+                    f"'{h['action']}' is a directed (social) behavior and these clips have more than "
+                    "two tracked animals, so the labeler cannot tell which animal each bout is aimed "
+                    "at — HiDRA fine-tune needs (agent→target) pairs it can't reconstruct from "
+                    "per-track labels. Fine-tune a self-directed behavior (e.g. jump-down) instead; "
+                    "use this one zero-shot (Predict + review).")
             raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
                                "head's proposals first, then train")
 

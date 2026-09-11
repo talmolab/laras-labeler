@@ -923,9 +923,9 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
       - a self-directed head (collapse == 'self') takes ``target = self``;
       - a directed/scene head in a two-animal clip takes the OTHER animal as the target, which is
         the only unambiguous reconstruction the per-lane labels allow;
-      - a directed/scene head with more than two animals has no recoverable target, so those rows
-        fall back to ``self`` and the count is reported in `directed_ambiguous` for the caller to
-        surface -- the labeler cannot know which partner a directed bout was aimed at.
+      - a directed/scene head with more than two animals has no recoverable target (the per-track
+        label does not say which partner), so those rows are SKIPPED and counted in
+        `directed_ambiguous` for the caller to surface -- such behaviours are zero-shot only here.
 
     Stored span values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's schema); only 1
     is written. Our runs are half-open [start, stop), which is exactly `prepare`'s exclusive
@@ -954,18 +954,24 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
         for t in tracks:
             agent = f"mouse{t + 1}"
             if self_directed:
-                target = "self"
+                target = "self"                            # the acting animal itself
             elif n_animals == 2:
-                target = f"mouse{2 if t == 0 else 1}"      # the other animal
+                target = f"mouse{2 if t == 0 else 1}"      # the only other animal — unambiguous
             else:
-                target = "self"                            # unrecoverable partner; see docstring
+                # A directed (social) behaviour needs a specific (agent -> target) pair, but a
+                # per-track label records only the acting animal. With !=2 animals the partner is
+                # unrecoverable, and writing target=self would both mis-train the head and, when a
+                # single track is labelled, crash HiDRA's epoch builder (one-mouse label set). Skip
+                # these rows and report them; directed behaviours on >2-animal clips are zero-shot only.
+                target = None
             for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
                 a, b, val = int(run[0]), int(run[1]), int(run[2])
                 if val != 1 or b <= a:                     # positives only; negatives are implicit
                     continue
-                n_bouts += 1
-                if not self_directed and n_animals != 2:
+                if target is None:
                     ambiguous += 1
+                    continue
+                n_bouts += 1
                 vids.add(vid)
                 rows.append({"file": f"{stem}.parquet", "agent": agent, "target": target,
                              "action": head["action"], "start_frame": a, "stop_frame": b})
