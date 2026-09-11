@@ -814,7 +814,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # seconds. A container's declared fps can disagree with the rig's true rate (ours declares
         # 30 for 50 fps video), so the project's recorded value wins and is reported back.
         fps = float(entry.get("fps") or 30.0)
-        ppc = float(entry.get("pix_per_cm") or proj.meta.get("pix_per_cm") or 0) or None
+        ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
         if ppc is None:
             raise RuntimeError(
                 "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
@@ -909,7 +909,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 poses = poses[:n_frames]
             n_by[vid] = int(poses.shape[1])
             fps = float(entry.get("fps") or 30.0)
-            ppc = float(entry.get("pix_per_cm") or proj.meta.get("pix_per_cm") or 0) or None
+            ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
             if ppc is None:
                 raise RuntimeError(
                     f"no pixels-per-cm for {vid}. HiDRA's features are in centimetres, so a scale "
