@@ -873,6 +873,11 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         proj = store.get(pid)
         data_root = proj.path / "hidra" / "_finetune" / f"{h['lab']}__{h['action']}"
         tracking = data_root / "tracking"
+        # Start each run from a clean staging dir. Re-running otherwise hit "[WinError 32] the process
+        # cannot access the file because it is being used by another process" when export_tracking
+        # tried to overwrite a parquet a prior run had left open/locked on Windows.
+        import shutil as _shutil
+        _shutil.rmtree(data_root, ignore_errors=True)
         tracking.mkdir(parents=True, exist_ok=True)
 
         # Stage the tracking parquet for every video that has a reviewed POSITIVE for this behavior.
