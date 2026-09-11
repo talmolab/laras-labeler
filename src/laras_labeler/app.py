@@ -936,7 +936,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
                                "head's proposals first, then train")
 
-        tag = "".join(c if c.isalnum() else "_" for c in f"{proj.id}_{bid}_{h['action']}")[:48]
+        tag = "".join(c if c.isalnum() else "_" for c in f"{proj.pid}_{bid}_{h['action']}")[:48]
         mode = h.get("finetune_mode") or "tail"
         label = "smoke test" if smoke else "fine-tuning"
         progress(15, f"{label} {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
