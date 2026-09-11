@@ -354,6 +354,9 @@
            title="Detection threshold for the clickable predicted bouts. Lower to catch more (bias to false positives, then delete the wrong ones); raise to keep only confident calls. Per behavior.">
     <span class="status" id="predThreshVal" style="min-width:2.4em; display:inline-block; font-variant-numeric:tabular-nums">0.60</span>
     <span class="status" id="predThreshCount" style="color:#7b8494"></span>
+    <label class="status" for="predMinBout" title="Shortest run of frames that counts as a bout, for BOTH the detected lane and the Review queue. Raise it to drop brief flickers; lower it to catch quick behaviours. Per behavior; persists with the project.">min bout</label>
+    <input type="number" id="predMinBout" min="1" max="600" step="1" value="3" style="width:52px"
+           title="Minimum bout length in frames. At this clip's fps, the seconds are shown in the status line when you change it. Applies to the timeline lane and the review candidates alike.">
     <select id="candMode" title="What to review — newly-detected bouts, labeled bouts the model thinks you got wrong, or bouts the filters removed">
       <option value="new">New detections</option>
       <option value="mislabel">Correct mislabels</option>
@@ -601,9 +604,21 @@ function fitCanvas(c, W, H, dpr) {   // size to W×H CSS px @dpr WITHOUT realloc
 }
 let featureSeries = { names: [], data: {} }, activeTrack = 0;
 let predictedBouts = new Map(), reviewCurrent = null;   // bid -> [{s,e,p}], and the bout under review
-const DEFAULT_THRESH = 0.6;                             // matches boutsFromProba's historical hi=0.6
-let predThresh = new Map();                             // bid -> detection threshold (Ann's tunable cut)
-const behThresh = bid => (predThresh.has(bid) ? predThresh.get(bid) : DEFAULT_THRESH);
+const DEFAULT_THRESH = 0.6, DEFAULT_MINBOUT = 3;       // match boutsFromProba's / predict.py's defaults
+const behOf = bid => (behaviors || []).find(x => x.id === bid) || null;
+function behPP(bid) { const b = behOf(bid); if (b && !b.postproc) b.postproc = {}; return b ? b.postproc : {}; }
+// Detection cut (hi) and min bout length live in the behavior's postproc, which the SERVER candidate
+// queue also reads (predictor.candidates) -- so the slider and the min-bout box govern both the
+// timeline lane and what Review pulls, and both persist with the project.
+const behThresh  = bid => { const v = behPP(bid).hi;       return v == null ? DEFAULT_THRESH  : v; };
+const behMinBout = bid => { const v = behPP(bid).min_bout; return v == null ? DEFAULT_MINBOUT : v; };
+async function savePostproc(bid, patch) {
+  try {
+    const r = await api(`/behaviors/${bid}/postproc`, { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    if (r.ok) { const pp = await r.json(); const b = behOf(bid); if (b) b.postproc = pp; }
+  } catch (e) { /* leave local value; timeline lane still reflects it */ }
+}
 const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metricsEl = el("metrics");
 
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
@@ -2698,7 +2713,7 @@ function recomputeBouts(bid) {   // refresh the clickable predicted bouts from c
   const p = predsByBeh.get(bid);
   if (!p) { predictedBouts.delete(bid); return; }
   const hi = behThresh(bid), lo = Math.max(0.05, hi - 0.2);
-  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p, hi, lo), labelState.get(bid)));
+  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p, hi, lo, 5, behMinBout(bid)), labelState.get(bid)));
 }
 async function loadPredictions(bid) {
   const r = await api(`/predict/${vid}?behavior=${bid}&track=${activeTrack}`);
@@ -2735,30 +2750,46 @@ function fracAbove(bid) {
   return tot ? n / tot : null;
 }
 function renderThreshReadout() {
-  const val = el("predThreshVal"), cnt = el("predThreshCount"), sl = el("predThresh");
+  const val = el("predThreshVal"), cnt = el("predThreshCount"), sl = el("predThresh"), mb = el("predMinBout");
   if (!val || !sl) return;
   const bid = activeBid;
   const thr = bid == null ? DEFAULT_THRESH : behThresh(bid);
   sl.value = thr; val.textContent = (+thr).toFixed(2);
+  if (mb) mb.value = bid == null ? DEFAULT_MINBOUT : behMinBout(bid);
   if (bid == null || !predsByBeh.has(bid)) { cnt.textContent = ""; return; }
   const nB = (predictedBouts.get(bid) || []).length;
   const fr = fracAbove(bid);
   cnt.textContent = `${nB} bout${nB === 1 ? "" : "s"}` + (fr == null ? "" : ` · ${(fr * 100).toFixed(1)}% of frames`);
 }
-// Live while dragging (recompute + redraw); log once on release so the event log isn't spammed.
+// Drag = live (recompute the lane + redraw) with no server hit; on release persist to postproc and
+// refresh the Review queue so it surfaces the same set. activeBid's behavior object holds the value.
 function onThreshInput() {
   if (activeBid == null) { renderThreshReadout(); return; }
-  predThresh.set(activeBid, parseFloat(el("predThresh").value));
-  recomputeBouts(activeBid);
-  renderTimeline();
-  renderThreshReadout();
+  behPP(activeBid).hi = parseFloat(el("predThresh").value);
+  recomputeBouts(activeBid); renderTimeline(); renderThreshReadout();
 }
-function onThreshCommit() {
+async function onThreshCommit() {
   if (activeBid == null) return;
-  const thr = behThresh(activeBid);
+  const hi = behThresh(activeBid), lo = Math.max(0.05, hi - 0.2);
+  behPP(activeBid).lo = lo;
   logEvent("pred_threshold_set", { behavior_id: activeBid, name: bname(activeBid),
-                                   threshold: thr, n_bouts: (predictedBouts.get(activeBid) || []).length });
-  busy(`detection threshold ${(+thr).toFixed(2)} — ${(predictedBouts.get(activeBid) || []).length} bouts on this clip/track`);
+                                   threshold: hi, min_bout: behMinBout(activeBid),
+                                   n_bouts: (predictedBouts.get(activeBid) || []).length });
+  await savePostproc(activeBid, { hi, lo });
+  await loadCandidates(activeBid);       // the Review queue now uses this cut
+  busy(`detection ≥ ${(+hi).toFixed(2)} — ${(predictedBouts.get(activeBid) || []).length} bouts on this clip; Review queue updated`);
+}
+// Minimum bout length (frames): a floor on both the detected lane and the review candidates. Sets
+// min_bout (detection) and min_cand (review floor) together so "shorter than this" never appears.
+async function onMinBoutChange() {
+  if (activeBid == null) return;
+  const n = Math.max(1, parseInt(el("predMinBout").value, 10) || DEFAULT_MINBOUT);
+  behPP(activeBid).min_bout = n; behPP(activeBid).min_cand = n;
+  recomputeBouts(activeBid); renderTimeline(); renderThreshReadout();
+  logEvent("min_bout_set", { behavior_id: activeBid, name: bname(activeBid), min_bout: n });
+  await savePostproc(activeBid, { min_bout: n, min_cand: n });
+  await loadCandidates(activeBid);
+  busy(`min bout ${n} frames (${(n / (meta?.fps || 30)).toFixed(2)}s) — lane + Review queue updated`);
 }
 
 async function loadCandidates(bid) {
@@ -3439,6 +3470,7 @@ el("delSeg").onclick = deleteSelectedSeg;
 el("train").onclick = train; el("predict").onclick = predictVideo; el("importBtn").onclick = importFile; el("review").onclick = startReview;
 el("predThresh").oninput = onThreshInput;
 el("predThresh").onchange = onThreshCommit;
+el("predMinBout").onchange = onMinBoutChange;
 el("candMode").onchange = async e => { candidateMode = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candOrder").onchange = async e => { candidateOrder = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candN").value = localStorage.getItem("ll_candN") || "10";

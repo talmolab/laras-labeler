@@ -1035,6 +1035,32 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         except ValueError as e:
             raise HTTPException(409, str(e))
 
+    @app.put("/api/projects/{pid}/behaviors/{bid}/postproc")
+    def set_postproc(pid: str, bid: int, body: dict = Body(...)):
+        """Per-behavior detection postprocessing: the detection threshold (`hi`, with `lo` trailing
+        it) and the minimum bout length (`min_bout`, and `min_cand` for the review floor). Persisted
+        on the behavior so ONE control governs both the timeline's predicted-bout lane AND the review
+        candidate queue (predictor.candidates reads beh['postproc']), and it survives a reload. Only
+        the keys sent are changed; unknown keys are ignored."""
+        proj = _behavior(pid, bid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        pp = dict(beh.get("postproc") or {})
+        for k in ("hi", "lo"):
+            if k in body:
+                v = float(body[k])
+                if not 0.0 < v < 1.0:
+                    raise HTTPException(400, f"{k} must be between 0 and 1")
+                pp[k] = v
+        for k in ("min_bout", "min_cand"):
+            if k in body:
+                v = int(body[k])
+                if v < 1:
+                    raise HTTPException(400, f"{k} must be at least 1 frame")
+                pp[k] = v
+        beh["postproc"] = pp
+        proj.save()
+        return pp
+
     @app.post("/api/projects/{pid}/behaviors/{bid}/clone")
     def clone_behavior(pid: str, bid: int, with_labels: bool = False):
         """Create a parallel behavior for A/B comparison. with_labels=False -> empty (relabel from
