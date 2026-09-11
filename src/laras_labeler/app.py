@@ -698,19 +698,26 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     # ---- training + prediction (the human-in-the-loop) ----
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
-    def train_behavior(pid: str, bid: int, predict_videos: str | None = None):
+    def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
+                       ft_smoke: bool = False, ft_configs: str | None = None):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
         just those. Worth scoping — on a project with many or long clips the sweep costs far more than
-        the fit itself."""
+        the fit itself.
+
+        `ft_smoke`/`ft_configs` apply only to a HiDRA-bound behavior's fine-tune: `?ft_smoke=true`
+        runs HiDRA's short dry run (prepare + a no-checkpoint train) to verify the wiring in minutes,
+        and `?ft_configs=15fps_5bp` restricts the real run to a config subset (for testing — Predict
+        needs all five). Both are ignored by this project's own model path."""
         _behavior(pid, bid)
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 
         beh = next((b for b in store.get(pid).behaviors if b["id"] == bid), {})
         if beh.get("hidra", {}).get("action"):
+            cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
-                return _hidra_train(pid, bid, beh, progress)
+                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs)
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -839,9 +846,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         progress(100, "done")
         return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
 
-    def _hidra_train(pid: str, bid: int, beh: dict, progress) -> dict:
+    def _hidra_train(pid: str, bid: int, beh: dict, progress,
+                     smoke: bool = False, configs: list[str] | None = None) -> dict:
         """Fine-tune a bound head on this project's reviewed labels, via HiDRA's PyTorch fine-tuner
         (finetune.py prepare/train — the old single-shot LABTAIL CLI is gone).
+
+        `smoke` runs HiDRA's short dry run (full prepare + a ~600-step train that writes no
+        checkpoint) to prove the data + environment are wired up in minutes; `configs` restricts the
+        real run to a subset of the five (Predict needs all five, so a subset is for testing only).
 
         The new fine-tuner stages the tracking parquets AND a positives-only bout CSV, then warm-
         starts the adopted head and adapts it (mode 'tail' by default — the lab tail + embedding +
@@ -926,18 +938,23 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         tag = "".join(c if c.isalnum() else "_" for c in f"{proj.id}_{bid}_{h['action']}")[:48]
         mode = h.get("finetune_mode") or "tail"
-        progress(15, f"fine-tuning {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
+        label = "smoke test" if smoke else "fine-tuning"
+        progress(15, f"{label} {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
         r = hidra.finetune(rt, h, tracking, data_root / "bouts.csv", data_root, tag, ann,
-                           mode=mode, progress=lambda p, m: progress(15 + int(p * 0.85), m))
+                           mode=mode, configs=configs, smoke=smoke,
+                           progress=lambda p, m: progress(15 + int(p * 0.85), m))
 
         # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
         # passes h["weights"] through to predict.py --weights). Re-fetch the live behavior off the
-        # project before saving, rather than trusting the dict handed in.
-        live = next((b for b in proj.behaviors if b["id"] == bid), None)
-        if live is not None:
-            live.setdefault("hidra", {})["weights"] = r["weights"]
-            live["hidra"]["finetune_mode"] = mode
-            proj.save()
+        # project before saving, rather than trusting the dict handed in. A smoke run writes no
+        # checkpoint, so it records nothing — a later real Predict must not load a path that is not
+        # there.
+        if not smoke and r.get("weights"):
+            live = next((b for b in proj.behaviors if b["id"] == bid), None)
+            if live is not None:
+                live.setdefault("hidra", {})["weights"] = r["weights"]
+                live["hidra"]["finetune_mode"] = mode
+                proj.save()
         if ann.get("directed_ambiguous"):
             r["directed_ambiguous"] = ann["directed_ambiguous"]
         return r

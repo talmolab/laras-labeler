@@ -947,7 +947,7 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
-             progress=lambda p, m: None) -> dict:
+             smoke: bool = False, progress=lambda p, m: None) -> dict:
     """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
     ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
     ``train_perlab_heads.py --mode labtail`` CLI is gone).
@@ -968,7 +968,13 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
 
     Predict averages all five config checkpoints, so `train` writes all five by default; pass a
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
-    ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads."""
+    ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
+
+    `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
+    that writes NO checkpoint, only proving the data + environment are wired up end to end. Use it
+    for a first test -- it finishes in minutes instead of the hours the real ensemble takes. A smoke
+    run returns ``weights=None`` and ``smoke=True`` so the caller does not record a checkpoint that
+    was never written."""
     import subprocess
 
     home = Path(rt["home"])
@@ -1011,11 +1017,13 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
              "--backend", "torch", "--workdir", str(workdir)]
     if configs:
         train += ["--configs", ",".join(configs)]
+    if smoke:
+        train.append("--smoke")
     log += _stream(train, "train", 20, 100)
 
-    weights = str(models / ("{config}__" + tag + ".pkl"))
+    weights = None if smoke else str(models / ("{config}__" + tag + ".pkl"))
     progress(100, "done")
-    return {"mode": mode, "lab": head["lab"], "action": head["action"],
+    return {"mode": mode, "lab": head["lab"], "action": head["action"], "smoke": smoke,
             "checkpoint": weights, "weights": weights, "backend": rt["backend"],
             "bouts": counts.get("bouts"), "spans": counts.get("spans"),
             "videos": counts.get("videos"), "log": log[-15:]}
