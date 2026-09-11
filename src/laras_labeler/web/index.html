@@ -2854,7 +2854,11 @@ async function train() {
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { logEvent("train_error", { behavior_id: bid, name: bname, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("train failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") {
+      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
+      logEvent("train_error", { behavior_id: bid, name: bname, error: one.slice(0, 500) });
+      console.error("train failed:\n" + full); busy("train failed: " + one.slice(0, 600)); return;
+    }
     const trainMs = Date.now() - t0;
     { const q = s.result || {}, m = q.metrics || {};
       // wall_ms is what the HUMAN waited (click -> UI usable); the server logs the job's own duration
@@ -2905,7 +2909,15 @@ async function predictVideo() {   // apply existing model(s) to the current vide
   if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: vid, error: String(d).slice(0, 200) }); busy("predict: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { logEvent("predict_error", { video_id: vid, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("predict failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") {
+      // Show the WHOLE error, not just its first line. A HiDRA failure ("HiDRA wrote no frames
+      // parquet:") puts the actual cause in the tail lines that follow, so first-line-only hid
+      // exactly the part that says what went wrong. Newlines are folded to " | " for the status bar,
+      // the full text goes to the browser console, and more of it is kept in the event log.
+      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
+      logEvent("predict_error", { video_id: vid, error: one.slice(0, 500) });
+      console.error("predict failed:\n" + full); busy("predict failed: " + one.slice(0, 600)); return;
+    }
     logEvent("predict_result", { video_id: vid, wall_ms: Date.now() - pT0,
                                  n_behaviors: ((s.result || {}).behaviors || []).length,
                                  n_skipped: ((s.result || {}).skipped || []).length });
