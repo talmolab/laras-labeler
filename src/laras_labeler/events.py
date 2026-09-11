@@ -211,27 +211,53 @@ class EventLog:
                          gap_cap_s=gap_cap_s, idle_break_s=idle_break_s, behavior_id=behavior_id)
 
 
-def _phase(ev_type: str, cur: str) -> str:
-    """Which kind of work the annotator is doing, as a state machine over the event stream.
+# Which activity each event DECLARES. A phase changes only on an event that says what the person is
+# doing; anything not listed inherits the phase already in effect.
+#
+# This split is the load-bearing part of the whole module, because `label_s` and `review_s` are the
+# two numerators of the comparison. It used to be "review if a review event said so, otherwise
+# label", with 'label' as the starting phase — which made the manual arm the catch-all: opening the
+# app, picking a project, browsing the Stats panel, staring at fresh predictions after a Train, all
+# of it accrued to hand-labeling. Review, bounded by explicit start/end events, had no such
+# slack. Since `s_per_bout` (label_s / bouts) divided by `s_per_accepted_bout` IS the headline, every
+# unattributed second inflated the by-hand arm and pushed the answer toward "review pays off" — the
+# conclusion the measurement exists to test. Unclassified time now goes to `other_s`, which is
+# reported, counted in `active_s`, and used as a denominator by nothing.
+_PHASE_OF = {}
+_PHASE_OF.update(dict.fromkeys(
+    ("review_start", "bout_review_open", "candidate_show", "candidate_trim", "candidate_replay",
+     *_REVIEW_TYPES), "review"))
+_PHASE_OF.update(dict.fromkeys(("train_click", "predict_click"), "wait"))
+# hand-labeling proper: producing, editing or undoing a label, and arming the tool to do so
+_PHASE_OF.update(dict.fromkeys(
+    ("paint_start", "paint_commit", "paint_cancel", "label_delete", "label_trim",
+     "label_undo", "label_redo", "import_labels", "mode_change", "tool_change"), "label"))
+# not annotation of either kind: setting up, navigating, or looking at what came back
+_PHASE_OF.update(dict.fromkeys(
+    ("session_start", "project_open", "video_open", "behavior_select", "track_select",
+     "review_end", "review_close", "candidates_load", "hidra_configure",
+     "project_create", "clip_fps_set", "media_relink", "pred_threshold_set", "min_bout_set",
+     "train_result", "predict_result", "train_error", "predict_error"), "other"))
 
-    'review' = judging model proposals (the human-in-the-loop path); 'label' = everything else,
-    which is the from-scratch path. Waiting on a train/predict job is its own phase so the human
-    time spent watching a progress bar is neither credited to labeling nor silently dropped."""
-    if ev_type in ("review_start", "bout_review_open", "candidate_show"):
-        return "review"
-    if ev_type in ("review_end", "review_close"):
-        return "label"
-    if ev_type in ("train_click", "predict_click"):
-        return "wait"
-    if ev_type in ("train_result", "predict_result", "train_error", "predict_error"):
-        return "label"
-    return cur
+# Deliberately NOT in the map, so they inherit: `heartbeat`, `play_start`/`play_stop`,
+# `tab_visible`/`tab_hidden`. Playback means "reviewing this proposal" inside review and "watching
+# for the next bout" while labeling; the same event cannot be attributed without its context, and
+# guessing one owner would systematically credit or charge one arm.
+_PHASE_BUCKET = {"review": "review_s", "wait": "wait_s", "label": "label_s", "other": "other_s"}
+
+
+def _phase(ev_type: str, cur: str) -> str:
+    """The activity in effect after this event — see _PHASE_OF."""
+    return _PHASE_OF.get(ev_type, cur)
 
 
 def _blank_round(idx: int, bid, name, start) -> dict:
     return {
         "round": idx, "behavior_id": bid, "behavior": name, "start": start, "end": start,
         "wall_s": 0.0, "active_s": 0.0, "label_s": 0.0, "review_s": 0.0, "wait_s": 0.0,
+        # work_s = the annotation itself (label + review). other_s = present but doing neither:
+        # opening the project, picking a clip, reading Stats, looking at fresh predictions.
+        "work_s": 0.0, "other_s": 0.0,
         "compute_s": 0.0, "train_s": 0.0, "predict_s": 0.0, "feature_s": 0.0,
         "manual_bouts": 0, "manual_frames": 0, "manual_video_s": 0.0,
         "manual_neg_bouts": 0, "manual_neg_frames": 0, "manual_unknown_bouts": 0,
@@ -291,7 +317,10 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
         typ = str(ev.get("type"))
         bid = ev.get("behavior_id")
         bid = int(bid) if isinstance(bid, (int, float)) else None
-        if behavior_id is not None and bid is not None and bid != behavior_id:
+        # `bid is None` events (session_start, project_open -- anything logged before a behavior was
+        # selected) used to survive this filter, so booting the app and browsing were billed to
+        # whichever behavior you filtered to. Asking for one behavior means only that behavior.
+        if behavior_id is not None and bid != behavior_id:
             continue
 
         # --- time accounting (client events only; server records are instantaneous notes) ---
@@ -305,7 +334,14 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
                 if tgt["start"] is None:
                     tgt["start"] = ev.get("t")
                 tgt["active_s"] += charged
-                tgt[{"review": "review_s", "wait": "wait_s"}.get(phase, "label_s")] += charged
+                tgt[_PHASE_BUCKET.get(phase, "other_s")] += charged
+                # The gap is charged to the round that was OPEN when it started, but that round's
+                # `end` was already stamped at its own last event -- so a round could report more
+                # active time than it had wall time (a 15 s gap after a 1 s round read "15.0s active
+                # of 1.1s on the clock"). The round really did stay open until this moment, so its
+                # clock runs to here. Rounds stay contiguous, never overlapping: this `end` is the
+                # next round's `start`.
+                tgt["end"] = ev.get("t") or tgt["end"]
             idle_ms = ev.get("idle_ms")
             hidden = ev.get("visible") is False or typ == "tab_hidden"
             broke = hidden or (isinstance(idle_ms, (int, float)) and idle_ms / 1000.0 > idle_break_s)
@@ -384,7 +420,7 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
             show_ms.clear()
 
     # finalize
-    cum_active = cum_manual = cum_accept = 0.0
+    cum_active = cum_work = cum_manual = cum_accept = 0.0
     for r in rounds:
         r["median_decision_s"] = round(median(r["decision_s"]), 2) if r["decision_s"] else None
         r["decision_s"] = [round(x, 2) for x in r["decision_s"]]
@@ -392,15 +428,22 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
             r["wall_s"] = round((datetime.fromisoformat(r["end"]) - datetime.fromisoformat(r["start"])).total_seconds(), 1)
         except Exception:  # noqa: BLE001
             r["wall_s"] = 0.0
-        for k in ("active_s", "label_s", "review_s", "wait_s", "compute_s", "train_s", "predict_s",
-                  "feature_s", "manual_video_s", "candidate_video_s"):
+        r["work_s"] = r["label_s"] + r["review_s"]
+        for k in ("active_s", "label_s", "review_s", "wait_s", "work_s", "other_s", "compute_s",
+                  "train_s", "predict_s", "feature_s", "manual_video_s", "candidate_video_s"):
             r[k] = round(float(r[k]), 1)
         r["accepted"] = r["decisions"].get("accept", 0) + r["decisions"].get("merge", 0) \
             + r["decisions"].get("split", 0) + r["decisions"].get("reclassify", 0)
         cum_active += r["active_s"]
+        cum_work += r["work_s"]
         cum_manual += r["manual_bouts"]
         cum_accept += r["accepted"]
         r["cum_active_min"] = round(cum_active / 60.0, 2)
+        # The axis a learning curve should be read against: annotation only. `cum_active_min` also
+        # carries `wait_s` (watching a progress bar) and `other_s` (setting up, navigating), so
+        # plotting accuracy against it would let a slower machine or a longer browse read as more
+        # annotation effort.
+        r["cum_work_min"] = round(cum_work / 60.0, 2)
         r["cum_manual_bouts"] = int(cum_manual)
         r["cum_accepted_bouts"] = int(cum_accept)
         # per-round productivity, the numbers the whole log exists to produce
@@ -421,7 +464,8 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
     # time-to-quality: cumulative HUMAN minutes at which each accuracy level was first reached.
     # This is the y-vs-x the comparison needs — history.json plots accuracy against bouts, which
     # hides the very difference (a reviewed bout is cheaper than a painted one) being measured.
-    curve = [{"round": r["round"], "behavior": r["behavior"], "cum_active_min": r["cum_active_min"],
+    curve = [{"round": r["round"], "behavior": r["behavior"],
+              "cum_work_min": r["cum_work_min"], "cum_active_min": r["cum_active_min"],
               "ap": r["ap"], "f1": r["f1"], "n_pos_bouts": r["n_pos_bouts"],
               "n_seed_bouts": r["n_seed_bouts"], "n_candidate_bouts": r["n_candidate_bouts"]}
              for r in rounds if r["closed"]]
@@ -429,7 +473,8 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
     for target in (0.5, 0.7, 0.8, 0.9):
         hit = next((c for c in curve if (c["ap"] or 0) >= target), None)
         if hit:
-            milestones.append({"ap": target, "cum_active_min": hit["cum_active_min"], "round": hit["round"]})
+            milestones.append({"ap": target, "cum_work_min": hit["cum_work_min"],
+                               "cum_active_min": hit["cum_active_min"], "round": hit["round"]})
 
     return {
         "n_events": len(recs),
@@ -441,6 +486,8 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
             "active_s": round(label_s + review_s + sum(r["wait_s"] for r in rounds), 1),
             "label_s": round(label_s, 1), "review_s": round(review_s, 1),
             "wait_s": round(sum(r["wait_s"] for r in rounds), 1),
+            "work_s": round(label_s + review_s, 1),
+            "other_s": round(sum(r["other_s"] for r in rounds), 1),
             "compute_s": round(sum(r["compute_s"] for r in rounds), 1),
             "feature_s": round(sum(r["feature_s"] for r in rounds), 1),
             # Both arms are priced the same way: all the seconds the arm consumed, over the
@@ -468,23 +515,27 @@ def summarize(recs: list[dict], proj=None, gap_cap_s: float = ACTIVE_GAP_CAP_S,
                 "candidate_trims": sum(r["candidate_trims"] for r in rounds),
                 "frac_trimmed": round(trimmed / decisions, 2) if decisions else None,
             },
-            # the headline: how much cheaper (or not) a bout is through review than by hand
-            "speedup_per_bout": (round((label_s / manual_bouts) / (review_s / accepted), 2)
+            # The headline: how much cheaper (or not) a bout is through review than by hand.
+            # Derived from the two ROUNDED figures it is displayed beside, so a reader who divides
+            # "5.2s by hand vs 5.0s accepted" gets the ratio actually printed. Dividing the
+            # unrounded values instead made the sentence fail its own arithmetic by a hundredth.
+            "speedup_per_bout": (round(round(label_s / manual_bouts, 1)
+                                       / round(review_s / accepted, 1), 2)
                                  if manual_bouts and accepted and review_s else None),
         },
     }
 
 
 ROUND_CSV_COLS = [
-    "round", "behavior_id", "behavior", "start", "end", "wall_s", "active_s", "label_s", "review_s",
-    "wait_s", "compute_s", "train_s", "predict_s", "feature_s",
+    "round", "behavior_id", "behavior", "start", "end", "wall_s", "active_s", "work_s", "label_s",
+    "review_s", "wait_s", "other_s", "compute_s", "train_s", "predict_s", "feature_s",
     "manual_bouts", "manual_frames", "manual_video_s",
     "manual_neg_bouts", "manual_neg_frames", "manual_unknown_bouts",
     "deletes", "trims", "undos", "candidates_shown", "candidate_frames", "candidate_video_s",
     "accept", "reject", "merge", "split", "reclassify", "skip", "undo", "accepted",
     "candidate_trims", "decisions_trimmed", "replays",
     "median_decision_s", "s_per_manual_bout", "s_per_decision",
-    "cum_active_min", "cum_manual_bouts", "cum_accepted_bouts",
+    "cum_work_min", "cum_active_min", "cum_manual_bouts", "cum_accepted_bouts",
     "version", "ap", "f1", "n_pos_bouts", "n_neg_bouts", "n_seed_bouts", "n_candidate_bouts", "trained_at",
 ]
 

@@ -118,10 +118,12 @@
   #clipBar    { order: -5; }
   #toolsCard  { order: -3; }                             /* paint / annotate tools */
   #actionRow  { order: -2; }                             /* train / predict / review / stats … */
+  #hidraSetup { order: -1; }                             /* with the controls, not below the video */
   #featSetHelp{ order: -1; }
   /* REVIEW view: pull video + rail + lanes to the top; the controls drop back below them */
   main.reviewing #loadbar, main.reviewing #clipBar,
-  main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp { order: 0; }
+  main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp,
+  main.reviewing #hidraSetup { order: 0; }
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
   main.reviewing #stageRow { gap: 16px; align-items: stretch; order: -5; margin-top: 12px; }
   main.reviewing #stage { flex: 1 1 auto; margin: 0; align-self: flex-start; }
@@ -151,6 +153,9 @@
   .sbar .track { flex: 1; max-width: 320px; height: 13px; border-radius: 7px; background: #2b313d; overflow: hidden; display: flex; }
   .sbar .track i { height: 13px; display: block; }
   .sbar .cnt { color: #c2c9d4; font-variant-numeric: tabular-nums; }
+  /* field labels in the action row: visible at all times, unlike a placeholder, which vanishes as
+     soon as the field is filled -- and every one of these is a model input worth naming. */
+  #hidraGroup label.status { margin-left: 4px; }
   .rvq { font-size: 15px; line-height: 1.55; }
   .rvq b { color: #fff; }
   .hint { color: var(--mute); font-size: 12px; margin-top: 16px; line-height: 1.6;
@@ -175,9 +180,11 @@
 </head>
 <body>
 <header>
-  <h1>laras-labeler</h1>
+  <h1 id="brand">laras-labeler</h1>
   <select id="projSel" title="Switch project (workspace). Each project is a separate set of behaviors + labels + models, sharing the same clips."
           style="margin-left:4px; padding:2px 6px; font-size:12px; background:var(--surface); color:#e7eaf1; border:1px solid var(--border); border-radius:5px"></select>
+  <button id="projNew" title="Create a new project (workspace): its own behaviors, labels and models, sharing the same clips folder."
+          style="padding:2px 8px; font-size:12px">＋ project</button>
   <span class="meta" id="meta">loading…</span>
   <span id="sessionTimer" title="Session stopwatch (testing aid). ⏸ pause/resume · ⟲ reset. Logs the model's AP at each Train, so you can see how long it takes to reach good performance."
         style="margin-left:auto; display:flex; align-items:center; gap:6px; font-size:13px; color:#aeb6c2; white-space:nowrap">
@@ -318,13 +325,19 @@
     <span id="hidraGroup" style="display:none; align-items:center; gap:6px; flex-wrap:wrap">
       <span class="status">classifier:</span>
       <select id="hidraHead" title="Which pretrained HiDRA classifier answers this behavior. Choosing one makes ▶ Predict run that classifier over this video instead of the project&#39;s own model, and ⚙ Train fine-tune it on your reviewed labels. Pick “— none —” to go back to the project&#39;s own model.\nThe listed heads are the ones HiDRA ships (lab · action). Their shipped thresholds are calibrated on the lab that trained them and are usually far off on new video, which is what the review rate handles."></select>
+      <label class="status" for="hidraCollapse">scores:</label>
       <select id="hidraCollapse" title="HiDRA scores every ordered (subject → target) pair; a lane shows one number per animal. This decides which question that number answers, and every option looks plausible: self = is this animal doing it to itself · scene = is it happening at all (same value on every lane) · directed = is this animal the actor. scene and directed differ by more than 0.2 AUROC on the same head and labels.">
         <option value="scene">scene: is it happening</option>
         <option value="self">self-directed</option>
         <option value="directed">directed: who is acting</option>
       </select>
+      <label class="status" for="hidraRate">review rate:</label>
       <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
              title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
+      <label class="status" for="hidraFps">fps:</label>
+      <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
+             title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
+      <label class="status" for="hidraPpc">px/cm:</label>
       <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
@@ -332,6 +345,18 @@
     <div class="sep"></div>
     <!-- ④ Review -->
     <span class="stg">④ Review</span>
+    <!-- Detection threshold. Ann Kennedy's JAABA workflow: bias toward false positives with a low
+         threshold, then remove by hand. Drives the SAME hysteresis the timeline's clickable bouts use
+         (boutsFromProba), per behavior, live — so lowering it surfaces more detections to review and
+         raising it hides the marginal ones. Works for a HiDRA lane and the project's own model alike. -->
+    <label class="status" for="predThresh" title="Only prediction frames at or above this probability start a detected bout. Lower = more bouts (more false positives to remove by hand); higher = only the confident ones. Per behavior; does not retrain, just re-reads the same prediction.">detect ≥</label>
+    <input type="range" id="predThresh" min="0.05" max="0.95" step="0.05" value="0.6" style="width:104px; vertical-align:middle"
+           title="Detection threshold for the clickable predicted bouts. Lower to catch more (bias to false positives, then delete the wrong ones); raise to keep only confident calls. Per behavior.">
+    <span class="status" id="predThreshVal" style="min-width:2.4em; display:inline-block; font-variant-numeric:tabular-nums">0.60</span>
+    <span class="status" id="predThreshCount" style="color:#7b8494"></span>
+    <label class="status" for="predMinBout" title="Shortest run of frames that counts as a bout, for BOTH the detected lane and the Review queue. Raise it to drop brief flickers; lower it to catch quick behaviours. Per behavior; persists with the project.">min bout</label>
+    <input type="number" id="predMinBout" min="1" max="600" step="1" value="3" style="width:52px"
+           title="Minimum bout length in frames. At this clip's fps, the seconds are shown in the status line when you change it. Applies to the timeline lane and the review candidates alike.">
     <select id="candMode" title="What to review — newly-detected bouts, labeled bouts the model thinks you got wrong, or bouts the filters removed">
       <option value="new">New detections</option>
       <option value="mislabel">Correct mislabels</option>
@@ -357,6 +382,57 @@
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
   </div>
 
+  <!-- Missing media. A project stores absolute paths to its video/.slp and never copies them, so a
+       project folder carried to another machine (or a share mounted somewhere else) opens with every
+       path dead. The labels, features and models are all keyed by clip id and are fine — only the
+       pointer to the pixels is stale — so the repair is to say where the files are now. -->
+  <div id="mediaFix" style="display:none; margin:2px 0 8px; padding:9px 13px; background:#1b1613;
+       border:1px solid #4a3a24; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
+    <div class="help-hd"><b style="color:#e8a33d">Media not found on this computer</b>
+      <button id="mediaFixToggle" class="collapse-btn" data-target="mediaFixBody">hide &#9662;</button></div>
+    <div id="mediaFixBody" style="margin-top:6px">
+      <div id="mediaFixWhat"></div>
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center">
+        <label style="display:flex; align-items:center; gap:5px">folder holding the videos / .slp files
+          <input type="text" id="mediaRootIn" placeholder="Z:\elise\selected_clips_9h.v3" style="width:330px"
+                 title="Searched recursively. Files are matched by name, so the folder layout does not have to match the original machine's."></label>
+        <button id="mediaFixGo" class="primary">Find media</button>
+        <span class="status" id="mediaFixNote"></span>
+      </div>
+      <div style="margin-top:7px; color:#6b7280">Run it once per folder — videos and poses can live in
+        different places, so add each in turn. Remembered per project, and re-checked on every open.
+        Nothing is copied or moved.</div>
+    </div>
+  </div>
+  <!-- HiDRA setup. Shown ONLY when the server reports 0 heads, i.e. HiDRA is installed in this
+       labeler (it always is) but no checkout has been found. Before this, that case hid the whole
+       feature silently and a new user could not discover it existed, never mind configure it. It is
+       collapsible and the choice persists, so someone who does not want HiDRA dismisses it once. -->
+  <div id="hidraSetup" style="display:none; margin:2px 0 8px; padding:9px 13px; background:#12151b;
+       border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
+    <div class="help-hd"><b style="color:#cbd3df">HiDRA classifiers — not set up</b>
+      <button id="hidraSetupToggle" class="collapse-btn" data-target="hidraSetupBody">hide ▾</button></div>
+    <div id="hidraSetupBody" style="margin-top:6px">
+      <div>HiDRA ships <b style="color:#cbd3df">82 pretrained behaviour classifiers</b>. Point this at a
+        checkout and any of them can propose bouts for a behavior — you review the proposals here, and
+        <b>⚙ HiDRA fine-tune</b> then fine-tunes the classifier on what you accepted. Until then this labeler
+        trains its own model on pose features, which needs no setup.</div>
+      <div id="hidraWhy" style="color:#e8a33d; margin-top:7px"></div>
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center">
+        <label style="display:flex; align-items:center; gap:5px">checkout
+          <input type="text" id="hidraHomeIn" placeholder="~/code/HiDRA" style="width:270px"
+                 title="The directory holding HiDRA's predict.py."></label>
+        <label style="display:flex; align-items:center; gap:5px">interpreter with JAX
+          <input type="text" id="hidraPyIn" placeholder="~/code/HiDRA/.venv/bin/python" style="width:270px"
+                 title="A Python that can `import jax`. HiDRA is invoked as a subprocess in its own interpreter, never imported, so this labeler never needs JAX itself."></label>
+        <button id="hidraSave" class="primary">Save &amp; probe</button>
+        <span class="status" id="hidraSetupNote"></span>
+      </div>
+      <div style="margin-top:7px; color:#6b7280">Saved to <b>&lt;your projects folder&gt;/settings.json</b>,
+        so it survives a restart and travels with the projects folder. <code>HIDRA_HOME</code> /
+        <code>HIDRA_PYTHON</code> still work and are used when nothing is set here.</div>
+    </div>
+  </div>
   <div id="featSetHelp" style="margin:2px 0 8px; padding:9px 13px; background:#12151b; border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
     <div class="help-hd"><b style="color:#cbd3df">Feature set &amp; stats help</b><button id="featHelpToggle" class="collapse-btn" data-target="featHelpBody">hide ▾</button></div>
     <div id="featHelpBody" style="margin-top:6px">
@@ -479,7 +555,23 @@
 </main>
 
 <script type="module">
-import * as sleapio from 'https://esm.sh/@talmolab/sleap-io.js@0.4.1';
+// sleap-io.js is the in-browser frame-accurate decoder. It came from a CDN as a STATIC import,
+// which made a network hiccup fatal: the module never evaluated, so nothing below ran and the whole
+// page was dead — no clips, no behaviors, no buttons — for a library only decodeFrame() needs, and
+// which loadVideoBackend() already knows how to do without (it falls back to server-rendered JPEG
+// frames). Load it lazily instead, once, and let the failure stay where it belongs.
+const SLEAPIO_URL = 'https://esm.sh/@talmolab/sleap-io.js@0.4.1';
+let _sleapio = null, _sleapioTried = false;
+async function sleapioLib() {
+  if (_sleapio || _sleapioTried) return _sleapio;
+  _sleapioTried = true;
+  try { _sleapio = await import(SLEAPIO_URL); }
+  catch (e) {
+    console.warn("in-browser video decoding unavailable (could not load sleap-io.js):", e);
+    busy("no in-browser video decoding — showing server-rendered frames (playback will be slower)");
+  }
+  return _sleapio;
+}
 // Track/animal palette — deliberately NO blue or red (those are reserved for behavior labels below),
 // so a colored skeleton/chip is never confused with a Happening/Not-happening mark. Muted tones.
 const TRACK_COLORS = ["#5aa06e", "#d9a54e", "#9a72b8", "#4fa39a", "#c4b45c", "#a8826b"];
@@ -512,6 +604,21 @@ function fitCanvas(c, W, H, dpr) {   // size to W×H CSS px @dpr WITHOUT realloc
 }
 let featureSeries = { names: [], data: {} }, activeTrack = 0;
 let predictedBouts = new Map(), reviewCurrent = null;   // bid -> [{s,e,p}], and the bout under review
+const DEFAULT_THRESH = 0.6, DEFAULT_MINBOUT = 3;       // match boutsFromProba's / predict.py's defaults
+const behOf = bid => (behaviors || []).find(x => x.id === bid) || null;
+function behPP(bid) { const b = behOf(bid); if (b && !b.postproc) b.postproc = {}; return b ? b.postproc : {}; }
+// Detection cut (hi) and min bout length live in the behavior's postproc, which the SERVER candidate
+// queue also reads (predictor.candidates) -- so the slider and the min-bout box govern both the
+// timeline lane and what Review pulls, and both persist with the project.
+const behThresh  = bid => { const v = behPP(bid).hi;       return v == null ? DEFAULT_THRESH  : v; };
+const behMinBout = bid => { const v = behPP(bid).min_bout; return v == null ? DEFAULT_MINBOUT : v; };
+async function savePostproc(bid, patch) {
+  try {
+    const r = await api(`/behaviors/${bid}/postproc`, { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    if (r.ok) { const pp = await r.json(); const b = behOf(bid); if (b) b.postproc = pp; }
+  } catch (e) { /* leave local value; timeline lane still reflects it */ }
+}
 const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metricsEl = el("metrics");
 
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
@@ -661,6 +768,24 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
     const u = new URL(location); u.searchParams.set("pid", sel.value); history.replaceState(null, "", u);
     selectProject(sel.value);
   };
+  // Creating a workspace used to be impossible from the browser -- POST /api/projects was only
+  // called as a fallback when there were zero projects, so a second one needed curl.
+  el("projNew").onclick = async () => {
+    const name = prompt("New project name");
+    if (!name || !name.trim()) return;
+    const r = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" },
+                                             body: JSON.stringify({ name: name.trim() }) });
+    if (!r.ok) { busy("could not create project: " + r.status); return; }
+    const p = await r.json();
+    const opt = document.createElement("option");
+    opt.value = p.pid; opt.textContent = p.name; sel.appendChild(opt);
+    sel.value = p.pid;
+    const u = new URL(location); u.searchParams.set("pid", p.pid); history.replaceState(null, "", u);
+    logEvent("project_create", { pid: p.pid, name: p.name });
+    await selectProject(p.pid);
+    busy(`created project "${p.name}" — load a video + SLP to begin`);
+  };
+
   await selectProject(start);
 }
 
@@ -677,6 +802,7 @@ async function selectProject(pid) {
   spoutRoi = projMeta.spout_roi || null;          // shared spout ROI polygon (drawn on every clip)
   cageRoi = projMeta.cage_roi || null;            // shared cage-boundary ROI polygon
   updateSpoutCtl(); updateCageCtl();
+  renderMediaFix(projMeta.media);       // this project may have been made on another computer
   logEvent("project_open", { pid, name: projMeta.name, n_videos: (projMeta.videos || []).length,
                              n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
   hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
@@ -742,6 +868,11 @@ async function openVideo(vidId) {
   activeTrack = 0;
   renderTrackBar();
   renderClipBar();
+  // px/cm and fps are PER CLIP and are model inputs, so they have to follow the clip. This was only
+  // called from openProject, so loading or switching a clip left the previous clip's scale on
+  // screen (or a blank where one was set) -- and a scale you believe is set but is not, or belongs
+  // to another clip, is exactly the failure the "never defaulted" rule exists to prevent.
+  hidraSyncVideo();
   await loadSeries();
   await loadLabels();
   await loadAllPredictions();
@@ -1168,15 +1299,33 @@ async function loadVideoBackend() {
   frameOrder = null; pfStart = 0; pfEnd = -1;
   try {
     let blob = null;
+    // Retry only what retrying can fix. The backoff exists for "Failed to fetch" while a load-burst
+    // saturates the single-worker server, and for a 5xx -- both transient. A 404 is not: the clip's
+    // media is not on this machine (a project moved between machines, or a path that was right on
+    // the box that made it), and it will still be missing on the twelfth attempt. Retrying it spent
+    // ~25 s inside a call openVideo AWAITS, so the behavior chips -- and every other control drawn
+    // after it -- did not exist for that whole time, which reads as "the app is broken", not "this
+    // clip has no video".
     for (let attempt = 0; attempt < 12; attempt++) {
-      try { const r = await api(`/video/${vid}/stream.mp4`); if (!r.ok) throw new Error("http " + r.status); blob = await r.blob(); break; }
-      catch (err) { if (attempt === 11) throw err; await new Promise(res => setTimeout(res, Math.min(3000, 600 * (attempt + 1)))); }  // "Failed to fetch" while the load-burst saturates the single-worker server -> back off & retry (~25s)
+      let permanent = false;
+      try {
+        const r = await api(`/video/${vid}/stream.mp4`);
+        if (r.status >= 400 && r.status < 500) { permanent = true; throw new Error("http " + r.status); }
+        if (!r.ok) throw new Error("http " + r.status);
+        blob = await r.blob(); break;
+      }
+      catch (err) {
+        if (permanent || attempt === 11) throw err;
+        await new Promise(res => setTimeout(res, Math.min(3000, 600 * (attempt + 1))));
+      }
     }
     // Cap the decoded-frame cache by MEMORY, not a fixed count: 128 frames of 1280×1024 RGBA is ~670MB,
     // which starves GC and makes the backend's decode churn stall the main thread. Budget ~200MB (still
     // ~1–1.5s of buffer at these sizes), clamped to a sane frame count.
     const px = (meta && meta.width * meta.height) || (1280 * 1024);
     const cacheSize = Math.max(24, Math.min(128, Math.round(200e6 / (px * 4))));
+    const sleapio = await sleapioLib();
+    if (!sleapio) { videoBackend = null; return; }      // JPEG fallback; the clip is still usable
     videoBackend = await sleapio.MediaBunnyVideoBackend.fromBlob(blob, vid + ".mp4", { cacheSize });
     if (window.__leakPatch !== false) patchBackendLeak(videoBackend);   // stop the per-frame VideoSample leak (see note above); window.__leakPatch=false disables for A/B testing
     frameOrder = await buildFrameOrder(videoBackend);
@@ -1337,7 +1486,7 @@ function renderTimeline() {
         const p = proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // map into the VISIBLE window (zoom-aware), matching the labels/playhead
         const m = Math.abs(2 * p - 1);
         if (m < 0.04) continue;
-        const col = p >= 0.5 ? cH : cN;
+        const col = p >= behThresh(b.id) ? cH : cN;
         tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${Math.pow(m, 0.6).toFixed(3)})`;
         tctx.fillRect(x, hy, 1, hh);
       }
@@ -1726,6 +1875,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
 }
 
@@ -1766,7 +1916,7 @@ function hidraReflect() {
   const needScale = bound && !(ppc > 0);
   if (bound) {
     predict.textContent = `▶ Predict — ${pick.action}`;
-    train.textContent = "⚙ Fine-tune HiDRA";
+    train.textContent = "⚙ HiDRA fine-tune";
     predict.disabled = !HIDRA_RT?.can_infer || needScale;
     train.disabled = !HIDRA_RT?.can_infer;
   } else {
@@ -1810,7 +1960,21 @@ async function hidraSaveScale() {
 function hidraSyncVideo() {
   if (!HIDRA) return;
   el("hidraPpc").value = meta && meta.pix_per_cm ? meta.pix_per_cm : "";
+  if (document.activeElement !== el("hidraFps")) el("hidraFps").value = meta && meta.fps ? meta.fps : "";
   hidraReflect();
+}
+
+async function hidraSaveFps() {
+  if (!vid) return;
+  const v = parseFloat(el("hidraFps").value);
+  if (!isFinite(v)) return;
+  const r = await fetch(`/api/projects/${PID}/videos/${vid}/fps`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fps: v }) });
+  if (!r.ok) { busy("could not set fps: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+  const d = await r.json();
+  if (meta) meta.fps = d.fps;
+  logEvent("clip_fps_set", { video_id: vid, fps: d.fps });
+  busy(`fps for this clip → ${d.fps} · features rebuilding (their windows are in seconds)`);
 }
 
 async function hidraSave() {
@@ -1832,13 +1996,108 @@ async function hidraSave() {
   hidraReflect();
 }
 
+// The setup row: only reachable when the server answered /status, so HiDRA is present in this
+// build. `heads === 0` means no checkout was found -- which is a configuration problem the user can
+// fix, not a reason to pretend the feature does not exist.
+function hidraShowSetup(st) {
+  const box = el("hidraSetup"); if (!box) return;
+  el("hidraWhy").textContent = st.why || "No HiDRA checkout found.";
+  const home = el("hidraHomeIn"), py = el("hidraPyIn");
+  // Show the paths already in effect rather than blanks: most of the time one of them is nearly
+  // right, and a user editing a real path beats one guessing at a placeholder. Only paths the
+  // server is actually using are prefilled, so "gui"/"env" values show and a bare default does not
+  // masquerade as a choice someone made.
+  if (document.activeElement !== home) home.value = st.home_source === "default" ? "" : (st.home || "");
+  if (document.activeElement !== py) py.value = st.python_source === "default" ? "" : (st.python || "");
+  box.style.display = "block";
+}
+// ---- missing media -------------------------------------------------------------------------
+// projMeta.media is the server's answer to "can this machine actually see this project's files?".
+// Rendered as a banner rather than a per-clip error because the failure is almost always all-or-
+// nothing (the project moved machines) and the fix is one folder, not one clip.
+function renderMediaFix(st) {
+  const box = el("mediaFix");
+  if (!box) return;
+  if (!st || !st.n_missing) { box.style.display = "none"; return; }
+  const names = [];
+  for (const m of st.missing) for (const f of m.files) if (names.length < 3) names.push(f);
+  el("mediaFixWhat").innerHTML =
+    `<b style="color:#cbd3df">${st.n_missing} of ${st.total} clip${st.total === 1 ? "" : "s"}</b> `
+    + `${st.n_missing === 1 ? "cannot find its" : "cannot find their"} video/pose files at the paths `
+    + `this project was set up with — most likely it was made on another computer. Your labels, `
+    + `features and models are unaffected; only playback and Predict need the files. `
+    + `Say where they live now:`
+    + `<div style="margin-top:5px; color:#6b7280">looking for e.g. <code>${names.join("</code>, <code>")}</code></div>`;
+  box.style.display = "";
+  if (!el("mediaFixGo").onclick) {
+    el("mediaFixGo").onclick = mediaRelink;
+    el("mediaRootIn").addEventListener("keydown", e => { if (e.key === "Enter") mediaRelink(); });
+    wireCollapse("mediaFixToggle");
+  }
+  if (st.media_roots && st.media_roots.length && !el("mediaRootIn").value)
+    el("mediaRootIn").value = st.media_roots[0];
+}
+
+async function mediaRelink() {
+  const note = el("mediaFixNote"), root = el("mediaRootIn").value.trim();
+  if (!root) { note.textContent = "enter a folder"; return; }
+  note.textContent = "searching…";
+  try {
+    const r = await api(`/media/relink`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root }) });
+    const st = await r.json();
+    if (!r.ok) { note.textContent = st.detail || ("HTTP " + r.status); return; }
+    const n = (st.relinked || []).length;
+    note.textContent = n ? `found ${n} clip${n === 1 ? "" : "s"}` : "nothing matching in there";
+    renderMediaFix(st);
+    if (n) {
+      projMeta = await (await api(``)).json();     // paths changed: re-read meta before reopening
+      busy(`re-pointed ${n} clip${n === 1 ? "" : "s"} at ${root}`
+           + (st.n_missing ? ` — ${st.n_missing} still missing` : " — all clips found"));
+      if (meta) await openVideo(meta.video_id);
+      else if (projMeta.videos.length) await openVideo(projMeta.videos[0].video_id);
+    }
+  } catch (e) { note.textContent = "failed: " + e.message; }
+}
+
+async function hidraSaveSetup() {
+  const note = el("hidraSetupNote");
+  note.textContent = "probing…";
+  try {
+    const r = await fetch("/api/hidra/config", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home: el("hidraHomeIn").value, python: el("hidraPyIn").value }) });
+    if (!r.ok) { note.textContent = "could not save: HTTP " + r.status; return; }
+    const st = await r.json();
+    logEvent("hidra_configure", { heads: st.heads, can_infer: !!st.can_infer,
+                                  home_source: st.home_source });
+    if (st.heads) {
+      note.textContent = `found ${st.heads} classifiers`;
+      el("hidraSetup").style.display = "none";
+      await hidraInit();                                     // populate the picker for real
+      busy(st.can_infer ? `HiDRA ready (${st.backend}) — pick a classifier for a behavior`
+                        : `${st.heads} classifiers listed, but Predict will not run yet: ${st.why}`);
+    } else {
+      note.textContent = "";
+      hidraShowSetup(st);
+    }
+  } catch (e) { note.textContent = "could not save: " + e.message; }
+}
+
 async function hidraInit() {
+  let st = null;
   try {
     const r = await fetch("/api/hidra/status");
-    if (!r.ok) return;                                       // plain install — leave everything hidden
-    HIDRA_RT = await r.json();
-    if (!HIDRA_RT.heads) return;                             // no catalogue to offer
+    if (!r.ok) return;                                       // no HiDRA in this build at all
+    st = await r.json();
   } catch { return; }
+  HIDRA_RT = st;
+  if (el("hidraSave") && !el("hidraSave").onclick) {
+    el("hidraSave").onclick = hidraSaveSetup;
+    wireCollapse("hidraSetupToggle");
+  }
+  if (!st.heads) { hidraShowSetup(st); return; }              // configurable, not absent
+  el("hidraSetup").style.display = "none";
   try { HIDRA = await (await fetch("/api/hidra/heads")).json(); } catch { return; }
   if (!HIDRA || !HIDRA.length) { HIDRA = null; return; }
 
@@ -1865,6 +2124,14 @@ async function hidraInit() {
         `</optgroup>`;
     }).join("");
 
+  // This instance IS the hidra-in-the-loop workflow once a checkout is found, so it says so --
+  // in the header and the tab title, which is what someone looking at two open windows reads.
+  // Only in HiDRA mode: with no checkout this is the plain labeler and calling it otherwise would
+  // promise a classifier it cannot run.
+  const brand = el("brand");
+  if (brand) brand.textContent = "hidra-in-the-loop";
+  document.title = "hidra-in-the-loop";
+
   el("hidraGroup").style.display = "inline-flex";
   el("hidraSep").style.display = "";
   el("hidraHead").onchange = () => {
@@ -1875,6 +2142,7 @@ async function hidraInit() {
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraPpc").onchange = hidraSaveScale;
+  el("hidraFps").onchange = hidraSaveFps;
 
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns
@@ -2444,11 +2712,12 @@ function unlabeledSubruns(bouts, arr, minBout = 3) {
 function recomputeBouts(bid) {   // refresh the clickable predicted bouts from cached proba minus current labels
   const p = predsByBeh.get(bid);
   if (!p) { predictedBouts.delete(bid); return; }
-  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p), labelState.get(bid)));
+  const hi = behThresh(bid), lo = Math.max(0.05, hi - 0.2);
+  predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p, hi, lo, 5, behMinBout(bid)), labelState.get(bid)));
 }
 async function loadPredictions(bid) {
   const r = await api(`/predict/${vid}?behavior=${bid}&track=${activeTrack}`);
-  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); }
+  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout(); }
   else { predsByBeh.delete(bid); predictedBouts.delete(bid); }
 }
 async function loadAllPredictions() { for (const b of behaviors) await loadPredictions(b.id); }
@@ -2468,6 +2737,61 @@ function boutsFromProba(proba, hi = 0.6, lo = 0.4, smooth = 5, minBout = 3) {
   }
   return bouts;
 }
+// ---- detection threshold (Ann Kennedy's tunable cut) ------------------------------------------
+// Governs the clickable predicted bouts on the timeline for the ACTIVE behavior. Pure client-side:
+// it re-reads cached per-frame probabilities through the same hysteresis, so it is instant and
+// needs no server round-trip or retrain.
+function fracAbove(bid) {
+  const p = predsByBeh.get(bid);
+  if (!p || !p.length) return null;
+  const thr = behThresh(bid);
+  let n = 0, tot = 0;
+  for (let i = 0; i < p.length; i++) { if (!Number.isNaN(p[i])) { tot++; if (p[i] >= thr) n++; } }
+  return tot ? n / tot : null;
+}
+function renderThreshReadout() {
+  const val = el("predThreshVal"), cnt = el("predThreshCount"), sl = el("predThresh"), mb = el("predMinBout");
+  if (!val || !sl) return;
+  const bid = activeBid;
+  const thr = bid == null ? DEFAULT_THRESH : behThresh(bid);
+  sl.value = thr; val.textContent = (+thr).toFixed(2);
+  if (mb) mb.value = bid == null ? DEFAULT_MINBOUT : behMinBout(bid);
+  if (bid == null || !predsByBeh.has(bid)) { cnt.textContent = ""; return; }
+  const nB = (predictedBouts.get(bid) || []).length;
+  const fr = fracAbove(bid);
+  cnt.textContent = `${nB} bout${nB === 1 ? "" : "s"}` + (fr == null ? "" : ` · ${(fr * 100).toFixed(1)}% of frames`);
+}
+// Drag = live (recompute the lane + redraw) with no server hit; on release persist to postproc and
+// refresh the Review queue so it surfaces the same set. activeBid's behavior object holds the value.
+function onThreshInput() {
+  if (activeBid == null) { renderThreshReadout(); return; }
+  behPP(activeBid).hi = parseFloat(el("predThresh").value);
+  recomputeBouts(activeBid); renderTimeline(); renderThreshReadout();
+}
+async function onThreshCommit() {
+  if (activeBid == null) return;
+  const hi = behThresh(activeBid), lo = Math.max(0.05, hi - 0.2);
+  behPP(activeBid).lo = lo;
+  logEvent("pred_threshold_set", { behavior_id: activeBid, name: bname(activeBid),
+                                   threshold: hi, min_bout: behMinBout(activeBid),
+                                   n_bouts: (predictedBouts.get(activeBid) || []).length });
+  await savePostproc(activeBid, { hi, lo });
+  await loadCandidates(activeBid);       // the Review queue now uses this cut
+  busy(`detection ≥ ${(+hi).toFixed(2)} — ${(predictedBouts.get(activeBid) || []).length} bouts on this clip; Review queue updated`);
+}
+// Minimum bout length (frames): a floor on both the detected lane and the review candidates. Sets
+// min_bout (detection) and min_cand (review floor) together so "shorter than this" never appears.
+async function onMinBoutChange() {
+  if (activeBid == null) return;
+  const n = Math.max(1, parseInt(el("predMinBout").value, 10) || DEFAULT_MINBOUT);
+  behPP(activeBid).min_bout = n; behPP(activeBid).min_cand = n;
+  recomputeBouts(activeBid); renderTimeline(); renderThreshReadout();
+  logEvent("min_bout_set", { behavior_id: activeBid, name: bname(activeBid), min_bout: n });
+  await savePostproc(activeBid, { min_bout: n, min_cand: n });
+  await loadCandidates(activeBid);
+  busy(`min bout ${n} frames (${(n / (meta?.fps || 30)).toFixed(2)}s) — lane + Review queue updated`);
+}
+
 async function loadCandidates(bid) {
   const n = Math.max(1, Math.min(50, parseInt(el("candN").value, 10) || 10));
   const r = await api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${n}&mode=${candidateMode}&order=${candidateOrder}`);
@@ -2530,7 +2854,11 @@ async function train() {
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { logEvent("train_error", { behavior_id: bid, name: bname, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("train failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") {
+      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
+      logEvent("train_error", { behavior_id: bid, name: bname, error: one.slice(0, 500) });
+      console.error("train failed:\n" + full); busy("train failed: " + one.slice(0, 600)); return;
+    }
     const trainMs = Date.now() - t0;
     { const q = s.result || {}, m = q.metrics || {};
       // wall_ms is what the HUMAN waited (click -> UI usable); the server logs the job's own duration
@@ -2545,7 +2873,23 @@ async function train() {
     await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
     const r = s.result;
     if (r && r.metrics) timerMark(r.metrics.average_precision, bid, bname, trainMs, r.n_candidate_bouts);   // round duration + candidate-bout count, tagged with THIS model
-    if (r) {                                   // make it explicit that ALL tracks & clips were pooled, not just the active one
+    if (r && r.lab && r.action) {
+      // A HiDRA fine-tune returns what the adaptation produced (lab/action/bouts/clips), not the
+      // project model's frame/bout counts, so the native branch below would read "Trained on
+      // undefined+/undefined- frames · 0 tracks () · 0 clips" after a run that actually succeeded.
+      // Detect it by its own fields (lab+action) rather than the mode name — the PyTorch rewrite
+      // renamed the LABTAIL modes to tail/head/embedding, so `mode === "labtail"` no longer matched.
+      // A smoke run writes no checkpoint; a real run records weights and only applies on the next Predict.
+      const from = r.videos ? ` from ${r.videos} clip${r.videos === 1 ? "" : "s"}` : "";
+      if (r.smoke) {
+        busy(`Smoke test OK — prepare + train ran for ${r.action} (${r.lab}) on ${r.bouts} `
+          + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
+          + `(this only proves the pipeline; run Train without smoke for the real fit)`);
+      } else {
+        busy(`Fine-tuned ${r.action} (${r.lab}, ${r.mode}) on ${r.bouts} reviewed bout`
+          + `${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · press ▶ Predict to apply it`);
+      }
+    } else if (r) {                            // make it explicit that ALL tracks & clips were pooled, not just the active one
       const tks = (r.tracks || []).map(t => `t${t}:${(r.pos_by_track || {})[t] || 0}+`).join(" ");
       // ...and equally explicit about how far the fresh model was APPLIED, which is a separate choice
       const nPred = ((r.predict || {}).videos || []).length;
@@ -2565,7 +2909,15 @@ async function predictVideo() {   // apply existing model(s) to the current vide
   if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: vid, error: String(d).slice(0, 200) }); busy("predict: " + d); return; }
   const { job_id } = await r.json();
   pollJob(job_id, async s => {
-    if (s.status === "error") { logEvent("predict_error", { video_id: vid, error: String(s.error || "").split("\n")[0].slice(0, 200) }); busy("predict failed: " + (s.error ? s.error.split("\n")[0] : "error")); return; }
+    if (s.status === "error") {
+      // Show the WHOLE error, not just its first line. A HiDRA failure ("HiDRA wrote no frames
+      // parquet:") puts the actual cause in the tail lines that follow, so first-line-only hid
+      // exactly the part that says what went wrong. Newlines are folded to " | " for the status bar,
+      // the full text goes to the browser console, and more of it is kept in the event log.
+      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
+      logEvent("predict_error", { video_id: vid, error: one.slice(0, 500) });
+      console.error("predict failed:\n" + full); busy("predict failed: " + one.slice(0, 600)); return;
+    }
     logEvent("predict_result", { video_id: vid, wall_ms: Date.now() - pT0,
                                  n_behaviors: ((s.result || {}).behaviors || []).length,
                                  n_skipped: ((s.result || {}).skipped || []).length });
@@ -3136,6 +3488,9 @@ el("toolPaint").onclick = () => setTool("paint");
 el("toolSelect").onclick = () => setTool("select");
 el("delSeg").onclick = deleteSelectedSeg;
 el("train").onclick = train; el("predict").onclick = predictVideo; el("importBtn").onclick = importFile; el("review").onclick = startReview;
+el("predThresh").oninput = onThreshInput;
+el("predThresh").onchange = onThreshCommit;
+el("predMinBout").onchange = onMinBoutChange;
 el("candMode").onchange = async e => { candidateMode = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candOrder").onchange = async e => { candidateOrder = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candN").value = localStorage.getItem("ll_candN") || "10";

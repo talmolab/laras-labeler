@@ -42,6 +42,36 @@ in `pyproject.toml` matter — see the note there; without them several of `move
 transitive dependencies build from source and fail.
 
 
+## HiDRA classifiers (`hidra-in-the-loop`)
+
+[HiDRA](https://github.com/talmolab/HiDRA) ships 82 pretrained behaviour classifiers. A behavior in
+this labeler can be bound to one of them, and the two buttons the GUI already has then mean
+something different for that behavior: **▶ Predict** runs the head over the clip, **⚙ Train**
+fine-tunes it (LABTAIL) on the bouts you accepted in review. Everything between is unchanged — a
+HiDRA lane and a lane from the project's own model are the same artifact by the time the timeline
+and the review queue see them.
+
+```bash
+uv tool install git+https://github.com/talmolab/laras-labeler
+hidra-in-the-loop ~/my-projects
+```
+
+`hidra-in-the-loop` is the same app as `laras-labeler` — one codebase, one install, not a fork. It
+differs only in printing the HiDRA runtime at startup, so a missing checkout is named on the
+terminal as well as in the GUI. Use either command.
+
+It is **feature-detected**: with no HiDRA checkout the labeler is unchanged and trains its own model
+on pose features, which needs no setup. When a checkout is missing the GUI shows a setup box saying
+what is missing, with fields for the two paths:
+
+- **checkout** — the directory holding HiDRA's `predict.py`
+- **interpreter with JAX** — HiDRA is invoked as a subprocess in its own interpreter, never
+  imported, so this labeler never needs JAX itself
+
+Those are saved to `<your projects folder>/settings.json`, so they survive a restart and travel with
+the projects folder. `HIDRA_HOME` / `HIDRA_PYTHON` still work and apply when nothing is set in the
+GUI. `GET /api/hidra/status` reports which source is in effect and, when inference cannot run, why.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
@@ -98,19 +128,28 @@ python scripts/annotation_timing.py ~/laras-projects --pid my-project --csv roun
 ```
 
 ```
-  # behavior         started            active   label  review   wait    cpu  hand  shown   ok   no  s/bout  s/dec     AP
-  1 drinking         01-15 08:00          6:12    5:44    0:00   0:17   0:17    11      0    0    0    31.3      -  0.441
-  2 drinking         01-15 08:07          3:48    0:22    3:04   0:15   0:15     1     14   11    3    22.0    13.1  0.812
+  # behavior         started              work   label  review   wait  other    cpu  hand  shown   ok   no  s/bout  s/dec     AP
+  1 drinking         01-15 08:00          5:44    5:44    0:00   0:17   0:28   0:17    11      0    0    0    31.3      -  0.441
+  2 drinking         01-15 08:07          3:26    0:22    3:04   0:15   0:22   0:15     1     14   11    3    22.0    13.1  0.812
+
+annotation   9:10   (labeling 6:06 | reviewing 3:04)
+other time   0:50 setting up / navigating / looking  +  0:32 waiting on jobs   =  10:32 at the machine in total
 
 BY HAND    12 bouts / 900 frames (30s of video) in 6:06  ->  30.5s per bout
 IN REVIEW  14 decisions (11 accepted) on 41s of proposed video in 3:04  ->  13.1s per decision, 16.7s per accepted bout
-==> a bout cost 1.8x less human time through review (30.5s by hand vs 16.7s accepted)
+==> a bout cost 1.83x LESS human time through review (30.5s by hand vs 16.7s accepted)
 ```
 
-It also prints accuracy against **cumulative human minutes** — the axis that actually answers "how
-long to a usable model", where the Stats panel's learning curve plots accuracy per *bout*. In the app,
+It also prints accuracy against **cumulative minutes of annotation** — the axis that actually answers
+"how long to a usable model", where the Stats panel's learning curve plots accuracy per *bout*. In the app,
 **⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
 the full rollup as JSON.
+
+Time that is neither labeling nor reviewing — opening the project, picking a clip, reading Stats,
+looking at what a Train just produced — is reported as `other_s` and is a denominator for nothing.
+It used to fall into `label_s` by default, which inflated the by-hand arm and biased the headline
+toward the workflow. The accuracy curve is plotted against `work_s` (labeling + reviewing), not
+against time at the machine, so waiting on a slow Train does not read as annotation effort.
 
 Both arms are priced the same way: **all the seconds the arm consumed, over the positive bouts it
 produced.** Painting *Not-happening* and rejecting a candidate are real work and are charged, but

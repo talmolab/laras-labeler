@@ -117,6 +117,126 @@ class Project:
         self.save()
         return entry
 
+    # --- media relocation -------------------------------------------------------------------
+    # A project references its video/.slp by absolute path and never copies them (see the module
+    # docstring). That is right for a 40GB share, and wrong the moment the project moves: carry a
+    # project to another machine — a different OS, a different mount point, a colleague's laptop —
+    # and every one of those paths is a dead absolute path from someone else's filesystem. The
+    # labels, features and models are all still perfectly good; only the pointer to the pixels is
+    # stale. So the fix is to re-point, not to re-import: match the files by name under a root the
+    # user names, and rewrite the manifest.
+    MEDIA_KEYS = ("video_path", "slp_path", "playback_path")
+    _MEDIA_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".mpg", ".mpeg", ".webm", ".slp", ".h5", ".hdf5"}
+    _SCAN_LIMIT = 300_000   # files; a lab share can be enormous and we must not hang on it
+    _SCAN_DEPTH = 8
+
+    @property
+    def media_roots(self) -> list[str]:
+        """Folders to search for a clip's files, newest first. Persisted, so a project only has to be
+        pointed at its media once per machine."""
+        return self.manifest.setdefault("media_roots", [])
+
+    def media_status(self) -> dict:
+        """Which clips can find their files on THIS machine and which cannot."""
+        missing = []
+        for v in self.videos:
+            gone = sorted({Path(v[k]).name for k in self.MEDIA_KEYS
+                           if v.get(k) and not Path(v[k]).exists()})
+            if gone:
+                missing.append({"video_id": v["video_id"], "files": gone})
+        return {"total": len(self.videos), "missing": missing,
+                "n_missing": len(missing), "media_roots": list(self.media_roots)}
+
+    def _index_media(self, root: Path) -> dict[str, Path]:
+        """basename -> path for every media-ish file under `root`. Shallow files win over deep ones,
+        so a top-level `media/` beats a stray copy in some archive subfolder."""
+        found: dict[str, Path] = {}
+        n = 0
+        stack = [(root, 0)]
+        while stack:
+            d, depth = stack.pop(0)
+            try:
+                entries = list(d.iterdir())
+            except OSError:
+                continue
+            for e in entries:
+                if n >= self._SCAN_LIMIT:
+                    return found
+                try:
+                    if e.is_dir():
+                        if depth < self._SCAN_DEPTH and not e.name.startswith("."):
+                            stack.append((e, depth + 1))
+                        continue
+                except OSError:
+                    continue
+                if e.suffix.lower() in self._MEDIA_EXTS:
+                    n += 1
+                    found.setdefault(e.name.lower(), e)   # case-insensitive: SMB/exFAT shares are
+        return found
+
+    def relink_media(self, root: str | Path | None = None) -> dict:
+        """Re-point clips whose files are missing at copies found under `root` (and under any root
+        already remembered, plus this project's own media/ dir).
+
+        Matching is by exact filename — the same clip, wherever it now lives. A path that still
+        resolves is left alone, so this is safe to call on every project open and safe to re-run.
+        """
+        roots: list[Path] = []
+        if root:
+            roots.append(Path(root).expanduser())
+        roots.append(self.path / "media")
+        roots += [Path(r) for r in self.media_roots]
+        seen, ordered = set(), []
+        for r in roots:
+            rs = str(r)
+            if rs not in seen and r.is_dir():
+                seen.add(rs)
+                ordered.append(r)
+
+        before = self.media_status()
+        if not before["missing"]:
+            # nothing to do, but still remember an explicitly-given root for next time
+            if root and Path(root).expanduser().is_dir():
+                self._remember_root(root)
+                self.save()
+            return {**before, "relinked": [], "still_missing": [], "searched": [str(r) for r in ordered]}
+
+        index: dict[str, Path] = {}
+        for r in ordered:
+            for name, p in self._index_media(r).items():
+                index.setdefault(name, p)
+
+        relinked, hit_root = [], False
+        for v in self.videos:
+            fixed = {}
+            for k in self.MEDIA_KEYS:
+                old = v.get(k)
+                if not old or Path(old).exists():
+                    continue
+                hit = index.get(Path(old).name.lower())
+                if hit is not None:
+                    v[k] = str(hit)
+                    fixed[k] = str(hit)
+            if fixed:
+                hit_root = True
+                relinked.append({"video_id": v["video_id"], **fixed})
+
+        if root and hit_root:
+            self._remember_root(root)
+        if relinked or (root and hit_root):
+            self.save()
+        after = self.media_status()
+        return {**after, "relinked": relinked, "still_missing": after["missing"],
+                "searched": [str(r) for r in ordered]}
+
+    def _remember_root(self, root: str | Path) -> None:
+        r = str(Path(root).expanduser())
+        roots = self.media_roots
+        if r in roots:
+            roots.remove(r)
+        roots.insert(0, r)
+        del roots[8:]
+
     def remove_video(self, video_id: str) -> bool:
         """Drop a clip from the project: manifest entry + its derived data (labels, feature cache,
         predictions). Uploaded media under this project is removed too, but a source video/slp that
@@ -211,11 +331,33 @@ class ProjectStore:
             if (d / "project.json").exists():
                 self._cache[d.name] = Project(d)
 
+    def _rescan(self) -> None:
+        """Pick up project folders that appeared since startup. Dropping a project folder into the
+        projects root is how a project moves between machines, and having to restart the server
+        before the app would admit it existed made that look like it had not worked."""
+        try:
+            entries = sorted(self.root.iterdir())
+        except OSError:
+            return
+        for d in entries:
+            if d.name in self._cache:
+                continue
+            try:
+                if (d / "project.json").exists():
+                    self._cache[d.name] = Project(d)
+            except (OSError, ValueError):
+                continue        # a half-copied folder: ignore it now, pick it up next time
+
     def list(self) -> list[Project]:
+        self._rescan()
         return list(self._cache.values())
 
     def get(self, pid: str) -> Project | None:
-        return self._cache.get(pid)
+        p = self._cache.get(pid)
+        if p is None:
+            self._rescan()
+            p = self._cache.get(pid)
+        return p
 
     def create(self, name: str, pid: str | None = None) -> Project:
         base = pid or slugify(name)

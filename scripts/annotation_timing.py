@@ -7,7 +7,10 @@ two Trains of the same behavior — label / review, Train, look, repeat. Per rou
 
     label_s   human seconds spent painting labels from scratch     (the MANUAL workflow)
     review_s  human seconds spent judging model proposals          (the HITL workflow)
+    work_s    label_s + review_s — annotation itself, and the axis the learning curve uses
     wait_s    human seconds spent watching a train/predict bar
+    other_s   present but annotating neither way: opening the project, picking a clip, reading
+              Stats, looking at what a Train just produced. Counted, reported, and in NO denominator
     compute_s machine seconds the human waited through
     feature_s machine seconds spent in the background (pre-warm) — nobody waited for these
 
@@ -105,9 +108,9 @@ def main(argv=None) -> int:
 
     print(f"{proj.name}  ({args.pid})   {s['n_events']} events, {s['n_rounds']} rounds")
     print()
-    hdr = (f"{'#':>3} {'behavior':<16} {'started':<17} {'active':>7} {'label':>7} {'review':>7} "
-           f"{'wait':>6} {'cpu':>6} {'hand':>5} {'shown':>6} {'ok':>4} {'no':>4} {'s/bout':>7} "
-           f"{'s/dec':>6} {'AP':>6}")
+    hdr = (f"{'#':>3} {'behavior':<16} {'started':<17} {'work':>7} {'label':>7} {'review':>7} "
+           f"{'wait':>6} {'other':>6} {'cpu':>6} {'hand':>5} {'shown':>6} {'ok':>4} {'no':>4} "
+           f"{'s/bout':>7} {'s/dec':>6} {'AP':>6}")
     print(hdr)
     print("-" * len(hdr))
     for r in s["rounds"]:
@@ -117,15 +120,18 @@ def main(argv=None) -> int:
         spd = "-" if r["s_per_decision"] is None else r["s_per_decision"]
         ap = "-" if r["ap"] is None else format(r["ap"], ".3f")
         print(f"{r['round']:>3} {str(r['behavior'] or '-')[:16]:<16} {started:<17} "
-              f"{_fmt(r['active_s']):>7} {_fmt(r['label_s']):>7} {_fmt(r['review_s']):>7} "
-              f"{_fmt(r['wait_s']):>6} {_fmt(r['compute_s']):>6} "
+              f"{_fmt(r['work_s']):>7} {_fmt(r['label_s']):>7} {_fmt(r['review_s']):>7} "
+              f"{_fmt(r['wait_s']):>6} {_fmt(r['other_s']):>6} {_fmt(r['compute_s']):>6} "
               f"{r['manual_bouts']:>5} {r['candidates_shown']:>6} {r['accepted']:>4} {d.get('reject', 0):>4} "
               f"{spb:>7} {spd:>6} {ap:>6}")
 
     t, m, rv = s["totals"], s["totals"]["manual"], s["totals"]["review"]
     print()
-    print(f"human time   {_fmt(t['active_s'])}   (labeling {_fmt(t['label_s'])} | "
-          f"reviewing {_fmt(t['review_s'])} | waiting on jobs {_fmt(t['wait_s'])})")
+    print(f"annotation   {_fmt(t['work_s'])}   (labeling {_fmt(t['label_s'])} | "
+          f"reviewing {_fmt(t['review_s'])})")
+    print(f"other time   {_fmt(t['other_s'])} setting up / navigating / looking"
+          f"  +  {_fmt(t['wait_s'])} waiting on jobs"
+          f"   =  {_fmt(t['active_s'])} at the machine in total")
     print(f"machine time {_fmt(t['compute_s'])} waited-for + {_fmt(t['feature_s'])} background")
     print()
     # Both lines price the arm the same way: all its seconds over the POSITIVE bouts it produced.
@@ -164,14 +170,14 @@ def main(argv=None) -> int:
 
     if s["curve"]:
         print()
-        print("accuracy per minute of human time:")
+        print("accuracy per minute of ANNOTATION time (labeling + reviewing; excludes waiting):")
         num = lambda v: "-" if v is None else format(v, ".3f")   # noqa: E731
         for c in s["curve"]:
-            print(f"  round {c['round']:>2}  {c['cum_active_min']:>6.1f} min  "
+            print(f"  round {c['round']:>2}  {c['cum_work_min']:>6.1f} min  "
                   f"AP {num(c['ap'])}  f1 {num(c['f1'])}  "
                   f"({c['n_pos_bouts']} pos bouts: {c['n_seed_bouts']} seed + {c['n_candidate_bouts']} from review)")
     for ms in s["milestones"]:
-        print(f"  reached AP {ms['ap']} after {ms['cum_active_min']} min of human time (round {ms['round']})")
+        print(f"  reached AP {ms['ap']} after {ms['cum_work_min']} min of annotation (round {ms['round']})")
 
     if args.csv:
         args.csv.write_text(rounds_csv(s), encoding="utf-8")

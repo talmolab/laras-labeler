@@ -445,12 +445,19 @@ NODE_ALIASES = {
 def map_nodes(node_names: list[str]) -> tuple[dict[str, str], list[str]]:
     """This skeleton's node names -> HiDRA's, plus the ones with no equivalent.
 
-    Pass-through first, alias second. Nodes with no HiDRA name are dropped rather than guessed at:
-    HiDRA indexes its input by bodypart name, so a node sent under the wrong name is not a missing
-    feature but a wrong one, and the classifier has no way to tell."""
+    Nodes with no HiDRA name are dropped rather than guessed at: HiDRA indexes its input by bodypart
+    name, so a node sent under the wrong name is not a missing feature but a wrong one, and the
+    classifier has no way to tell.
+
+    EXACT NAMES WIN OVER ALIASES, in two passes, because otherwise a perfectly ordinary skeleton
+    could not run at all. `thorax` aliases to `neck` and `neck` is also a HiDRA name of its own, so
+    a rig carrying both -- common in SLEAP mouse skeletons -- mapped two nodes onto one bodypart and
+    the whole Predict failed with a collision. The exact `neck` is unambiguously the right occupant
+    of that slot; the aliased `thorax` is redundant and is reported as dropped. An alias losing to a
+    real name costs one feature. Refusing to run costs the user the feature entirely."""
     # Matching ignores case and separators, so earL, ear_l and EAR-L all reach the same entry --
     # skeletons name the same keypoint every one of those ways.
-    norm = lambda x: "".join(ch for ch in x.lower() if ch.isalnum())
+    norm = lambda x: "".join(ch for ch in x.lower() if ch.isalnum())   # noqa: E731
     known = {norm(b): b for b in HIDRA_BODYPARTS}
     alias = {norm(k): v for k, v in NODE_ALIASES.items()}
     keep, dropped = {}, []
@@ -491,36 +498,132 @@ def map_nodes(node_names: list[str]) -> tuple[dict[str, str], list[str]]:
     return keep, dropped
 
 
+# Where the checkout is. Normally HIDRA_HOME / HIDRA_PYTHON, but the GUI can set these and persist
+# them (config.py -> <projects_root>/settings.json), because requiring a terminal to find two paths
+# is the difference between "a new user can use HiDRA" and "a new user never learns it is there".
+# An explicit setting wins over the environment: the env var came from whatever shell happened to
+# launch the server, and silently overriding what someone just typed into the GUI is worse than
+# ignoring a stale variable. `source` says which one won, so it is never a mystery.
+_OVERRIDE: dict[str, str] = {}
+
+DEFAULT_HOME = Path.home() / "code/hidra-review/HiDRA"
+
+
+def configure(home: str | None = None, python: str | None = None) -> None:
+    """Set (or clear, with an empty value) the paths the integration uses."""
+    import os
+    for key, val in (("home", home), ("python", python)):
+        val = (val or "").strip()
+        if val:
+            _OVERRIDE[key] = str(Path(val).expanduser())
+        else:
+            _OVERRIDE.pop(key, None)
+    os.environ.pop("_HIDRA_CACHE", None)   # nothing cached today; kept as the one place to clear
+
+
+def configured() -> dict:
+    """The two paths in effect, and where each came from: 'gui', 'env' or 'default'."""
+    import os
+    if "home" in _OVERRIDE:
+        home, home_src = Path(_OVERRIDE["home"]), "gui"
+    elif os.environ.get("HIDRA_HOME"):
+        home, home_src = Path(os.environ["HIDRA_HOME"]).expanduser(), "env"
+    else:
+        home, home_src = DEFAULT_HOME, "default"
+    if "python" in _OVERRIDE:
+        py, py_src = Path(_OVERRIDE["python"]), "gui"
+    elif os.environ.get("HIDRA_PYTHON"):
+        py, py_src = Path(os.environ["HIDRA_PYTHON"]).expanduser(), "env"
+    else:
+        # A venv puts its interpreter at Scripts\python.exe on Windows and bin/python elsewhere, so
+        # the posix layout alone made the default unreachable on Windows -- and it is the default
+        # that decides whether HiDRA is found with no configuration at all. Both candidates are
+        # tried so a checkout laid out either way is picked up; the posix one is the fallback so the
+        # reported path stays recognisable when neither exists.
+        cands = [home.parent / "Scripts" / "python.exe", home.parent / ".venv" / "Scripts" / "python.exe",
+                 home.parent / ".venv" / "bin" / "python", home / ".venv" / "Scripts" / "python.exe",
+                 home / ".venv" / "bin" / "python"]
+        py = next((c for c in cands if c.exists()), home.parent / ".venv" / "bin" / "python")
+        py_src = "default"
+    return {"home": home, "python": py, "home_source": home_src, "python_source": py_src}
+
+
 def runtime() -> dict:
     """Can inference actually run here, and if not, exactly what is missing.
 
     Reported to the GUI so a bound head whose runtime is absent says so in the picker rather than
-    failing only once the user presses Predict."""
-    import os
+    failing only once the user presses Predict -- and so the GUI can offer to fix it, which is why
+    `why` is a sentence a user can act on rather than a boolean."""
     import subprocess
 
-    home = Path(os.environ.get("HIDRA_HOME", str(Path.home() / "code/hidra-review/HiDRA")))
-    py = Path(os.environ.get("HIDRA_PYTHON", str(home.parent / ".venv/bin/python")))
-    info = {"home": str(home), "python": str(py), "can_infer": False, "backend": None, "why": None}
+    cfg = configured()
+    home, py = cfg["home"], cfg["python"]
+    info = {"home": str(home), "python": str(py), "can_infer": False, "backend": None, "why": None,
+            "home_source": cfg["home_source"], "python_source": cfg["python_source"]}
 
-    if not (home / "predict.py").exists():
-        info["why"] = f"no predict.py under {home} — set HIDRA_HOME to your HiDRA checkout"
-        return info
     if not py.exists():
-        info["why"] = f"no interpreter at {py} — set HIDRA_PYTHON to one with JAX installed"
+        info["why"] = f"no interpreter at {py} — set HIDRA_PYTHON to one with HiDRA's runtime installed"
         return info
+    # Probe for a usable backend AND whether the refactored `hidra` package is importable. The PyTorch
+    # rewrite is a pip-installable package, so a source checkout is no longer required: when `hidra`
+    # imports we drive it through its higher-level entrypoints (`python -m hidra.cli` / `hidra.finetune`,
+    # what the console scripts call), and only fall back to a checkout's root shim scripts otherwise.
+    # Backend: prefer torch (GPU on Windows, which the JAX build could not); accept jax; report which —
+    # and for torch whether CUDA is live — so a bound head doesn't look broken when the backend changed.
+    probe = (
+        "import sys\n"
+        "hp = '0'\n"
+        "try:\n"
+        "    import hidra  # noqa: F401\n"
+        "    hp = '1'\n"
+        "except Exception:\n"
+        "    pass\n"
+        "be = None\n"
+        "try:\n"
+        "    import torch\n"
+        "    be = 'torch:' + ('cuda' if torch.cuda.is_available() else 'cpu')\n"
+        "except Exception:\n"
+        "    pass\n"
+        "if be is None:\n"
+        "    try:\n"
+        "        import jax\n"
+        "        be = 'jax:' + jax.default_backend()\n"
+        "    except Exception as e:\n"
+        "        sys.stderr.write(repr(e)); sys.exit(3)\n"
+        "print(be + '|hidra=' + hp)\n"
+    )
     try:
-        r = subprocess.run([str(py), "-c", "import jax; print(jax.default_backend())"],
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run([str(py), "-c", probe], capture_output=True, text=True, timeout=180)
     except (subprocess.SubprocessError, OSError) as e:
         info["why"] = f"could not probe {py}: {e}"
         return info
     if r.returncode != 0:
-        info["why"] = f"JAX is not importable in {py} — install it there ({r.stderr.strip().splitlines()[-1:] or ['']}[0])"
+        last = (r.stderr.strip().splitlines()[-1:] or [""])[0]
+        info["why"] = (f"neither PyTorch nor JAX is importable in {py} — install HiDRA's runtime there "
+                       f"(e.g. `uv pip install 'hidra[torch]'`) ({last})")
         return info
-    info["backend"] = r.stdout.strip()
+    backend, _, hp = r.stdout.strip().partition("|hidra=")
+    info["backend"] = backend                    # e.g. 'torch:cuda', 'torch:cpu', 'jax:cpu'
+    info["has_package"] = hp.strip() == "1"      # can we use `python -m hidra.*` entrypoints?
+    # We need a way to invoke HiDRA: the installed package, or a checkout's root shim scripts.
+    if not info["has_package"] and not (home / "predict.py").exists():
+        info["why"] = (f"the `hidra` package is not importable in {py}, and there is no predict.py "
+                       f"under {home} — install it (`uv pip install 'hidra[torch]'`) or point "
+                       f"HIDRA_HOME at a HiDRA checkout")
+        return info
     info["can_infer"] = True
     return info
+
+
+def _hidra_cmd(rt: dict, module: str, shim: str) -> list[str]:
+    """Command prefix for a HiDRA subprocess: the refactored package's higher-level entrypoint
+    (`python -m hidra.<module>`, what the `hidra-*` console scripts call) when the package is
+    importable — layout-independent, and the interface HiDRA now intends callers to use — else the
+    checkout's root shim script, for an un-installed source checkout."""
+    py = str(rt["python"])
+    if rt.get("has_package"):
+        return [py, "-m", module]
+    return [py, str(Path(rt["home"]) / shim)]
 
 
 def runnable_labs(home: Path | None = None) -> set[str]:
@@ -533,20 +636,23 @@ def runnable_labs(home: Path | None = None) -> set[str]:
     labeler's own interpreter, which has no JAX."""
     import ast
     home = home or Path(runtime()["home"])
-    src = home / "predict.py"
-    if not src.exists():
-        return set()
-    try:
-        tree = ast.parse(src.read_text())
-    except SyntaxError:
-        return set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "ALL_LABS" for t in node.targets):
-            try:
-                return set(ast.literal_eval(node.value))
-            except (ValueError, TypeError):
-                return set()
+    # ALL_LABS moved from predict.py into the package (src/hidra/cli.py) in the PyTorch rewrite; the
+    # original checkout still has it in predict.py. Try both so this reads the real list either way.
+    for rel in ("src/hidra/cli.py", "predict.py"):
+        src = home / rel
+        if not src.exists():
+            continue
+        try:
+            tree = ast.parse(src.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "ALL_LABS" for t in node.targets):
+                try:
+                    return set(ast.literal_eval(node.value))
+                except (ValueError, TypeError):
+                    pass
     return set()
 
 
@@ -558,9 +664,14 @@ def catalog(thresholds_csv: Path | None = None) -> list[dict]:
     what a user would otherwise assume applies to their videos, and out of domain it usually does
     not (see the module docstring on calibration)."""
     import os
-    p = thresholds_csv or Path(os.environ.get(
-        "HIDRA_THRESHOLDS", str(Path(runtime()["home"]) / "derived_thresholds_train.csv")))
-    if not p.exists():
+    home = configured()["home"]
+    # The shipped table moved to src/hidra/assets/ when HiDRA became an installable package; the
+    # original checkout kept it at the root. HIDRA_THRESHOLDS still overrides both.
+    cand = [os.environ.get("HIDRA_THRESHOLDS"),
+            home / "src" / "hidra" / "assets" / "derived_thresholds_train.csv",
+            home / "derived_thresholds_train.csv"]
+    p = thresholds_csv or next((Path(c) for c in cand if c and Path(c).exists()), None)
+    if p is None or not Path(p).exists():
         return []
     runnable = runnable_labs()
     # The shipped table keys each head as `Lab__action` in an unnamed first column.
@@ -656,12 +767,32 @@ def export_tracking(poses: np.ndarray, node_names: list[str], fps: float,
             "bodyparts": names, "dropped_nodes": dropped}
 
 
+def _subproc_env(extra: dict | None = None) -> dict:
+    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR so HiDRA's work_root()
+    returns before its POSIX-only os.getuid() call (which raises AttributeError on Windows and
+    aborts inference before it writes anything). A user-set HIDRA_WORKDIR still wins. On Linux this
+    changes nothing, leaving HiDRA free to prefer /dev/shm."""
+    import os, tempfile
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if os.name == "nt":
+        env.setdefault("HIDRA_WORKDIR", os.path.join(tempfile.gettempdir(), "hidra-work"))
+    if extra:
+        env.update(extra)
+    return env
+
+
 def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: float,
-          progress=lambda p, m: None) -> Path:
+          weights: str | None = None, progress=lambda p, m: None) -> Path:
     """Run one (lab, action) head over the exported folder. Returns the frames parquet.
 
     Scoped to a single head by a one-row job sheet: the default is all 82, which on CPU is the
-    difference between minutes and hours for a result the user did not ask for."""
+    difference between minutes and hours for a result the user did not ask for.
+
+    `weights` is an optional checkpoint template with a `{config}` placeholder (what
+    `finetune()` returns). When set, predict.py loads the project's fine-tuned per-lab
+    weights instead of the shipped ones, so a Predict after a Train uses the adapted head. It
+    is passed through untouched -- predict.py requires the `{config}` placeholder and resolves
+    it against its config ensemble."""
     import os
     import subprocess
 
@@ -682,14 +813,26 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
         w.writerow(["1", lab, action, "*", "*"])                  # every pair; we collapse after
 
     out.mkdir(parents=True, exist_ok=True)
-    cmd = [rt["python"], str(Path(rt["home"]) / "predict.py"), str(work),
+    cmd = _hidra_cmd(rt, "hidra.cli", "predict.py") + [str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
            "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
-    progress(5, f"{action} ({lab}) on {rt['backend']}")
+    # Fine-tuned weights are a {config}-templated path; use them only if the checkpoints actually
+    # exist. A fine-tune that recorded a weights path but produced no checkpoint (a failed/empty
+    # train) would otherwise make every later Predict crash inside HiDRA with FileNotFoundError —
+    # fall back to the shipped (zero-shot) weights and say so, rather than hard-failing.
+    import glob as _glob
+    if weights and not _glob.glob(str(weights).replace("{config}", "*")):
+        progress(4, "fine-tuned weights missing — using shipped (zero-shot)")
+        weights = None
+    if weights:
+        cmd += ["--weights", weights]
+    progress(5, f"{action} ({lab}) on {rt['backend']}"
+                + (" [fine-tuned]" if weights else ""))
 
-    proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE,
+    _home = Path(rt["home"])
+    proc = subprocess.Popen(cmd, cwd=str(_home) if _home.exists() else None, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                            env=_subproc_env())
     tail: list[str] = []
     for line in proc.stdout or []:
         line = line.rstrip()
@@ -762,85 +905,184 @@ def to_lanes(frames_parquet: Path, lab: str, action: str, collapse: str,
     return lanes if rate is None else by_rate(lanes, float(rate))[0]
 
 
-def export_labels(store, pid: str, bid: int, head: dict, work: Path) -> dict:
-    """Reviewed labels for one behavior -> the per-frame table LABTAIL fine-tuning trains on.
+def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
+                 n_animals_by_video: dict | None = None) -> dict:
+    """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.
 
-    Only frames a human actually adjudicated are written. A frame nobody looked at is not a
-    negative -- treating it as one teaches the head that its own correct detections are wrong,
-    which is the fastest way to make fine-tuning worse than the head it started from. The
-    `labeled` column carries that distinction so the trainer can mask."""
+    HiDRA's PyTorch fine-tuner takes a bout CSV with one row per positive span --
+    ``file,agent,target,action,start_frame,stop_frame`` with stop EXCLUSIVE -- and treats every
+    OTHER frame of a staged video as a negative for the (agent, target, action) combinations that
+    video annotates. That is the opposite of the old per-frame `labeled`-mask export: the trainer
+    no longer masks un-adjudicated frames, so exhaustiveness is now the CALLER's contract. Only
+    stage videos that were reviewed end to end -- a video skimmed in part teaches the head that its
+    own un-reviewed, correct detections are negatives, the fastest way to make fine-tuning worse
+    than the head it started from.
+
+    TARGET, because the labeler's labels are per (video, track) -- one animal's lane -- while HiDRA
+    scores ordered (agent -> target) pairs and `prepare` needs a concrete target:
+      - a self-directed head (collapse == 'self') takes ``target = self``;
+      - a directed/scene head in a two-animal clip takes the OTHER animal as the target, which is
+        the only unambiguous reconstruction the per-lane labels allow;
+      - a directed/scene head with more than two animals has no recoverable target (the per-track
+        label does not say which partner), so those rows are SKIPPED and counted in
+        `directed_ambiguous` for the caller to surface -- such behaviours are zero-shot only here.
+
+    Stored span values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's schema); only 1
+    is written. Our runs are half-open [start, stop), which is exactly `prepare`'s exclusive
+    stop_frame, so no +/-1 fudge and no --stop-inclusive.
+
+    Returns counts plus `video_ids`, the videos carrying at least one positive -- exactly the set of
+    tracking parquets the caller must stage alongside this CSV."""
     proj = store.get(pid)
+    n_by = n_animals_by_video or {}
+    self_directed = head.get("collapse") == "self"
     rows: list[dict] = []
+    vids: set[str] = set()
     n_bouts = 0
+    ambiguous = 0
     for v in proj.videos:
         vid = v["video_id"]
-        lab = proj.labels(vid, bid) if hasattr(proj, "labels") else None
-        if lab is None:
-            lf = proj.path / "labels" / vid / f"{bid}.json"
-            if not lf.exists():
-                continue
-            lab = json.loads(lf.read_text())
-        spans = lab.get("spans", lab) if isinstance(lab, dict) else lab
-        for sp in spans or []:
-            try:
-                a, b = int(sp["start"]), int(sp["stop"])
-                t = int(sp.get("track", 0))
-                pos = bool(sp.get("value", sp.get("positive", True)))
-            except (KeyError, TypeError, ValueError):
-                continue
-            n_bouts += pos
-            rows.append({"file": Path(str(v.get("video_path") or vid)).stem or vid,
-                         "subject": f"mouse{t + 1}", "target": "self",
-                         "lab": head["lab"], "action": head["action"],
-                         "start_frame": a, "stop_frame": b,
-                         "label": int(pos), "labeled": 1})
+        try:
+            df = labels.rows_for_behavior(pid, vid, bid)
+        except (KeyError, FileNotFoundError):
+            continue
+        if df is None or df.empty:
+            continue
+        stem = Path(str(v.get("video_path") or vid)).stem or vid
+        n_animals = int(n_by.get(vid) or v.get("n_animals") or 0)
+        tracks = sorted({int(x) for x in df["track"].unique()})
+        for t in tracks:
+            agent = f"mouse{t + 1}"
+            if self_directed:
+                target = "self"                            # the acting animal itself
+            elif n_animals == 2:
+                target = f"mouse{2 if t == 0 else 1}"      # the only other animal — unambiguous
+            else:
+                # A directed (social) behaviour needs a specific (agent -> target) pair, but a
+                # per-track label records only the acting animal. With !=2 animals the partner is
+                # unrecoverable, and writing target=self would both mis-train the head and, when a
+                # single track is labelled, crash HiDRA's epoch builder (one-mouse label set). Skip
+                # these rows and report them; directed behaviours on >2-animal clips are zero-shot only.
+                target = None
+            for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
+                a, b, val = int(run[0]), int(run[1]), int(run[2])
+                if val != 1 or b <= a:                     # positives only; negatives are implicit
+                    continue
+                if target is None:
+                    ambiguous += 1
+                    continue
+                n_bouts += 1
+                vids.add(vid)
+                rows.append({"file": f"{stem}.parquet", "agent": agent, "target": target,
+                             "action": head["action"], "start_frame": a, "stop_frame": b})
 
-    work.mkdir(parents=True, exist_ok=True)
-    out = work / "labels.csv"
-    with out.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "subject", "target", "lab", "action",
-                                          "start_frame", "stop_frame", "label", "labeled"])
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["file", "agent", "target", "action",
+                                          "start_frame", "stop_frame"])
         w.writeheader()
         w.writerows(rows)
-    return {"bouts": n_bouts, "spans": len(rows), "path": str(out),
-            "videos": len({r["file"] for r in rows})}
+    return {"bouts": n_bouts, "spans": len(rows), "path": str(out_csv),
+            "videos": len(vids), "video_ids": sorted(vids),
+            "directed_ambiguous": ambiguous}
 
 
-def finetune(script: Path, rt: dict, head: dict, work: Path, counts: dict,
-             progress=lambda p, m: None) -> dict:
-    """HiDRA's LABTAIL adaptation on this project's reviewed labels.
+def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
+             tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
+             smoke: bool = False, progress=lambda p, m: None) -> dict:
+    """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
+    ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
+    ``train_perlab_heads.py --mode labtail`` CLI is gone).
 
-    LABTAIL trains the lab embedding, three tail blocks and the per-lab output projection while the
-    self-supervised trunk stays frozen. That is what makes it viable here: a few hundred reviewed
-    bouts is nowhere near enough to move a trunk, but it is enough to re-aim a tail."""
-    import os
+    Two subprocess steps:
+      1. ``prepare`` stages the tracking parquets in `tracking_dir` and the bout CSV
+         (`annotations_csv`, written by `export_bouts`) into ``{data_root}/staged``.
+      2. ``train`` warm-starts from the shipped head and fine-tunes it, writing one checkpoint per
+         config to ``{data_root}/models`` as ``{config}__{tag}.pkl``.
+
+    `mode` chooses what is adapted (this is the LABTAIL family):
+      - ``tail`` (default): the per-lab LSTM/FF tail + lab embedding + head projection -- the
+        closest analogue to the old LABTAIL, the strongest adaptation, and the one the user asks for
+        by name. It makes the OTHER labs' heads in the checkpoint unusable, which is why Predict must
+        pass ``--labs {lab}`` (the labeler always infers one head, so this is a non-issue here).
+      - ``head``: only the linear head (leaves every other lab intact; needs the least data).
+      - ``embedding``: the lab embedding + head.
+
+    Predict averages all five config checkpoints, so `train` writes all five by default; pass a
+    subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
+    ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
+
+    `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
+    that writes NO checkpoint, only proving the data + environment are wired up end to end. Use it
+    for a first test -- it finishes in minutes instead of the hours the real ensemble takes. A smoke
+    run returns ``weights=None`` and ``smoke=True`` so the caller does not record a checkpoint that
+    was never written."""
     import subprocess
 
-    ckpt = work / "checkpoint"
-    ckpt.mkdir(parents=True, exist_ok=True)
-    cmd = [rt["python"], str(script), "--mode", "labtail",
-           "--labels", str(work / "labels.csv"), "--lab", head["lab"],
-           "--action", head["action"], "--out", str(ckpt)]
-    progress(0, "starting LABTAIL")
+    home = Path(rt["home"])
+    if not rt.get("has_package") and not (home / "finetune.py").exists():
+        raise RuntimeError(
+            f"the `hidra` package is not importable and there is no finetune.py under {home} — this "
+            f"HiDRA is either not installed or predates the PyTorch fine-tuner. Update it to current "
+            f"main / `uv pip install 'hidra[torch]'`.")
+    entry = _hidra_cmd(rt, "hidra.finetune", "finetune.py")   # `python -m hidra.finetune`, or the shim
 
-    proc = subprocess.Popen(cmd, cwd=rt["home"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1",
-                                 "PERLAB_WORKDIR": str(work / "_perlab")})
-    tail: list[str] = []
-    for line in proc.stdout or []:
-        line = line.rstrip()
-        if not line:
-            continue
-        tail = (tail + [line])[-40:]
-        progress(min(95, len(tail) * 2), line[:120])
-    if proc.wait() != 0:
-        raise RuntimeError("LABTAIL fine-tuning failed:\n" + "\n".join(tail[-15:]))
+    data_root = Path(data_root)
+    staged = data_root / "staged"
+    models = data_root / "models"
+    workdir = data_root / "_work"          # MUST be set on Windows: train defaults it to /dev/shm
+    cwd = str(home) if home.exists() else None
 
+    def _stream(cmd, label, lo, hi):
+        progress(lo, f"{label} …")
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=_subproc_env())
+        seen: list[str] = []
+        for line in proc.stdout or []:
+            line = line.rstrip()
+            if not line:
+                continue
+            seen = (seen + [line])[-40:]
+            progress(min(hi - 1, lo + len(seen)), line[:120])
+        if proc.wait() != 0:
+            raise RuntimeError(f"HiDRA {label} failed:\n" + "\n".join(seen[-15:]))
+        return seen
+
+    # 1. prepare -----------------------------------------------------------------------------------
+    prepare = entry + ["prepare",
+               "--tracking", str(tracking_dir), "--annotations", str(annotations_csv),
+               "--lab", head["lab"], "--out", str(staged), "--drop-unsupported"]
+    log = _stream(prepare, "prepare", 2, 20)
+
+    # 2. train -------------------------------------------------------------------------------------
+    train = entry + ["train",
+             "--data", str(staged), "--lab", head["lab"], "--actions", head["action"],
+             "--out", str(models), "--tag", tag, "--mode", mode,
+             "--backend", "torch", "--workdir", str(workdir)]
+    if configs:
+        train += ["--configs", ",".join(configs)]
+    if smoke:
+        train.append("--smoke")
+    log += _stream(train, "train", 20, 100)
+
+    # A real run must leave at least one {config}__{tag}.pkl behind. `finetune.py train` can exit 0
+    # having written nothing (every config's inner fit failed — it warns "nothing was written" and
+    # returns 0), so verify here rather than record a weights path to files that do not exist, which
+    # would poison every later Predict with a FileNotFoundError deep inside HiDRA.
+    weights = None
+    if not smoke:
+        written = sorted(models.glob(f"*__{tag}.pkl"))
+        if not written:
+            raise RuntimeError(
+                "HiDRA train exited without writing any checkpoint — the fit produced nothing to "
+                "predict with. This usually means each config's inner training step failed; the "
+                "cause is in the log:\n" + "\n".join(log[-18:]))
+        weights = str(models / ("{config}__" + tag + ".pkl"))
     progress(100, "done")
-    return {"mode": "labtail", "lab": head["lab"], "action": head["action"],
-            "checkpoint": str(ckpt), "backend": rt["backend"], **counts,
-            "log": tail[-15:]}
+    return {"mode": mode, "lab": head["lab"], "action": head["action"], "smoke": smoke,
+            "checkpoint": weights, "weights": weights, "backend": rt["backend"],
+            "bouts": counts.get("bouts"), "spans": counts.get("spans"),
+            "videos": counts.get("videos"), "log": log[-15:]}
 
 
 # Behaviour categories, for grouping the classifier picker the way the ethogram is organised rather
