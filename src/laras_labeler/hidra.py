@@ -816,6 +816,14 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     cmd = _hidra_cmd(rt, "hidra.cli", "predict.py") + [str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
            "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
+    # Fine-tuned weights are a {config}-templated path; use them only if the checkpoints actually
+    # exist. A fine-tune that recorded a weights path but produced no checkpoint (a failed/empty
+    # train) would otherwise make every later Predict crash inside HiDRA with FileNotFoundError —
+    # fall back to the shipped (zero-shot) weights and say so, rather than hard-failing.
+    import glob as _glob
+    if weights and not _glob.glob(str(weights).replace("{config}", "*")):
+        progress(4, "fine-tuned weights missing — using shipped (zero-shot)")
+        weights = None
     if weights:
         cmd += ["--weights", weights]
     progress(5, f"{action} ({lab}) on {rt['backend']}"
@@ -1051,7 +1059,19 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
         train.append("--smoke")
     log += _stream(train, "train", 20, 100)
 
-    weights = None if smoke else str(models / ("{config}__" + tag + ".pkl"))
+    # A real run must leave at least one {config}__{tag}.pkl behind. `finetune.py train` can exit 0
+    # having written nothing (every config's inner fit failed — it warns "nothing was written" and
+    # returns 0), so verify here rather than record a weights path to files that do not exist, which
+    # would poison every later Predict with a FileNotFoundError deep inside HiDRA.
+    weights = None
+    if not smoke:
+        written = sorted(models.glob(f"*__{tag}.pkl"))
+        if not written:
+            raise RuntimeError(
+                "HiDRA train exited without writing any checkpoint — the fit produced nothing to "
+                "predict with. This usually means each config's inner training step failed; the "
+                "cause is in the log:\n" + "\n".join(log[-18:]))
+        weights = str(models / ("{config}__" + tag + ".pkl"))
     progress(100, "done")
     return {"mode": mode, "lab": head["lab"], "action": head["action"], "smoke": smoke,
             "checkpoint": weights, "weights": weights, "backend": rt["backend"],
