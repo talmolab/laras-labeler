@@ -989,7 +989,7 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
-             smoke: bool = False, progress=lambda p, m: None) -> dict:
+             smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
     """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
     ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
     ``train_perlab_heads.py --mode labtail`` CLI is gone).
@@ -1011,6 +1011,11 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     Predict averages all five config checkpoints, so `train` writes all five by default; pass a
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
     ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
+
+    `steps` caps the per-config training steps (HiDRA's default is 8000). F1 typically plateaus
+    well before that (~2000 in practice), so the labeler defaults this to a small value to keep each
+    HITL round fast; pass ``None`` to use HiDRA's own default. Unlike stopping the run by hand mid
+    config (which leaves no checkpoint), a smaller `steps` still writes a full checkpoint per config.
 
     `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
     that writes NO checkpoint, only proving the data + environment are wired up end to end. Use it
@@ -1061,6 +1066,8 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
              "--backend", "torch", "--workdir", str(workdir)]
     if configs:
         train += ["--configs", ",".join(configs)]
+    if steps:
+        train += ["--steps", str(steps)]
     if smoke:
         train.append("--smoke")
     log += _stream(train, "train", 20, 100)
