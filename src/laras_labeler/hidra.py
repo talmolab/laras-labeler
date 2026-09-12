@@ -768,10 +768,12 @@ def export_tracking(poses: np.ndarray, node_names: list[str], fps: float,
 
 
 def _subproc_env(extra: dict | None = None) -> dict:
-    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR so HiDRA's work_root()
-    returns before its POSIX-only os.getuid() call (which raises AttributeError on Windows and
-    aborts inference before it writes anything). A user-set HIDRA_WORKDIR still wins. On Linux this
-    changes nothing, leaving HiDRA free to prefer /dev/shm."""
+    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR to a temp dir so every
+    HiDRA scratch path — the tracking cache AND predict's per-lab workdir, both routed through
+    paths.work_root() — lands under %TEMP% instead of /dev/shm (which on Windows becomes C:\\dev\\shm).
+    A user-set HIDRA_WORKDIR still wins. On Linux this is left unset, so work_root() prefers /dev/shm
+    (RAM). Recent HiDRA also guards its os.getuid() call, so work_root() no longer crashes on Windows
+    without this — but setting it keeps the scratch out of C:\\ and off the current drive root."""
     import os, tempfile
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if os.name == "nt":
@@ -846,14 +848,8 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     # predict.py exits 0 after running nothing if the job sheet selected no servable lab, so a
     # zero-work run has to be caught here or it reads downstream as a behaviour that never occurred.
     joined = "\n".join(tail)
-    if "/dev/shm" in joined:
-        raise RuntimeError(
-            "HiDRA's predict.py hardcodes its scratch directory under /dev/shm "
-            "(predict.py: PERLAB_WORKDIR=f\"/dev/shm/doom_predict_{os.getpid()}\"), which exists "
-            "only on Linux. It overrides the environment, so it cannot be redirected from here, "
-            "and /dev/shm cannot be created on macOS. Change that one line to a temp directory — "
-            "e.g. tempfile.mkdtemp(prefix=\"doom_predict_\") — and inference runs. "
-            "Nothing else in the pipeline is platform-specific.")
+    # (Predict's scratch dir is portable as of HiDRA's paths.work_root() — it no longer hardcodes
+    # /dev/shm, so a /dev/shm mention in the log is the correct Linux RAM path, not a failure.)
     if "running 0 lab classifier set" in joined:
         raise RuntimeError(
             f"HiDRA ran no classifier for ({lab}, {action}) — {lab!r} is not one of the labs it can "
