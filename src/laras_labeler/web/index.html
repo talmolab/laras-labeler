@@ -631,6 +631,18 @@ let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: a
 let videoBackend = null, frameOrder = null, pfStart = 0, pfEnd = -1;
 let playRaf = null, playAnchorT = null, playAnchorF = 0, playBusy = false, playbackSpeed = 1;
 const PF_CHUNK = 40, PF_TRIGGER = 20;
+// Read-ahead ("warm") buffer for smooth full-speed playback. Every frame is decoded on demand
+// (the library's own prefetch is disabled — see patchBackendLeak note — because its overlapping
+// streaming decodeRange() calls hung the decoder). With no read-ahead, decode can't sustain high
+// fps and playTick skips frames to stay locked to real time. This warms upcoming frames INTO the
+// backend's frame cache, one at a time, through the same single-frame getFrame path (no streaming
+// iterator, so none of the reentrancy that broke the old prefetch) and serialized behind a single
+// decode gate so no two decodes ever overlap. It only runs during playback, self-disables on any
+// error (falling back to today's on-demand behavior — never worse), and can be turned off with
+// window.__warm = false. WARM_LOOK stays under the smallest possible frame cache (24) so warming
+// never evicts the frame playback is about to show.
+let __decGate = Promise.resolve(), warmHead = -1, warming = false;
+const WARM_LOOK = 16;
 const undoStack = [], redoStack = [], reviewUndo = [];   // reviewUndo: compound review actions (accept/reject/split/merge/reclassify) as single undo units
 let drag = null, reviewQueue = [], reviewIdx = 0, reviewHi = null, painting = null;
 let candidateMode = "new";               // "new" (unlabeled detections) | "mislabel" (cross-val says you got it wrong) | "dropped" (filtered out)
@@ -1348,10 +1360,38 @@ function prefetchWin(s, e) { const b = videoBackend; if (!b) return; const lo = 
 
 async function decodeFrame(idx) {
   if (!videoBackend) return null;
+  // Serialize every decode through one gate: playback frames AND warm-ahead frames go through here,
+  // so getFrame() is never called concurrently with itself (the hazard that hung the old prefetch).
+  // A cached frame returns near-instantly, so this adds no real latency when the warm buffer is full.
+  const run = async () => {
+    try {
+      const fr = await videoBackend.getFrame(decodeIndex(idx));
+      return fr instanceof ImageBitmap ? fr : (fr instanceof ImageData ? await createImageBitmap(fr) : null);
+    } catch (e) { return null; /* decode miss */ }
+  };
+  const p = __decGate.then(run, run);
+  __decGate = p.catch(() => {});
+  return p;
+}
+// Warm upcoming frames into the backend cache while playing, so playTick's own decode is a cache hit
+// (instant) and it no longer has to skip to stay real-time. One frame per iteration, serialized via
+// decodeFrame's gate, yielding between frames so a live playback/scrub decode always interleaves
+// ahead of warming. Bounded to WARM_LOOK frames ahead of the playhead; exits when playback stops.
+async function warmAhead() {
+  if (warming || window.__warm === false) return;
+  warming = true;
   try {
-    const fr = await videoBackend.getFrame(decodeIndex(idx));
-    return fr instanceof ImageBitmap ? fr : (fr instanceof ImageData ? await createImageBitmap(fr) : null);
-  } catch (e) { return null; /* decode miss */ }
+    while (playing && videoBackend && meta) {
+      if (warmHead < cur) warmHead = cur;                       // caught up, or playTick skipped ahead
+      const goal = Math.min(meta.n_frames - 1, cur + WARM_LOOK);
+      if (warmHead >= goal) { await new Promise(r => setTimeout(r, 6)); continue; }   // far enough ahead — idle
+      const next = warmHead + 1;
+      await decodeFrame(next);                                  // lands in the backend's frame cache
+      warmHead = next;
+      await new Promise(r => setTimeout(r, 0));                 // let a pending playback frame slip in
+    }
+  } catch (e) { console.warn("[playback] warm-ahead disabled:", e); }
+  finally { warming = false; }
 }
 async function show(i) {
   cur = Math.max(0, Math.min(meta.n_frames - 1, i));
@@ -3232,6 +3272,7 @@ function play(stopAt = null) {
   playAnchorT = null; playBusy = false;              // re-anchor the wall-clock on the first tick
   renderTimeline();                                 // prime the base-bitmap cache before fast-repaint frames
   schedulePrefetch(cur);
+  warmHead = cur; warmAhead();                       // read-ahead so decode keeps up at full speed (see warmAhead)
   playRaf = requestAnimationFrame(playTick);
 }
 function stop() {
@@ -3240,7 +3281,7 @@ function stop() {
   evPlayT = 0;
   playing = false; el("play").textContent = "▶ Play";
   if (playRaf) cancelAnimationFrame(playRaf);
-  playRaf = null; playBusy = false; playStopAt = null;
+  playRaf = null; playBusy = false; playStopAt = null; warmHead = -1;   // warmAhead() sees !playing and exits
 }
 function playTick(now) {
   // WALL-CLOCK clock: keep playback locked to real time. The target frame is derived from elapsed wall
