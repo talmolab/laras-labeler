@@ -44,7 +44,9 @@ def _nb_packets(path: str) -> int | None:
 def _encode(src: str, out: Path, crf: int, encoder: str) -> bool:
     nvenc = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-an",
              "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "constqp", "-qp", str(crf),
-             "-g", "1", "-bf", "0",                       # all-intra: keyframe every frame, no B-frames
+             # NVENC rejects -g 1 ("GOP length must be > B-frames + 1"), so use -g 2 + no B-frames:
+             # a keyframe every other frame, so decoding any frame costs at most 2 — still instant.
+             "-g", "2", "-bf", "0",
              "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", str(out)]
     x264 = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-an",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
