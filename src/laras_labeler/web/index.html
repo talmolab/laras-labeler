@@ -1513,6 +1513,13 @@ function renderTimeline() {
       if (v === 1) { tctx.fillStyle = HAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }          // Happening = blue
       else if (v === 2) { tctx.fillStyle = NOTHAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }   // Not-happening = red
       else hatchRect(tctx, x0, ym + 3, w, MANUAL_H - 6, UNKNOWN_HATCH);                                                       // Unknown = gray hatch
+      if (v === 1 && w > 14 && isDirected(b.id)) {   // directed bout: overlay its recipient, "→N" ("→?" = not set yet)
+        const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
+        tctx.save();
+        tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
+        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);
+        tctx.restore();
+      }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
         tctx.strokeStyle = "#fff"; tctx.lineWidth = 2; rRect(tctx, x0 - 0.5, ym + 2, w + 1, MANUAL_H - 4, 3); tctx.stroke();  // selected -> white outline
       }
