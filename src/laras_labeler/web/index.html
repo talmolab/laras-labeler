@@ -624,7 +624,9 @@ const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metrics
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
 let poses = null, poseShape = null;
 let behaviors = [], activeBid = null, mode = "pos";
-let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map();   // per-frame value + provenance (parallel arrays)
+let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
+const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
+let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: auto-stop frame (play a single bout), null = play to end
@@ -759,7 +761,9 @@ async function boot() {
       const d = (cx / n - px) ** 2 + (cy / n - py) ** 2;
       if (d < bestD) { bestD = d; best = t; }
     }
-    if (best >= 0 && best !== activeTrack) setActiveTrack(best);
+    if (best < 0) return;
+    if (awaitTarget) { setBoutTarget(best); return; }      // picking the recipient of a just-painted directed bout
+    if (best !== activeTrack) setActiveTrack(best);
   });
   el("loadVideoBtn").onclick = () => el("impVideo").click();
   el("loadSlpBtn").onclick = () => el("impSlp").click();
@@ -840,7 +844,7 @@ function clearStage() {
   frameOrder = null; pfStart = 0; pfEnd = -1;
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
   predsByBeh = new Map(); predictedBouts = new Map();
-  labelState = new Map(); sourceState = new Map();
+  labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates";
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
@@ -942,14 +946,15 @@ async function maybeUpload() {
 
 async function loadLabels() {
   selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
-  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source]
-  labelState = new Map(); sourceState = new Map();
-  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); }
+  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target]
+  labelState = new Map(); sourceState = new Map(); targetState = new Map();
+  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); }
   for (const [bid, rl] of Object.entries(runs)) {
-    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid));
-    if (arr) for (const [s, e, val, source] of rl) {
+    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid));
+    if (arr) for (const [s, e, val, source, target] of rl) {
       arr.fill(val === 1 ? 1 : val === 0 ? 2 : 3, s, e);        // stored 1/0/2 -> state 1/2/3
       if (sarr) sarr.fill(SRC_CODES[source] ?? 0, s, e);         // provenance code (default manual)
+      if (tarr) tarr.fill(target == null ? NO_TARGET : target, s, e);   // directed recipient track (-1 = self/undirected)
     }
   }
   for (const b of behaviors) recomputeBouts(b.id);   // keep the "new suggestion" bouts in sync with the freshly-loaded labels
@@ -1753,38 +1758,55 @@ function overviewNav(clientX) {
 }
 
 // ---------- labeling ops ----------
-function labeledRunsSrc(bid, s, e) {   // runs of same (value, source) within [s,e), skipping unlabeled — for faithful re-sync
-  const v = labelState.get(bid), src = sourceState.get(bid); if (!v) return [];
+function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target) within [s,e), skipping unlabeled — for faithful re-sync
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid); if (!v) return [];
   const out = []; let i = s;
   while (i < e) {
     if (!v[i]) { i++; continue; }
-    const sc = src ? src[i] : 0; let j = i + 1;
-    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc) j++;
-    out.push([i, j, v[i], sc]); i = j;
+    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET; let j = i + 1;
+    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt) j++;
+    out.push([i, j, v[i], sc, tt]); i = j;
   }
   return out;
 }
-async function syncRange(bid, s, e) {   // reads per-frame value+source so each run persists with its own provenance
+async function syncRange(bid, s, e) {   // reads per-frame value+source+target so each run persists with its own provenance & recipient
   await api(`/labels/${vid}?behavior=${bid}&track=${activeTrack}&start=${s}&end=${e}`, { method: "DELETE" });
-  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual" }));  // state 1/2/3 -> stored 1/0/2
+  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt }));  // state 1/2/3 -> stored 1/0/2
   if (spans.length) await api(`/labels/${vid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spans) });
 }
-async function applyPaint(bid, s, e, k, source = "manual") {
+async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
   clearSel();                                        // any label edit invalidates a highlighted selection
-  const v = labelState.get(bid), src = sourceState.get(bid), sc = SRC_CODES[source] ?? 0;
-  const beforeV = v.slice(s, e), beforeS = src.slice(s, e);   // snapshot BOTH value and provenance for a faithful undo
-  v.fill(k, s, e); src.fill(sc, s, e);
-  undoStack.push({ bid, s, e, beforeV, beforeS, afterV: v.slice(s, e), afterS: src.slice(s, e) }); redoStack.length = 0;
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
+  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e);
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e) }); redoStack.length = 0;
   recomputeBouts(bid);                               // labeling this range drops it from the "new suggestion" bouts
   renderTimeline(); await syncRange(bid, s, e);
 }
-async function applyOp(op, vSlice, sSlice) {
+async function applyOp(op, vSlice, sSlice, tSlice) {
   clearSel();
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
+  if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS); }
-async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS); }
+async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
+async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
+
+// ---------- directed (actor -> target) helpers ----------
+function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && b.hidra && b.hidra.collapse === "directed"); }
+async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
+  const a = awaitTarget; if (!a) return;
+  if (track === a.actor) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  awaitTarget = null;
+  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
+  logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
+  busy(`${bname(a.bid)}: mouse${a.actor + 1} → mouse${track + 1}`);
+}
+function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
+  if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
+  awaitTarget = { bid, s, e, k, actor: activeTrack };
+  busy(`${bname(bid)}: click the TARGET mouse (or Shift+1..9), Esc to skip`);
+}
 
 // ---------- select + delete a single annotation ----------
 function runAt(bid, f) {                       // the contiguous labeled run containing frame f (or null)
@@ -1822,7 +1844,12 @@ function updateSelStatus() {
   if (selectedSeg) {
     const b = behaviors.find(x => x.id === selectedSeg.bid);
     const kind = selectedSeg.val === 1 ? "Happening" : "Not-happening";
-    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
+    let dir = "";
+    if (selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {
+      const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
+      dir = tt >= 0 ? ` · → mouse${tt + 1}` : ` · no target yet (Shift+1..9)`;
+    }
+    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
   } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
 }
@@ -3319,11 +3346,14 @@ function startPaint(bid, m) {
 function commitPaint() {
   if (!painting) return;
   const s = Math.min(painting.anchor, cur), e = Math.max(painting.anchor, cur) + 1;
-  logEvent("paint_commit", { behavior_id: painting.bid, name: bname(painting.bid), via: "anchor",
-                             mode: painting.mode, value: modeVal(painting.mode), start: s, end: e,
-                             n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual" });
-  applyPaint(painting.bid, s, e, modeVal(painting.mode));
-  busy(`marked ${bname(painting.bid)}: ${s}–${e}`); painting = null;
+  const bid = painting.bid, k = modeVal(painting.mode);
+  logEvent("paint_commit", { behavior_id: bid, name: bname(bid), via: "anchor",
+                             mode: painting.mode, value: k, start: s, end: e,
+                             n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual", target: NO_TARGET });
+  applyPaint(bid, s, e, k);
+  painting = null;
+  if (k === 1 && isDirected(bid) && nTracks() >= 2) armTargetPick(bid, s, e, k);   // directed: ask for the recipient
+  else busy(`marked ${bname(bid)}: ${s}–${e}`);
 }
 function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   if (drag) return;           // ignore while a timeline lane drag is live (avoids a concurrent anchor-paint)
@@ -3364,11 +3394,12 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   if (!selectedSeg || !segTrim) return;
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
+  const tg = targetState.get(bid), keepTgt = (val === 1 && tg) ? tg[s] : NO_TARGET;   // preserve a directed bout's recipient across the trim
   logEvent("label_trim", { behavior_id: bid, name: bname(bid), from_start: s, from_end: e,
                            start: ns, end: ne, n_frames: ne - ns, delta_frames: (ne - ns) - (e - s), value: val });
   if (ns > s) await applyPaint(bid, s, ns, 0);             // trimmed on the left -> unlabel [s, ns)
   if (ne < e) await applyPaint(bid, ne, e, 0);             // trimmed on the right -> unlabel [ne, e)
-  await applyPaint(bid, ns, ne, val);                      // (re)label the new range (covers extensions), same value
+  await applyPaint(bid, ns, ne, val, "manual", keepTgt);   // (re)label the new range (covers extensions), same value + target
   selectRunAt(bid, ns);                                    // re-select the edited bout so you can keep adjusting
   busy(`bout → frames ${ns}–${ne}`);
 }
@@ -3473,9 +3504,11 @@ tl.addEventListener("pointerup", () => {
     } else {
       clearSel();
       const s = Math.min(drag.start, drag.curFrame), e = Math.max(drag.start, drag.curFrame) + 1;
-      logEvent("paint_commit", { behavior_id: drag.bid, name: bname(drag.bid), via: "drag",
-                                 mode, value: modeVal(), start: s, end: e, n_frames: e - s, source: "manual" });
-      applyPaint(drag.bid, s, e, modeVal()); show(drag.curFrame);
+      const dbid = drag.bid, dk = modeVal();
+      logEvent("paint_commit", { behavior_id: dbid, name: bname(dbid), via: "drag",
+                                 mode, value: dk, start: s, end: e, n_frames: e - s, source: "manual", target: NO_TARGET });
+      applyPaint(dbid, s, e, dk); show(drag.curFrame);
+      if (dk === 1 && isDirected(dbid) && nTracks() >= 2) armTargetPick(dbid, s, e, dk);   // directed: ask for the recipient
     }
   }
   drag = null;
@@ -3661,8 +3694,19 @@ window.addEventListener("keydown", e => {
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
   if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
   if (settingCage && e.key === "Escape") { e.preventDefault(); setCageMode(false); busy("cage ROI cancelled"); return; }
+  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift+1..9 to set it later)"); return; }
   if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedSeg) { e.preventDefault(); deleteSelectedSeg(); return; }
+  if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track (e.code is layout-safe; Shift+1 would otherwise be '!')
+    const t = +e.code.slice(5) - 1;
+    if (t < nTracks()) {
+      if (awaitTarget) { e.preventDefault(); setBoutTarget(t); return; }
+      if (selectedSeg && selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {   // retarget an already-selected directed bout
+        awaitTarget = { bid: selectedSeg.bid, s: selectedSeg.s, e: selectedSeg.e, k: 1, actor: activeTrack };
+        e.preventDefault(); setBoutTarget(t); return;
+      }
+    }
+  }
   if (e.key === "Tab") { e.preventDefault(); cycleTrack(e.shiftKey ? -1 : 1); return; }        // cycle tracks
   if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }
   if (reviewing && e.key === "y") return acceptCandidate();

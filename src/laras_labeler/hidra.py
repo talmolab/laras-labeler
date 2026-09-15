@@ -914,14 +914,16 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
     own un-reviewed, correct detections are negatives, the fastest way to make fine-tuning worse
     than the head it started from.
 
-    TARGET, because the labeler's labels are per (video, track) -- one animal's lane -- while HiDRA
-    scores ordered (agent -> target) pairs and `prepare` needs a concrete target:
+    TARGET, because HiDRA scores ordered (agent -> target) pairs and `prepare` needs a concrete
+    target for each bout:
       - a self-directed head (collapse == 'self') takes ``target = self``;
-      - a directed/scene head in a two-animal clip takes the OTHER animal as the target, which is
-        the only unambiguous reconstruction the per-lane labels allow;
-      - a directed/scene head with more than two animals has no recoverable target (the per-track
-        label does not say which partner), so those rows are SKIPPED and counted in
-        `directed_ambiguous` for the caller to surface -- such behaviours are zero-shot only here.
+      - a directed bout that carries a GUI-picked recipient track (directed labeling) writes that
+        exact partner -- ``mouse{target+1}`` -- for ANY number of animals;
+      - failing that, a directed/scene head in a two-animal clip takes the OTHER animal as the
+        target (the only unambiguous reconstruction the per-lane labels allow);
+      - a directed bout with more than two animals and NO picked target has no recoverable partner,
+        so those rows are SKIPPED and counted in `directed_ambiguous` for the caller to surface --
+        pick a target for them (or they are zero-shot only).
 
     Stored span values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's schema); only 1
     is written. Our runs are half-open [start, stop), which is exactly `prepare`'s exclusive
@@ -949,22 +951,24 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
         tracks = sorted({int(x) for x in df["track"].unique()})
         for t in tracks:
             agent = f"mouse{t + 1}"
-            if self_directed:
-                target = "self"                            # the acting animal itself
-            elif n_animals == 2:
-                target = f"mouse{2 if t == 0 else 1}"      # the only other animal — unambiguous
-            else:
-                # A directed (social) behaviour needs a specific (agent -> target) pair, but a
-                # per-track label records only the acting animal. With !=2 animals the partner is
-                # unrecoverable, and writing target=self would both mis-train the head and, when a
-                # single track is labelled, crash HiDRA's epoch builder (one-mouse label set). Skip
-                # these rows and report them; directed behaviours on >2-animal clips are zero-shot only.
-                target = None
-            for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
+            # get_runs_src runs are [start, stop, value, source, target]; target is the GUI-picked
+            # recipient track for a directed bout (-1 = none/self). Compute the target PER SPAN so a
+            # single actor can direct different bouts at different partners.
+            for run in labels.get_runs_src(pid, vid, t, bid).get(bid, []):
                 a, b, val = int(run[0]), int(run[1]), int(run[2])
+                tgt = int(run[4]) if len(run) > 4 else -1
                 if val != 1 or b <= a:                     # positives only; negatives are implicit
                     continue
-                if target is None:
+                if self_directed:
+                    target = "self"                        # the acting animal itself
+                elif tgt >= 0 and tgt != t and (n_animals == 0 or tgt < n_animals):
+                    target = f"mouse{tgt + 1}"             # the recipient the annotator picked (any # of animals)
+                elif n_animals == 2:
+                    target = f"mouse{2 if t == 0 else 1}"  # fallback: the only other animal is unambiguous
+                else:
+                    # Directed, >2 animals, and no valid stored target (or target == self, which would
+                    # crash HiDRA's epoch builder): unrecoverable. Skip and report — the annotator must
+                    # pick a target for these bouts (directed labeling), else they are zero-shot only.
                     ambiguous += 1
                     continue
                 n_bouts += 1

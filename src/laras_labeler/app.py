@@ -98,6 +98,7 @@ class LabelSpan(BaseModel):
     end: int
     value: int = Field(ge=0, le=2)  # 1 = Happening, 0 = Not-happening, 2 = Unknown (saved, excluded from training)
     source: str = "manual"          # provenance: 'manual' (painted) | 'candidate' (accepted from review) | 'imported'
+    target: int = -1                # recipient track for a DIRECTED bout; -1 = self / undirected (default keeps old clients working)
 
 
 class ImportRequest(BaseModel):
@@ -1223,6 +1224,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                  frames=sum(max(0, r["end"] - r["start"]) for r in rows),
                  behaviors=sorted({r["behavior_id"] for r in rows}),
                  tracks=sorted({r["track"] for r in rows}),
+                 targets=sorted({r.get("target", -1) for r in rows}),
                  sources=sorted({r.get("source") or "manual" for r in rows}))
         return {"ok": True}
 
