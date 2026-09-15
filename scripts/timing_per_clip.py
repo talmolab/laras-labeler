@@ -93,10 +93,13 @@ def per_clip(recs: list[dict], fps: float = 50.0, behavior_id: int | None = None
         if behavior_id is not None and bid != behavior_id:
             continue
 
-        # A label_clear marks a clip+behavior whose labels were wiped for a clean re-label. Everything
-        # accumulated for it BEFORE the clear was discarded work (glitchy first pass), so drop it: only
-        # post-clear time counts. Events are time-ordered, so resetting the bucket here does exactly that.
-        if typ == "label_clear" and vid is not None:
+        # A clear_labels.py marker (a label_clear carrying a `note`) marks a clip+behavior whose labels
+        # were wiped for a clean re-label: drop everything accumulated for it BEFORE the marker (the
+        # discarded first pass), so only post-clear time counts. NOTE: routine edits also emit
+        # label_clear (the labeler DELETEs a range before each PUT) — those have NO `note` and must be
+        # ignored here, or every paint would reset the count. Events are time-ordered, so resetting the
+        # bucket at the marker does exactly the right thing.
+        if typ == "label_clear" and ev.get("note") and vid is not None:
             for k in [k for k in buckets if k[0] == vid and k[1] == bid]:
                 del buckets[k]
             if prev_key is not None and prev_key[0] == vid and prev_key[1] == bid:
