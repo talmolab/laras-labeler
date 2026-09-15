@@ -93,6 +93,16 @@ def per_clip(recs: list[dict], fps: float = 50.0, behavior_id: int | None = None
         if behavior_id is not None and bid != behavior_id:
             continue
 
+        # A label_clear marks a clip+behavior whose labels were wiped for a clean re-label. Everything
+        # accumulated for it BEFORE the clear was discarded work (glitchy first pass), so drop it: only
+        # post-clear time counts. Events are time-ordered, so resetting the bucket here does exactly that.
+        if typ == "label_clear" and vid is not None:
+            for k in [k for k in buckets if k[0] == vid and k[1] == bid]:
+                del buckets[k]
+            if prev_key is not None and prev_key[0] == vid and prev_key[1] == bid:
+                prev_ms = None  # don't charge the gap that straddles the clear
+            continue
+
         # --- time accounting (client events only; server records are instantaneous notes) ---
         if ev.get("src") != "server":
             if prev_ms is not None and t >= prev_ms and prev_key is not None:
