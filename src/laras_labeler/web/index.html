@@ -319,6 +319,11 @@
       <option value="all">predict: all clips</option>
     </select>
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
+    <span class="sep"></span>
+    <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
+           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (you pick the target after painting — click the other mouse, or Shift+1..9). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
+      <input type="checkbox" id="dirToggle"> directed (actor→target)
+    </label>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
          unchanged and nothing here depends on HiDRA being present. -->
     <span class="sep" id="hidraSep" style="display:none"></span>
@@ -1800,7 +1805,13 @@ async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.p
 async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
 
 // ---------- directed (actor -> target) helpers ----------
-function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && b.hidra && b.hidra.collapse === "directed"); }
+function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
+function syncDirectedToggle() {   // reflect the active behavior's `directed` flag in the toolbar checkbox
+  const grp = el("dirGroup"), cb = el("dirToggle"); if (!grp || !cb) return;
+  const b = behaviors.find(x => x.id === activeBid);
+  grp.style.display = b ? "inline-flex" : "none";
+  if (b) cb.checked = !!b.directed;
+}
 async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
   const a = awaitTarget; if (!a) return;
   if (track === a.actor) { busy("target can't be the acting mouse — click a different mouse"); return; }
@@ -1949,6 +1960,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  syncDirectedToggle();                // reflect this behavior's directed flag
   renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
 }
@@ -2217,6 +2229,18 @@ async function hidraInit() {
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
+  el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
+    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
+    const val = el("dirToggle").checked;
+    b.directed = val;                                  // optimistic; roll back on failure
+    try {
+      await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directed: val }) });
+    } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
+    logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
+    if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
+    busy(val ? `${bname(activeBid)} is directed — paint a bout, then click the TARGET mouse (or Shift+1..9)` : `${bname(activeBid)} is no longer directed`);
+    renderTimeline();
+  };
 
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns

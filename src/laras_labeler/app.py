@@ -80,6 +80,7 @@ class EditBehavior(BaseModel):
     color: str | None = None
     key: str | None = None
     feature_set: str | None = None   # None keeps current; 'all'|'spout'|'cage'|'spout_cage'|'no_social'|'pose'|'social'|'social_pose'
+    directed: bool | None = None      # social behavior: each bout records an actor->target pair (independent of any HiDRA head)
 
 
 class ReviewedBout(BaseModel):
