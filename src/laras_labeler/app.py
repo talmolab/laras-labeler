@@ -826,7 +826,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
                 "is required — set pix_per_cm on the video or the project.")
 
-        work = proj.path / "hidra" / vid / "_work"
+        # Short dir key: the full clip name (~85 chars) appears twice in HiDRA's nested
+        # _work/custom_tracking/<lab>/<clip>.parquet tree, which blows past Windows' 260-char path
+        # limit and makes predict fail with a bare "can't open file". Hash it to keep paths short.
+        import hashlib
+        vkey = hashlib.sha1(str(vid).encode("utf-8")).hexdigest()[:10]
+        work = proj.path / "hidra" / vkey / "_work"
         stem = Path(str(entry.get("video_path") or vid)).stem or vid
         progress(3, "exporting tracking")
         exported = hidra.export_tracking(poses, header.node_names, fps, ppc, stem, work)
@@ -836,7 +841,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             h = b["hidra"]
             lo = 5 + int(90 * i / max(len(behaviors), 1))
             span = int(90 / max(len(behaviors), 1))
-            out = proj.path / "hidra" / vid / f"{h['lab']}__{h['action']}"
+            out = proj.path / "hidra" / vkey / f"{h['lab']}__{h['action']}"
             fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc, h.get("weights"),
                              lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m))
             lanes = hidra.to_lanes(fp, h["lab"], h["action"], h.get("collapse", "scene"),

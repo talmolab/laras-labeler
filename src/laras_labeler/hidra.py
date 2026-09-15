@@ -836,14 +836,24 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
                             env=_subproc_env())
     tail: list[str] = []
+    full: list[str] = []
     for line in proc.stdout or []:
         line = line.rstrip()
         if not line:
             continue
+        full.append(line)
         tail = (tail + [line])[-25:]
         progress(min(90, 5 + len(tail) * 3), line[:120])
     if proc.wait() != 0:
-        raise RuntimeError("HiDRA inference failed:\n" + "\n".join(tail[-12:]))
+        # The GUI toast only shows the last few lines; write the WHOLE HiDRA output (and the exact
+        # command) to a file so the real exception/path is never lost to truncation.
+        errlog = Path(work) / "hidra_predict_error.log"
+        try:
+            errlog.write_text("$ " + " ".join(str(c) for c in cmd) + "\n\n" + "\n".join(full),
+                              encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(f"HiDRA inference failed (full log: {errlog}):\n" + "\n".join(tail[-12:]))
 
     # predict.py exits 0 after running nothing if the job sheet selected no servable lab, so a
     # zero-work run has to be caught here or it reads downstream as a behaviour that never occurred.
