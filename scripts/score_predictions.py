@@ -166,7 +166,7 @@ def score(truth: Path, pred: Path, behaviours, videos, iou):
     t_ids, p_ids = _behavior_ids(tman), _behavior_ids(pman)
     nfr = {v["video_id"]: int(v.get("n_frames") or 0) for v in tman.get("videos", [])}
     vids = [v["video_id"] for v in tman.get("videos", [])
-            if not videos or v["video_id"] in set(videos)]
+            if not videos or any(f in v["video_id"] for f in videos)]   # substring match, so `clip_001` finds the long video_id
 
     want = {_norm(b) for b in behaviours} if behaviours else set(t_ids)
     out = []
