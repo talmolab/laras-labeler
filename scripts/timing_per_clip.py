@@ -152,6 +152,8 @@ def per_clip(recs: list[dict], fps: float = 50.0, behavior_id: int | None = None
         for k in ("active_s", "label_s", "review_s", "wait_s", "other_s", "manual_video_s"):
             b[k] = round(b[k], 1)
         b["s_per_manual_bout"] = round(b["label_s"] / b["manual_bouts"], 1) if b["manual_bouts"] else None
+        # Review arm: the numerator is review_s, the denominator is decisions made (accept/reject/…).
+        b["s_per_decision"] = round(b["review_s"] / b["decisions"], 1) if b["decisions"] else None
         rows.append(b)
     rows.sort(key=lambda r: (str(r["video_id"]), r["behavior_id"] if r["behavior_id"] is not None else -1,
                              r.get("track") if r.get("track") is not None else -1))
@@ -179,8 +181,8 @@ def main(argv=None) -> None:
         sys.exit(f"no client events in {events_dir} (nothing labeled yet, or wrong --behavior).")
 
     cols = ["video_id", "behavior_id"] + (["track"] if args.by_track else []) + [
-        "label_s", "review_s", "other_s", "active_s", "manual_bouts", "manual_frames",
-        "manual_video_s", "s_per_manual_bout"]
+        "label_s", "review_s", "other_s", "active_s", "manual_bouts", "s_per_manual_bout",
+        "candidates_shown", "decisions", "s_per_decision"]
     w = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
     print("  ".join(c.ljust(w[c]) for c in cols))
     print("  ".join("-" * w[c] for c in cols))
@@ -189,7 +191,8 @@ def main(argv=None) -> None:
     print()
     print(f"{len(recs)} events · total label_s {round(sum(r['label_s'] for r in rows), 1)} "
           f"· total review_s {round(sum(r['review_s'] for r in rows), 1)} "
-          f"· total manual_bouts {sum(r['manual_bouts'] for r in rows)}")
+          f"· total manual_bouts {sum(r['manual_bouts'] for r in rows)} "
+          f"· total decisions {sum(r['decisions'] for r in rows)}")
     print("(total label_s should match the sum of the rounds CSV's label_s, minus rounding.)")
 
     if args.csv:
