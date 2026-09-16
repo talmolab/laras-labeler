@@ -2999,40 +2999,44 @@ async function train() {
     }
   });
 }
-async function predictVideo() {   // apply existing model(s) to the current video (no retrain)
-  busy("starting prediction…");
+function awaitJob(jid) { return new Promise(resolve => pollJob(jid, resolve)); }   // pollJob calls back once at terminal state
+async function predictVideo() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
+  const all = (el("trainScope") || {}).value === "all";
+  const targets = all ? (projMeta.videos || []).map(v => v.video_id) : [vid];
   const pT0 = Date.now();
-  logEvent("predict_click", { video_id: vid });
-  const r = await api(`/videos/${vid}/predict`, { method: "POST" });
-  if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: vid, error: String(d).slice(0, 200) }); busy("predict: " + d); return; }
-  const { job_id } = await r.json();
-  pollJob(job_id, async s => {
+  logEvent("predict_click", { video_id: vid, scope: all ? "all" : "this", n: targets.length });
+  let ok = 0; const errs = [];
+  for (let i = 0; i < targets.length; i++) {
+    const tv = targets[i];
+    busy(all ? `predicting clip ${i + 1}/${targets.length}…` : "starting prediction…");
+    let r;
+    try { r = await api(`/videos/${tv}/predict`, { method: "POST" }); }
+    catch (e) { errs.push(`${tv.slice(0, 16)}…: ${e.message}`); continue; }
+    if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: tv, error: String(d).slice(0, 200) }); errs.push(`${tv.slice(0, 16)}…: ${d}`); continue; }
+    const s = await awaitJob((await r.json()).job_id);
     if (s.status === "error") {
-      // Show the WHOLE error, not just its first line. A HiDRA failure ("HiDRA wrote no frames
-      // parquet:") puts the actual cause in the tail lines that follow, so first-line-only hid
-      // exactly the part that says what went wrong. Newlines are folded to " | " for the status bar,
-      // the full text goes to the browser console, and more of it is kept in the event log.
-      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
-      logEvent("predict_error", { video_id: vid, error: one.slice(0, 500) });
-      console.error("predict failed:\n" + full); busy("predict failed: " + one.slice(0, 600)); return;
+      // Keep the WHOLE error (the cause is often in the tail lines): console + event log get it all.
+      const full = String(s.error || "error").trim(), one = full.replace(/\s*\n\s*/g, " | ");
+      console.error(`predict failed (${tv}):\n` + full);
+      logEvent("predict_error", { video_id: tv, error: one.slice(0, 500) });
+      errs.push(`${tv.slice(0, 16)}…: ${one.slice(0, 160)}`); continue;
     }
-    logEvent("predict_result", { video_id: vid, wall_ms: Date.now() - pT0,
+    ok++;
+    logEvent("predict_result", { video_id: tv, wall_ms: Date.now() - pT0,
                                  n_behaviors: ((s.result || {}).behaviors || []).length,
                                  n_skipped: ((s.result || {}).skipped || []).length });
-    await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
-    const res = s.result || {}, done = res.behaviors || [], skipped = res.skipped || [];
-    if (skipped.length) {
-      // don't let a skipped prediction fail silently — tell the user which behavior and why
+    const skipped = (s.result || {}).skipped || [];
+    if (skipped.length && tv === vid) {   // surface skips for the clip you're actually looking at
       const mism = skipped.find(k => (k.reason || "").startsWith("feature_mismatch"));
       const msg = mism
         ? `⚠ ${skipped.map(k => k.name).join(", ")} not predicted — ${mism.reason.replace("feature_mismatch: ", "")}`
         : `⚠ ${skipped.length} behavior(s) skipped: ${skipped.map(k => k.name + " (" + (k.reason || "?") + ")").join(", ")}`;
-      busy(msg);
       if (mism) alert(msg + "\n\n(Set the spout/cage ROI on this clip to match the training clips — via ◇/▢ on the video or the HCM import — then Predict again.)");
-    } else {
-      busy(done.length ? `prediction done (${done.length} behavior${done.length > 1 ? "s" : ""})` : "no trained models to predict with yet — Train a behavior first");
     }
-  });
+  }
+  await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
+  if (errs.length) busy(`predicted ${ok}/${targets.length}${all ? " clips" : ""} — ${errs.length} failed: ${errs[0]}`);
+  else busy(all ? `prediction done — all ${ok} clip${ok !== 1 ? "s" : ""}` : (ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first"));
 }
 async function importFile() {
   const path = prompt("Path to annotations on the server:\n • event-annotator export (.json), or\n • interval CSV (.csv: behavior,start,end in frames)");
