@@ -321,7 +321,7 @@
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
     <span class="sep"></span>
     <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
-           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (you pick the target after painting — click the other mouse, or Shift+1..9). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
+           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (you pick the target after painting — click the other mouse, or Shift+0..9). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
       <input type="checkbox" id="dirToggle"> directed (actor→target)
     </label>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
@@ -537,7 +537,7 @@
     </div>
     <div class="hint-box">
       <h4>Tracks &amp; behaviors</h4>
-      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>1–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track.</p>
+      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>0–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track.</p>
     </div>
     <div class="hint-box">
       <h4>Painting labels</h4>
@@ -1875,7 +1875,7 @@ function setReviewTarget(track) {   // correct the recipient of the directed can
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
   awaitTarget = { bid, s, e, k, actor: activeTrack };
-  busy(`${bname(bid)}: click the TARGET mouse (or Shift+1..9), Esc to skip`);
+  busy(`${bname(bid)}: click the TARGET mouse (or Shift+0..9), Esc to skip`);
 }
 
 // ---------- select + delete a single annotation ----------
@@ -1917,7 +1917,7 @@ function updateSelStatus() {
     let dir = "";
     if (selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {
       const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
-      dir = tt >= 0 ? ` · → track ${tt}` : ` · no target yet (Shift+1..9)`;
+      dir = tt >= 0 ? ` · → track ${tt}` : ` · no target yet (Shift+0..9)`;
     }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
@@ -2290,7 +2290,7 @@ async function hidraInit() {
     } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
     logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
     if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
-    busy(val ? `${bname(activeBid)} is directed — paint a bout, then click the TARGET mouse (or Shift+1..9)` : `${bname(activeBid)} is no longer directed`);
+    busy(val ? `${bname(activeBid)} is directed — paint a bout, then click the TARGET mouse (or Shift+0..9)` : `${bname(activeBid)} is no longer directed`);
     renderTimeline();
   };
 
@@ -3165,13 +3165,13 @@ function updateReviewText() {
   const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
   const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>` : "";
   // Directed behavior: show the actor->target pair HiDRA proposed so accept commits the full pair.
-  // -1 (no recoverable recipient) prompts a hand pick; Shift+1..9 or click a mouse corrects it.
+  // -1 (no recoverable recipient) prompts a hand pick; Shift+0..9 or click a mouse corrects it.
   const dir = isDirected(reviewCurrent.bid) && nTracks() >= 2;
   const tgt = reviewCurrent.target;
   const dirNote = !dir ? ""
     : (tgt != null && tgt >= 0)
-      ? ` · <span style="color:#e8a33d">track ${activeTrack} → track ${tgt}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
-      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+1..9 or click a mouse)</span>`;
+      ? ` · <span style="color:#e8a33d">track ${activeTrack} → track ${tgt}</span> <span style="opacity:.6">(Shift+0..9 or click to change)</span>`
+      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+0..9 or click a mouse)</span>`;
   el("reviewQ").innerHTML = `${head} · track ${activeTrack} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
     + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
   el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
@@ -3817,11 +3817,11 @@ window.addEventListener("keydown", e => {
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
   if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
   if (settingCage && e.key === "Escape") { e.preventDefault(); setCageMode(false); busy("cage ROI cancelled"); return; }
-  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift+1..9 to set it later)"); return; }
+  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift+0..9 to set it later)"); return; }
   if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedSeg) { e.preventDefault(); deleteSelectedSeg(); return; }
-  if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track (e.code is layout-safe; Shift+1 would otherwise be '!')
-    const t = +e.code.slice(5) - 1;
+  if (e.shiftKey && /^Digit[0-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track — digit == track number (e.code is layout-safe)
+    const t = +e.code.slice(5);
     if (t < nTracks()) {
       if (awaitTarget) { e.preventDefault(); setBoutTarget(t); return; }
       if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid)) {   // set/correct the directed candidate's recipient
@@ -3834,7 +3834,7 @@ window.addEventListener("keydown", e => {
     }
   }
   if (e.key === "Tab") { e.preventDefault(); cycleTrack(e.shiftKey ? -1 : 1); return; }        // cycle tracks
-  if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }
+  if (e.key >= "0" && e.key <= "9") { const t = +e.key; if (t < nTracks()) { setActiveTrack(t); return; } }   // digit == track number (0-indexed)
   if (reviewing && e.key === "y") return acceptCandidate();
   if (reviewing && e.key === "n") return rejectCandidate();
   if (reviewing && (e.key === "r" || e.key === "R")) { e.preventDefault(); return replayCandidate(); }
