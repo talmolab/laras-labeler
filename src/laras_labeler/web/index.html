@@ -1525,7 +1525,7 @@ function renderTimeline() {
         const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
         tctx.save();
         tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
-        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);
+        tctx.fillText(tt >= 0 ? "→" + tt : "→?", x0 + w / 2, ym + MANUAL_H / 2);   // target shown as its track number (0-indexed, matches the chips)
         tctx.restore();
       }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
@@ -1863,14 +1863,14 @@ async function setBoutTarget(track) {   // assign the recipient of the just-pain
   awaitTarget = null;
   await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
   logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
-  busy(`${bname(a.bid)}: mouse${a.actor + 1} → mouse${track + 1}`);
+  busy(`${bname(a.bid)}: track ${a.actor} → track ${track}`);
 }
 function setReviewTarget(track) {   // correct the recipient of the directed candidate under review (saved on accept)
   if (!reviewCurrent) return;
   if (track === activeTrack) { busy("target can't be the acting mouse — click a different mouse"); return; }
   reviewCurrent.target = track;
   updateReviewText(); renderTimeline();
-  busy(`${bname(reviewCurrent.bid)}: mouse${activeTrack + 1} → mouse${track + 1} (accept to save)`);
+  busy(`${bname(reviewCurrent.bid)}: track ${activeTrack} → track ${track} (accept to save)`);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
@@ -1917,7 +1917,7 @@ function updateSelStatus() {
     let dir = "";
     if (selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {
       const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
-      dir = tt >= 0 ? ` · → mouse${tt + 1}` : ` · no target yet (Shift+1..9)`;
+      dir = tt >= 0 ? ` · → track ${tt}` : ` · no target yet (Shift+1..9)`;
     }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
@@ -3170,7 +3170,7 @@ function updateReviewText() {
   const tgt = reviewCurrent.target;
   const dirNote = !dir ? ""
     : (tgt != null && tgt >= 0)
-      ? ` · <span style="color:#e8a33d">mouse${activeTrack + 1} → mouse${tgt + 1}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
+      ? ` · <span style="color:#e8a33d">track ${activeTrack} → track ${tgt}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
       : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+1..9 or click a mouse)</span>`;
   el("reviewQ").innerHTML = `${head} · track ${activeTrack} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
     + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
