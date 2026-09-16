@@ -1,9 +1,10 @@
 """Per-(video, track, frame, behavior) label store (PLAN.md §3.2, §3.3, per-track upgrade).
 
 Per-frame tri-state, now per animal track:
-    frame:int32, track:int16, behavior_id:int16, value:int8 (+1 pos / 0 neg), source:str
+    frame:int32, track:int16, behavior_id:int16, value:int8 (+1 pos / 0 neg), source:str,
+    target:int16 (recipient track for a DIRECTED behavior; -1 = self / undirected)
 Absent row => unlabeled. Ranges are half-open [start, end). Old parquets without a `track`
-column are migrated to track 0 on load.
+column are migrated to track 0 on load; without a `target` column, to -1 (self/undirected).
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-_COLS = {"frame": "int32", "track": "int16", "behavior_id": "int16", "value": "int8", "source": "object"}
+_COLS = {"frame": "int32", "track": "int16", "behavior_id": "int16", "value": "int8",
+         "source": "object", "target": "int16"}
+_NO_TARGET = -1   # sentinel: self-directed / undirected (a directed bout stores the recipient track)
 
 
 def _empty() -> pd.DataFrame:
@@ -41,26 +44,29 @@ def _rle(frames: np.ndarray, values: np.ndarray) -> list[list[int]]:
     return runs
 
 
-def _rle_src(frames: np.ndarray, values: np.ndarray, sources: np.ndarray) -> list[list]:
-    """Like _rle but also splits on source change -> [[start, end, value, source], ...]."""
+def _rle_src(frames: np.ndarray, values: np.ndarray, sources: np.ndarray,
+             targets: np.ndarray) -> list[list]:
+    """Like _rle but also splits on source AND target change so each run is one faithful span:
+    -> [[start, end, value, source, target], ...] (target = recipient track, -1 = self/undirected)."""
     runs: list[list] = []
     if len(frames) == 0:
         return runs
     order = np.argsort(frames, kind="stable")
-    frames, values, sources = frames[order], values[order], sources[order]
+    frames, values, sources, targets = frames[order], values[order], sources[order], targets[order]
     s = prev = int(frames[0])
     val = int(values[0])
     src = sources[0] if sources[0] is not None and sources[0] == sources[0] else "manual"
-    for f, v, sc in zip(frames[1:], values[1:], sources[1:]):
-        f, v = int(f), int(v)
+    tgt = int(targets[0])
+    for f, v, sc, tg in zip(frames[1:], values[1:], sources[1:], targets[1:]):
+        f, v, tg = int(f), int(v), int(tg)
         sc = sc if sc is not None and sc == sc else "manual"
-        if f == prev + 1 and v == val and sc == src:
+        if f == prev + 1 and v == val and sc == src and tg == tgt:
             prev = f
         else:
-            runs.append([s, prev + 1, val, str(src)])
+            runs.append([s, prev + 1, val, str(src), tgt])
             s = prev = f
-            val, src = v, sc
-    runs.append([s, prev + 1, val, str(src)])
+            val, src, tgt = v, sc, tg
+    runs.append([s, prev + 1, val, str(src), tgt])
     return runs
 
 
@@ -79,10 +85,13 @@ class LabelStore:
             df = pd.read_parquet(p) if p.exists() else _empty()
             if "track" not in df.columns:                 # migrate old whole-frame labels
                 df["track"] = np.int16(0)
-                df = df[list(_COLS)]
             if "source" not in df.columns:                # pre-provenance rows -> treat as hand-labeled
                 df["source"] = "manual"
             df["source"] = df["source"].fillna("manual")  # never let a NaN source drop out of groupby stats
+            if "target" not in df.columns:                # pre-directed rows -> self / undirected
+                df["target"] = np.int16(_NO_TARGET)
+            df["target"] = df["target"].fillna(_NO_TARGET).astype("int16")
+            df = df[list(_COLS)]                           # canonical column order, once (all migrations done)
             self._cache[key] = df
         return self._cache[key]
 
@@ -107,15 +116,18 @@ class LabelStore:
         return out
 
     def get_runs_src(self, pid: str, vid: str, track: int, behavior_id: int | None = None) -> dict[int, list]:
-        """RLE runs for one track WITH provenance: {behavior_id: [[start, end, value, source], ...]}.
-        Feeds the frontend so its per-frame source array stays exact across edits/undo."""
+        """RLE runs for one track WITH provenance and target:
+        {behavior_id: [[start, end, value, source, target], ...]} (target = recipient track, -1 = self).
+        Feeds the frontend so its per-frame source/target arrays stay exact across edits/undo, and the
+        HiDRA export so directed bouts carry their real (agent -> target) pair."""
         df = self._df(pid, vid)
         df = df[df["track"] == int(track)]
         bids = [int(behavior_id)] if behavior_id is not None else sorted(int(b) for b in df["behavior_id"].unique())
         out: dict[int, list] = {}
         for b in bids:
             sub = df[df["behavior_id"] == b]
-            out[b] = _rle_src(sub["frame"].to_numpy(), sub["value"].to_numpy(), sub["source"].to_numpy())
+            out[b] = _rle_src(sub["frame"].to_numpy(), sub["value"].to_numpy(),
+                              sub["source"].to_numpy(), sub["target"].to_numpy())
         return out
 
     def rows_for_behavior(self, pid: str, vid: str, behavior_id: int) -> pd.DataFrame:
@@ -133,6 +145,11 @@ class LabelStore:
             if e <= s:
                 continue
             src = sp.get("source") or source
+            tgt = sp.get("target")
+            tgt = _NO_TARGET if tgt is None else int(tgt)   # recipient track for a directed bout; -1 = self
+            # Overwrite is keyed on (behavior_id, track, frame) only — NOT target — so re-painting a
+            # range replaces whatever target it had before (one row per frame). Correct: a frame has one
+            # (value, target) for a given (behavior, actor).
             keep = ~((df["behavior_id"] == b) & (df["track"] == t) & (df["frame"] >= s) & (df["frame"] < e))
             frames = np.arange(s, e, dtype="int32")
             add = pd.DataFrame({
@@ -141,6 +158,7 @@ class LabelStore:
                 "behavior_id": np.full(len(frames), b, dtype="int16"),
                 "value": np.full(len(frames), val, dtype="int8"),
                 "source": src,
+                "target": np.full(len(frames), tgt, dtype="int16"),
             })
             df = pd.concat([df[keep], add], ignore_index=True)
         self._cache[(pid, vid)] = df

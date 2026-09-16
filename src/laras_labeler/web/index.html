@@ -319,6 +319,11 @@
       <option value="all">predict: all clips</option>
     </select>
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
+    <span class="sep"></span>
+    <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
+           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (you pick the target after painting — click the other mouse, or Shift+1..9). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
+      <input type="checkbox" id="dirToggle"> directed (actor→target)
+    </label>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
          unchanged and nothing here depends on HiDRA being present. -->
     <span class="sep" id="hidraSep" style="display:none"></span>
@@ -578,7 +583,7 @@ const TRACK_COLORS = ["#5aa06e", "#d9a54e", "#9a72b8", "#4fa39a", "#c4b45c", "#a
 const NEG_COLOR = "rgba(130,138,150,0.55)";
 // manual-label semantics (same across behaviors): Happening=soft blue, Not-happening=soft red, Unknown=gray hatch
 const HAPPENING_COLOR = "#5f8fc4", NOTHAPPENING_COLOR = "#cc7f7f", UNKNOWN_HATCH = "#9aa3b2";
-const RULER = 24, MANUAL_H = 28, PRED_H = 15, LANE_GAP = 3, ROW_GAP = 8;   // taller painting lane
+const RULER = 24, MANUAL_H = 28, PRED_H = 30, LANE_GAP = 3, ROW_GAP = 8;   // taller painting lane; pred lane holds a confidence trace
 const TL_GUT = 128;   // left gutter reserved for the behavior-name label + prev/next label-nav arrows, so the bars/bouts aren't drawn under it
 const CLICK_SLOP = 4;   // px of pointer travel below which a lane press counts as a click (select), not a drag (paint)
 
@@ -624,13 +629,27 @@ const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metrics
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
 let poses = null, poseShape = null;
 let behaviors = [], activeBid = null, mode = "pos";
-let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map();   // per-frame value + provenance (parallel arrays)
+let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
+const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
+let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: auto-stop frame (play a single bout), null = play to end
 let videoBackend = null, frameOrder = null, pfStart = 0, pfEnd = -1;
 let playRaf = null, playAnchorT = null, playAnchorF = 0, playBusy = false, playbackSpeed = 1;
 const PF_CHUNK = 40, PF_TRIGGER = 20;
+// Read-ahead ("warm") buffer for smooth full-speed playback. Every frame is decoded on demand
+// (the library's own prefetch is disabled — see patchBackendLeak note — because its overlapping
+// streaming decodeRange() calls hung the decoder). With no read-ahead, decode can't sustain high
+// fps and playTick skips frames to stay locked to real time. This warms upcoming frames INTO the
+// backend's frame cache, one at a time, through the same single-frame getFrame path (no streaming
+// iterator, so none of the reentrancy that broke the old prefetch) and serialized behind a single
+// decode gate so no two decodes ever overlap. It only runs during playback, self-disables on any
+// error (falling back to today's on-demand behavior — never worse), and can be turned off with
+// window.__warm = false. WARM_LOOK stays under the smallest possible frame cache (24) so warming
+// never evicts the frame playback is about to show.
+let __decGate = Promise.resolve(), warmHead = -1, warming = false;
+const WARM_LOOK = 16;
 const undoStack = [], redoStack = [], reviewUndo = [];   // reviewUndo: compound review actions (accept/reject/split/merge/reclassify) as single undo units
 let drag = null, reviewQueue = [], reviewIdx = 0, reviewHi = null, painting = null;
 let candidateMode = "new";               // "new" (unlabeled detections) | "mislabel" (cross-val says you got it wrong) | "dropped" (filtered out)
@@ -747,7 +766,12 @@ async function boot() {
       const d = (cx / n - px) ** 2 + (cy / n - py) ** 2;
       if (d < bestD) { bestD = d; best = t; }
     }
-    if (best >= 0 && best !== activeTrack) setActiveTrack(best);
+    if (best < 0) return;
+    if (awaitTarget) { setBoutTarget(best); return; }      // picking the recipient of a just-painted directed bout
+    if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid) && best !== activeTrack) {
+      setReviewTarget(best); return;                       // correcting a directed candidate's proposed recipient
+    }
+    if (best !== activeTrack) setActiveTrack(best);
   });
   el("loadVideoBtn").onclick = () => el("impVideo").click();
   el("loadSlpBtn").onclick = () => el("impSlp").click();
@@ -828,7 +852,7 @@ function clearStage() {
   frameOrder = null; pfStart = 0; pfEnd = -1;
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
   predsByBeh = new Map(); predictedBouts = new Map();
-  labelState = new Map(); sourceState = new Map();
+  labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates";
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
@@ -930,14 +954,15 @@ async function maybeUpload() {
 
 async function loadLabels() {
   selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
-  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source]
-  labelState = new Map(); sourceState = new Map();
-  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); }
+  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target]
+  labelState = new Map(); sourceState = new Map(); targetState = new Map();
+  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); }
   for (const [bid, rl] of Object.entries(runs)) {
-    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid));
-    if (arr) for (const [s, e, val, source] of rl) {
+    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid));
+    if (arr) for (const [s, e, val, source, target] of rl) {
       arr.fill(val === 1 ? 1 : val === 0 ? 2 : 3, s, e);        // stored 1/0/2 -> state 1/2/3
       if (sarr) sarr.fill(SRC_CODES[source] ?? 0, s, e);         // provenance code (default manual)
+      if (tarr) tarr.fill(target == null ? NO_TARGET : target, s, e);   // directed recipient track (-1 = self/undirected)
     }
   }
   for (const b of behaviors) recomputeBouts(b.id);   // keep the "new suggestion" bouts in sync with the freshly-loaded labels
@@ -1348,10 +1373,38 @@ function prefetchWin(s, e) { const b = videoBackend; if (!b) return; const lo = 
 
 async function decodeFrame(idx) {
   if (!videoBackend) return null;
+  // Serialize every decode through one gate: playback frames AND warm-ahead frames go through here,
+  // so getFrame() is never called concurrently with itself (the hazard that hung the old prefetch).
+  // A cached frame returns near-instantly, so this adds no real latency when the warm buffer is full.
+  const run = async () => {
+    try {
+      const fr = await videoBackend.getFrame(decodeIndex(idx));
+      return fr instanceof ImageBitmap ? fr : (fr instanceof ImageData ? await createImageBitmap(fr) : null);
+    } catch (e) { return null; /* decode miss */ }
+  };
+  const p = __decGate.then(run, run);
+  __decGate = p.catch(() => {});
+  return p;
+}
+// Warm upcoming frames into the backend cache while playing, so playTick's own decode is a cache hit
+// (instant) and it no longer has to skip to stay real-time. One frame per iteration, serialized via
+// decodeFrame's gate, yielding between frames so a live playback/scrub decode always interleaves
+// ahead of warming. Bounded to WARM_LOOK frames ahead of the playhead; exits when playback stops.
+async function warmAhead() {
+  if (warming || window.__warm === false) return;
+  warming = true;
   try {
-    const fr = await videoBackend.getFrame(decodeIndex(idx));
-    return fr instanceof ImageBitmap ? fr : (fr instanceof ImageData ? await createImageBitmap(fr) : null);
-  } catch (e) { return null; /* decode miss */ }
+    while (playing && videoBackend && meta) {
+      if (warmHead < cur) warmHead = cur;                       // caught up, or playTick skipped ahead
+      const goal = Math.min(meta.n_frames - 1, cur + WARM_LOOK);
+      if (warmHead >= goal) { await new Promise(r => setTimeout(r, 6)); continue; }   // far enough ahead — idle
+      const next = warmHead + 1;
+      await decodeFrame(next);                                  // lands in the backend's frame cache
+      warmHead = next;
+      await new Promise(r => setTimeout(r, 0));                 // let a pending playback frame slip in
+    }
+  } catch (e) { console.warn("[playback] warm-ahead disabled:", e); }
+  finally { warming = false; }
 }
 async function show(i) {
   cur = Math.max(0, Math.min(meta.n_frames - 1, i));
@@ -1468,6 +1521,13 @@ function renderTimeline() {
       if (v === 1) { tctx.fillStyle = HAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }          // Happening = blue
       else if (v === 2) { tctx.fillStyle = NOTHAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }   // Not-happening = red
       else hatchRect(tctx, x0, ym + 3, w, MANUAL_H - 6, UNKNOWN_HATCH);                                                       // Unknown = gray hatch
+      if (v === 1 && w > 14 && isDirected(b.id)) {   // directed bout: overlay its recipient, "→N" ("→?" = not set yet)
+        const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
+        tctx.save();
+        tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
+        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);
+        tctx.restore();
+      }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
         tctx.strokeStyle = "#fff"; tctx.lineWidth = 2; rRect(tctx, x0 - 0.5, ym + 2, w + 1, MANUAL_H - 4, 3); tctx.stroke();  // selected -> white outline
       }
@@ -1476,21 +1536,38 @@ function renderTimeline() {
       tctx.fillStyle = b.color; rRect(tctx, TL_GUT, ym, 4, MANUAL_H, 2); tctx.fill();
       tctx.strokeStyle = "rgba(207,214,224,0.32)"; tctx.lineWidth = 1; rRect(tctx, TL_GUT + 0.5, ym + 0.5, W - TL_GUT - 1, MANUAL_H - 1, 6); tctx.stroke();
     }
-    // prediction lane — same color semantics (blue/red), faint = uncertain (|2P-1|)
+    // prediction lane — a CONFIDENCE TRACE: per-frame P(behavior) as a filled curve (0 at the bottom,
+    // 1 at the top), colored blue where it clears the detection threshold and red where it doesn't, with
+    // a dashed line AT the threshold. Raising the "detect ≥" slider lifts the dashed line, so you can see
+    // exactly which peaks stop being bouts — the opacity-only lane made that invisible.
     tctx.fillStyle = "#0c0e13"; rRect(tctx, TL_GUT, ya, W - TL_GUT, PRED_H, 4); tctx.fill();
     const cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
     const proba = predsByBeh.get(b.id);                          // per-frame P for the active track
+    const thr = behThresh(b.id);
+    const padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;   // baseline (P=0) .. top (P=1)
+    const yOfP = p => baseY - Math.max(0, Math.min(1, p)) * hhP;
+    const thrY = yOfP(thr);
     if (proba && proba.length) {
-      const F = meta.n_frames, hy = ya + 3, hh = PRED_H - 6, pw = plotW(W), vS = viewS(), vSpan = viewE() - viewS();
-      for (let x = TL_GUT; x < W; x++) {
-        const p = proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // map into the VISIBLE window (zoom-aware), matching the labels/playhead
-        const m = Math.abs(2 * p - 1);
-        if (m < 0.04) continue;
-        const col = p >= behThresh(b.id) ? cH : cN;
-        tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${Math.pow(m, 0.6).toFixed(3)})`;
-        tctx.fillRect(x, hy, 1, hh);
+      const F = meta.n_frames, pw = plotW(W), vS = viewS(), vSpan = viewE() - viewS();
+      const pAt = x => proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // zoom-aware, matches labels/playhead
+      for (let x = TL_GUT; x < W; x++) {                         // filled area under the curve, tinted by threshold crossing
+        const p = pAt(x);
+        if (Number.isNaN(p) || p <= 0.001) continue;
+        const col = p >= thr ? cH : cN, yv = yOfP(p);
+        tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${p >= thr ? 0.5 : 0.22})`;
+        tctx.fillRect(x, yv, 1, baseY - yv);
       }
+      tctx.strokeStyle = "rgba(207,214,224,0.7)"; tctx.lineWidth = 1; tctx.beginPath();   // the P curve, crisp on top
+      for (let x = TL_GUT; x < W; x++) { const yv = yOfP(Number.isNaN(pAt(x)) ? 0 : pAt(x)); if (x === TL_GUT) tctx.moveTo(x, yv); else tctx.lineTo(x, yv); }
+      tctx.stroke();
     }
+    // dashed detection-threshold line (brighter on the active row); a small value tag at the right edge
+    tctx.save();
+    tctx.strokeStyle = active ? "#ffd24a" : "rgba(255,210,74,0.45)"; tctx.lineWidth = 1; tctx.setLineDash([4, 3]);
+    tctx.beginPath(); tctx.moveTo(TL_GUT, thrY); tctx.lineTo(W, thrY); tctx.stroke();
+    tctx.setLineDash([]);
+    if (active) { tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right"; tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left"; }
+    tctx.restore();
     for (const bt of (predictedBouts.get(b.id) || [])) {         // predicted Happening bouts -> blue top marker (clickable)
       const x0 = xOf(bt.s, W), w = Math.max(2, xOf(bt.e, W) - x0);
       tctx.fillStyle = `rgba(${cH.r},${cH.g},${cH.b},0.95)`;
@@ -1516,7 +1593,8 @@ function renderTimeline() {
       }
       tctx.textAlign = "left";
     }
-    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("pred", 11, ya + PRED_H / 2);
+    // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
+    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
   });
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
@@ -1598,6 +1676,26 @@ function drawTimelineOverlay(W, H, rh) {
   const px = xOf(cur, W);
   tctx.strokeStyle = "#ffd24a"; tctx.lineWidth = 1.5;
   tctx.beginPath(); tctx.moveTo(px, 0); tctx.lineTo(px, H); tctx.stroke();
+  // live confidence readout: a dot on the active behavior's trace at the playhead + its P value,
+  // colored by the threshold (blue = would be a bout, red = below cut). Drawn in the overlay so it
+  // tracks during playback.
+  if (activeBid != null) {
+    const ai = laneList().findIndex(b => b.id === activeBid), proba = predsByBeh.get(activeBid);
+    if (ai >= 0 && proba && proba.length) {
+      const ya = RULER + ai * rh + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;
+      const p = proba[Math.max(0, Math.min(proba.length - 1, cur))];
+      if (!Number.isNaN(p)) {
+        const yv = baseY - Math.max(0, Math.min(1, p)) * hhP, thr = behThresh(activeBid);
+        const c = p >= thr ? hexRgb(HAPPENING_COLOR) : hexRgb(NOTHAPPENING_COLOR);
+        tctx.beginPath(); tctx.arc(px, yv, 2.6, 0, 7); tctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`; tctx.fill();
+        tctx.strokeStyle = "#0c0e13"; tctx.lineWidth = 1; tctx.stroke();
+        tctx.font = "600 9.5px system-ui"; const txt = p.toFixed(2), tw = tctx.measureText(txt).width + 6, left = px + 5 + tw > W;
+        const bx = left ? px - 5 - tw : px + 5;
+        tctx.fillStyle = "rgba(12,14,19,0.85)"; rRect(tctx, bx, yv - 7, tw, 13, 3); tctx.fill();
+        tctx.fillStyle = "#e6edf5"; tctx.textAlign = "left"; tctx.fillText(txt, bx + 3, yv);
+      }
+    }
+  }
 }
 
 async function loadSeries() {
@@ -1713,38 +1811,68 @@ function overviewNav(clientX) {
 }
 
 // ---------- labeling ops ----------
-function labeledRunsSrc(bid, s, e) {   // runs of same (value, source) within [s,e), skipping unlabeled — for faithful re-sync
-  const v = labelState.get(bid), src = sourceState.get(bid); if (!v) return [];
+function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target) within [s,e), skipping unlabeled — for faithful re-sync
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid); if (!v) return [];
   const out = []; let i = s;
   while (i < e) {
     if (!v[i]) { i++; continue; }
-    const sc = src ? src[i] : 0; let j = i + 1;
-    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc) j++;
-    out.push([i, j, v[i], sc]); i = j;
+    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET; let j = i + 1;
+    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt) j++;
+    out.push([i, j, v[i], sc, tt]); i = j;
   }
   return out;
 }
-async function syncRange(bid, s, e) {   // reads per-frame value+source so each run persists with its own provenance
+async function syncRange(bid, s, e) {   // reads per-frame value+source+target so each run persists with its own provenance & recipient
   await api(`/labels/${vid}?behavior=${bid}&track=${activeTrack}&start=${s}&end=${e}`, { method: "DELETE" });
-  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual" }));  // state 1/2/3 -> stored 1/0/2
+  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt }));  // state 1/2/3 -> stored 1/0/2
   if (spans.length) await api(`/labels/${vid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spans) });
 }
-async function applyPaint(bid, s, e, k, source = "manual") {
+async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
   clearSel();                                        // any label edit invalidates a highlighted selection
-  const v = labelState.get(bid), src = sourceState.get(bid), sc = SRC_CODES[source] ?? 0;
-  const beforeV = v.slice(s, e), beforeS = src.slice(s, e);   // snapshot BOTH value and provenance for a faithful undo
-  v.fill(k, s, e); src.fill(sc, s, e);
-  undoStack.push({ bid, s, e, beforeV, beforeS, afterV: v.slice(s, e), afterS: src.slice(s, e) }); redoStack.length = 0;
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
+  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e);
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e) }); redoStack.length = 0;
   recomputeBouts(bid);                               // labeling this range drops it from the "new suggestion" bouts
   renderTimeline(); await syncRange(bid, s, e);
 }
-async function applyOp(op, vSlice, sSlice) {
+async function applyOp(op, vSlice, sSlice, tSlice) {
   clearSel();
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
+  if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS); }
-async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS); }
+async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
+async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
+
+// ---------- directed (actor -> target) helpers ----------
+function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
+function syncDirectedToggle() {   // reflect the active behavior's `directed` flag in the toolbar checkbox
+  const grp = el("dirGroup"), cb = el("dirToggle"); if (!grp || !cb) return;
+  const b = behaviors.find(x => x.id === activeBid);
+  grp.style.display = b ? "inline-flex" : "none";
+  if (b) cb.checked = !!b.directed;
+}
+async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
+  const a = awaitTarget; if (!a) return;
+  if (track === a.actor) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  awaitTarget = null;
+  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
+  logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
+  busy(`${bname(a.bid)}: mouse${a.actor + 1} → mouse${track + 1}`);
+}
+function setReviewTarget(track) {   // correct the recipient of the directed candidate under review (saved on accept)
+  if (!reviewCurrent) return;
+  if (track === activeTrack) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  reviewCurrent.target = track;
+  updateReviewText(); renderTimeline();
+  busy(`${bname(reviewCurrent.bid)}: mouse${activeTrack + 1} → mouse${track + 1} (accept to save)`);
+}
+function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
+  if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
+  awaitTarget = { bid, s, e, k, actor: activeTrack };
+  busy(`${bname(bid)}: click the TARGET mouse (or Shift+1..9), Esc to skip`);
+}
 
 // ---------- select + delete a single annotation ----------
 function runAt(bid, f) {                       // the contiguous labeled run containing frame f (or null)
@@ -1782,7 +1910,12 @@ function updateSelStatus() {
   if (selectedSeg) {
     const b = behaviors.find(x => x.id === selectedSeg.bid);
     const kind = selectedSeg.val === 1 ? "Happening" : "Not-happening";
-    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
+    let dir = "";
+    if (selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {
+      const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
+      dir = tt >= 0 ? ` · → mouse${tt + 1}` : ` · no target yet (Shift+1..9)`;
+    }
+    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
   } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
 }
@@ -1875,6 +2008,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  syncDirectedToggle();                // reflect this behavior's directed flag
   renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
 }
@@ -2143,6 +2277,18 @@ async function hidraInit() {
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
+  el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
+    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
+    const val = el("dirToggle").checked;
+    b.directed = val;                                  // optimistic; roll back on failure
+    try {
+      await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directed: val }) });
+    } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
+    logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
+    if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
+    busy(val ? `${bname(activeBid)} is directed — paint a bout, then click the TARGET mouse (or Shift+1..9)` : `${bname(activeBid)} is no longer directed`);
+    renderTimeline();
+  };
 
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns
@@ -2901,40 +3047,44 @@ async function train() {
     }
   });
 }
-async function predictVideo() {   // apply existing model(s) to the current video (no retrain)
-  busy("starting prediction…");
+function awaitJob(jid) { return new Promise(resolve => pollJob(jid, resolve)); }   // pollJob calls back once at terminal state
+async function predictVideo() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
+  const all = (el("trainScope") || {}).value === "all";
+  const targets = all ? (projMeta.videos || []).map(v => v.video_id) : [vid];
   const pT0 = Date.now();
-  logEvent("predict_click", { video_id: vid });
-  const r = await api(`/videos/${vid}/predict`, { method: "POST" });
-  if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: vid, error: String(d).slice(0, 200) }); busy("predict: " + d); return; }
-  const { job_id } = await r.json();
-  pollJob(job_id, async s => {
+  logEvent("predict_click", { video_id: vid, scope: all ? "all" : "this", n: targets.length });
+  let ok = 0; const errs = [];
+  for (let i = 0; i < targets.length; i++) {
+    const tv = targets[i];
+    busy(all ? `predicting clip ${i + 1}/${targets.length}…` : "starting prediction…");
+    let r;
+    try { r = await api(`/videos/${tv}/predict`, { method: "POST" }); }
+    catch (e) { errs.push(`${tv.slice(0, 16)}…: ${e.message}`); continue; }
+    if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: tv, error: String(d).slice(0, 200) }); errs.push(`${tv.slice(0, 16)}…: ${d}`); continue; }
+    const s = await awaitJob((await r.json()).job_id);
     if (s.status === "error") {
-      // Show the WHOLE error, not just its first line. A HiDRA failure ("HiDRA wrote no frames
-      // parquet:") puts the actual cause in the tail lines that follow, so first-line-only hid
-      // exactly the part that says what went wrong. Newlines are folded to " | " for the status bar,
-      // the full text goes to the browser console, and more of it is kept in the event log.
-      const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
-      logEvent("predict_error", { video_id: vid, error: one.slice(0, 500) });
-      console.error("predict failed:\n" + full); busy("predict failed: " + one.slice(0, 600)); return;
+      // Keep the WHOLE error (the cause is often in the tail lines): console + event log get it all.
+      const full = String(s.error || "error").trim(), one = full.replace(/\s*\n\s*/g, " | ");
+      console.error(`predict failed (${tv}):\n` + full);
+      logEvent("predict_error", { video_id: tv, error: one.slice(0, 500) });
+      errs.push(`${tv.slice(0, 16)}…: ${one.slice(0, 160)}`); continue;
     }
-    logEvent("predict_result", { video_id: vid, wall_ms: Date.now() - pT0,
+    ok++;
+    logEvent("predict_result", { video_id: tv, wall_ms: Date.now() - pT0,
                                  n_behaviors: ((s.result || {}).behaviors || []).length,
                                  n_skipped: ((s.result || {}).skipped || []).length });
-    await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
-    const res = s.result || {}, done = res.behaviors || [], skipped = res.skipped || [];
-    if (skipped.length) {
-      // don't let a skipped prediction fail silently — tell the user which behavior and why
+    const skipped = (s.result || {}).skipped || [];
+    if (skipped.length && tv === vid) {   // surface skips for the clip you're actually looking at
       const mism = skipped.find(k => (k.reason || "").startsWith("feature_mismatch"));
       const msg = mism
         ? `⚠ ${skipped.map(k => k.name).join(", ")} not predicted — ${mism.reason.replace("feature_mismatch: ", "")}`
         : `⚠ ${skipped.length} behavior(s) skipped: ${skipped.map(k => k.name + " (" + (k.reason || "?") + ")").join(", ")}`;
-      busy(msg);
       if (mism) alert(msg + "\n\n(Set the spout/cage ROI on this clip to match the training clips — via ◇/▢ on the video or the HCM import — then Predict again.)");
-    } else {
-      busy(done.length ? `prediction done (${done.length} behavior${done.length > 1 ? "s" : ""})` : "no trained models to predict with yet — Train a behavior first");
     }
-  });
+  }
+  await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
+  if (errs.length) busy(`predicted ${ok}/${targets.length}${all ? " clips" : ""} — ${errs.length} failed: ${errs[0]}`);
+  else busy(all ? `prediction done — all ${ok} clip${ok !== 1 ? "s" : ""}` : (ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first"));
 }
 async function importFile() {
   const path = prompt("Path to annotations on the server:\n • event-annotator export (.json), or\n • interval CSV (.csv: behavior,start,end in frames)");
@@ -3010,8 +3160,16 @@ function updateReviewText() {
   const spoutNote = (sd != null) ? ` · <span style="color:#4ad0ff">nose→spout ${sd.toFixed(2)} BL${sd <= 0.01 ? " (inside)" : ""}</span>` : "";
   const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
   const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>` : "";
+  // Directed behavior: show the actor->target pair HiDRA proposed so accept commits the full pair.
+  // -1 (no recoverable recipient) prompts a hand pick; Shift+1..9 or click a mouse corrects it.
+  const dir = isDirected(reviewCurrent.bid) && nTracks() >= 2;
+  const tgt = reviewCurrent.target;
+  const dirNote = !dir ? ""
+    : (tgt != null && tgt >= 0)
+      ? ` · <span style="color:#e8a33d">mouse${activeTrack + 1} → mouse${tgt + 1}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
+      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+1..9 or click a mouse)</span>`;
   el("reviewQ").innerHTML = `${head} · track ${activeTrack} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
-    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
+    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
   el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
 }
 // Review-session counters, so a review_end says what the sitting produced without the rollup having
@@ -3050,7 +3208,7 @@ function setReviewLayout(on) {
   requestAnimationFrame(() => { if (meta) renderTimeline(); });   // widths reflowed → redraw the lanes
 }
 function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lane
-  activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new" }; reviewTrim = { s: bt.s, e: bt.e };
+  activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new", target: (bt.target != null ? bt.target : NO_TARGET) }; reviewTrim = { s: bt.s, e: bt.e };
   reviewQueue = []; setReviewView(bt.s, bt.e);
   el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)";
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true);
@@ -3066,7 +3224,8 @@ function showCandidate(i) {
   const c = reviewQueue[i];
   const isDis = c.kind === "disagree";
   reviewCurrent = { bid: activeBid, s: c.start, e: c.end, p: c.mean_proba, mode: isDis ? "disagree" : "new",
-                    labelValue: c.label_value, suggestVal: c.suggest_value, conf: c.disagreement, spoutDist: c.spout_dist, maxConcurrent: c.max_concurrent, dropReason: c.drop_reason };
+                    labelValue: c.label_value, suggestVal: c.suggest_value, conf: c.disagreement, spoutDist: c.spout_dist, maxConcurrent: c.max_concurrent, dropReason: c.drop_reason,
+                    target: (c.target != null ? c.target : NO_TARGET) };   // HiDRA's proposed recipient for a directed pair (-1 = pick by hand)
   reviewTrim = { s: c.start, e: c.end };
   el("rvYes").textContent = isDis ? "✓ Change (y)" : "✓ Accept (y)";
   el("rvNo").textContent = isDis ? "✗ Keep (n)" : "✗ Reject (n)";
@@ -3130,9 +3289,11 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
     await applyPaint(bid, t.s, t.e, reviewCurrent.suggestVal === 1 ? 1 : 2, "candidate");   // correct the label to what the model sees
     advanceReview(); return;
   }
-  await applyPaint(bid, t.s, t.e, 1, "candidate");
-  if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;   // commit the actor->target pair on a directed accept
+  await applyPaint(bid, t.s, t.e, 1, "candidate", at);
+  if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");     // trimmed edges are Not-happening (no target)
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
+  if (isDirected(bid) && at >= 0) logEvent("bout_target", { behavior_id: bid, track: activeTrack, target: at, start: t.s, end: t.e, via: "accept" });
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
@@ -3142,9 +3303,10 @@ async function mergeCandidate() {   // "m": accept, but bridge the gap to an adj
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const m = mergeExtent(bid, t.s, t.e);
   if (!m.merged) return acceptCandidate();          // nothing adjacent (e.g. you trimmed away from it) — fall back to a normal accept
-  await applyPaint(bid, t.s, t.e, 1, "candidate");             // the candidate's own (possibly-trimmed) frames
-  if (m.gapBefore) await applyPaint(bid, m.gapBefore[0], m.gapBefore[1], 1, "candidate");   // bridge ONLY the gap —
-  if (m.gapAfter) await applyPaint(bid, m.gapAfter[0], m.gapAfter[1], 1, "candidate");      // the adjacent bout's own frames/provenance are never touched
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
+  await applyPaint(bid, t.s, t.e, 1, "candidate", at);        // the candidate's own (possibly-trimmed) frames
+  if (m.gapBefore) await applyPaint(bid, m.gapBefore[0], m.gapBefore[1], 1, "candidate", at);   // bridge ONLY the gap —
+  if (m.gapAfter) await applyPaint(bid, m.gapAfter[0], m.gapAfter[1], 1, "candidate", at);      // the adjacent bout's own frames/provenance are never touched
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");   // still mark any trimmed-off edges Not-happening, same as Accept
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
   advanceReview();
@@ -3160,7 +3322,8 @@ async function splitCandidate() {
   if (cut <= t.s + 1 || cut >= t.e - 1) { busy("move the playhead inside the bout, then Split"); return; }
   logDecision("split", { cut });
   snapReview();
-  await applyPaint(bid, t.s, cut, 1, "candidate");            // left segment = one Happening bout
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
+  await applyPaint(bid, t.s, cut, 1, "candidate", at);        // left segment = one Happening bout
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate"); // any trimmed-off left edge = Not-happening
   reviewCurrent = { ...reviewCurrent, s: cut, e };            // keep reviewing the remainder
   reviewTrim = { s: cut, e };
@@ -3232,6 +3395,7 @@ function play(stopAt = null) {
   playAnchorT = null; playBusy = false;              // re-anchor the wall-clock on the first tick
   renderTimeline();                                 // prime the base-bitmap cache before fast-repaint frames
   schedulePrefetch(cur);
+  warmHead = cur; warmAhead();                       // read-ahead so decode keeps up at full speed (see warmAhead)
   playRaf = requestAnimationFrame(playTick);
 }
 function stop() {
@@ -3240,7 +3404,7 @@ function stop() {
   evPlayT = 0;
   playing = false; el("play").textContent = "▶ Play";
   if (playRaf) cancelAnimationFrame(playRaf);
-  playRaf = null; playBusy = false; playStopAt = null;
+  playRaf = null; playBusy = false; playStopAt = null; warmHead = -1;   // warmAhead() sees !playing and exits
 }
 function playTick(now) {
   // WALL-CLOCK clock: keep playback locked to real time. The target frame is derived from elapsed wall
@@ -3278,11 +3442,14 @@ function startPaint(bid, m) {
 function commitPaint() {
   if (!painting) return;
   const s = Math.min(painting.anchor, cur), e = Math.max(painting.anchor, cur) + 1;
-  logEvent("paint_commit", { behavior_id: painting.bid, name: bname(painting.bid), via: "anchor",
-                             mode: painting.mode, value: modeVal(painting.mode), start: s, end: e,
-                             n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual" });
-  applyPaint(painting.bid, s, e, modeVal(painting.mode));
-  busy(`marked ${bname(painting.bid)}: ${s}–${e}`); painting = null;
+  const bid = painting.bid, k = modeVal(painting.mode);
+  logEvent("paint_commit", { behavior_id: bid, name: bname(bid), via: "anchor",
+                             mode: painting.mode, value: k, start: s, end: e,
+                             n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual", target: NO_TARGET });
+  applyPaint(bid, s, e, k);
+  painting = null;
+  if (k === 1 && isDirected(bid) && nTracks() >= 2) armTargetPick(bid, s, e, k);   // directed: ask for the recipient
+  else busy(`marked ${bname(bid)}: ${s}–${e}`);
 }
 function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   if (drag) return;           // ignore while a timeline lane drag is live (avoids a concurrent anchor-paint)
@@ -3323,11 +3490,12 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   if (!selectedSeg || !segTrim) return;
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
+  const tg = targetState.get(bid), keepTgt = (val === 1 && tg) ? tg[s] : NO_TARGET;   // preserve a directed bout's recipient across the trim
   logEvent("label_trim", { behavior_id: bid, name: bname(bid), from_start: s, from_end: e,
                            start: ns, end: ne, n_frames: ne - ns, delta_frames: (ne - ns) - (e - s), value: val });
   if (ns > s) await applyPaint(bid, s, ns, 0);             // trimmed on the left -> unlabel [s, ns)
   if (ne < e) await applyPaint(bid, ne, e, 0);             // trimmed on the right -> unlabel [ne, e)
-  await applyPaint(bid, ns, ne, val);                      // (re)label the new range (covers extensions), same value
+  await applyPaint(bid, ns, ne, val, "manual", keepTgt);   // (re)label the new range (covers extensions), same value + target
   selectRunAt(bid, ns);                                    // re-select the edited bout so you can keep adjusting
   busy(`bout → frames ${ns}–${ne}`);
 }
@@ -3432,9 +3600,11 @@ tl.addEventListener("pointerup", () => {
     } else {
       clearSel();
       const s = Math.min(drag.start, drag.curFrame), e = Math.max(drag.start, drag.curFrame) + 1;
-      logEvent("paint_commit", { behavior_id: drag.bid, name: bname(drag.bid), via: "drag",
-                                 mode, value: modeVal(), start: s, end: e, n_frames: e - s, source: "manual" });
-      applyPaint(drag.bid, s, e, modeVal()); show(drag.curFrame);
+      const dbid = drag.bid, dk = modeVal();
+      logEvent("paint_commit", { behavior_id: dbid, name: bname(dbid), via: "drag",
+                                 mode, value: dk, start: s, end: e, n_frames: e - s, source: "manual", target: NO_TARGET });
+      applyPaint(dbid, s, e, dk); show(drag.curFrame);
+      if (dk === 1 && isDirected(dbid) && nTracks() >= 2) armTargetPick(dbid, s, e, dk);   // directed: ask for the recipient
     }
   }
   drag = null;
@@ -3620,8 +3790,22 @@ window.addEventListener("keydown", e => {
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
   if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
   if (settingCage && e.key === "Escape") { e.preventDefault(); setCageMode(false); busy("cage ROI cancelled"); return; }
+  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift+1..9 to set it later)"); return; }
   if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedSeg) { e.preventDefault(); deleteSelectedSeg(); return; }
+  if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track (e.code is layout-safe; Shift+1 would otherwise be '!')
+    const t = +e.code.slice(5) - 1;
+    if (t < nTracks()) {
+      if (awaitTarget) { e.preventDefault(); setBoutTarget(t); return; }
+      if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid)) {   // set/correct the directed candidate's recipient
+        e.preventDefault(); setReviewTarget(t); return;
+      }
+      if (selectedSeg && selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {   // retarget an already-selected directed bout
+        awaitTarget = { bid: selectedSeg.bid, s: selectedSeg.s, e: selectedSeg.e, k: 1, actor: activeTrack };
+        e.preventDefault(); setBoutTarget(t); return;
+      }
+    }
+  }
   if (e.key === "Tab") { e.preventDefault(); cycleTrack(e.shiftKey ? -1 : 1); return; }        // cycle tracks
   if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }
   if (reviewing && e.key === "y") return acceptCandidate();

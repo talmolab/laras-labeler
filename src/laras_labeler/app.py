@@ -80,6 +80,7 @@ class EditBehavior(BaseModel):
     color: str | None = None
     key: str | None = None
     feature_set: str | None = None   # None keeps current; 'all'|'spout'|'cage'|'spout_cage'|'no_social'|'pose'|'social'|'social_pose'
+    directed: bool | None = None      # social behavior: each bout records an actor->target pair (independent of any HiDRA head)
 
 
 class ReviewedBout(BaseModel):
@@ -98,6 +99,7 @@ class LabelSpan(BaseModel):
     end: int
     value: int = Field(ge=0, le=2)  # 1 = Happening, 0 = Not-happening, 2 = Unknown (saved, excluded from training)
     source: str = "manual"          # provenance: 'manual' (painted) | 'candidate' (accepted from review) | 'imported'
+    target: int = -1                # recipient track for a DIRECTED bout; -1 = self / undirected (default keeps old clients working)
 
 
 class ImportRequest(BaseModel):
@@ -699,7 +701,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     # ---- training + prediction (the human-in-the-loop) ----
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
     def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
-                       ft_smoke: bool = False, ft_configs: str | None = None):
+                       ft_smoke: bool = False, ft_configs: str | None = None,
+                       ft_steps: int = 2000):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
@@ -709,7 +712,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         `ft_smoke`/`ft_configs` apply only to a HiDRA-bound behavior's fine-tune: `?ft_smoke=true`
         runs HiDRA's short dry run (prepare + a no-checkpoint train) to verify the wiring in minutes,
         and `?ft_configs=15fps_5bp` restricts the real run to a config subset (for testing — Predict
-        needs all five). Both are ignored by this project's own model path."""
+        needs all five). `ft_steps` caps the per-config training steps (default 2000, where F1
+        plateaus in practice; `?ft_steps=0` uses HiDRA's own 8000-step default). All three are
+        ignored by this project's own model path."""
         _behavior(pid, bid)
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 
@@ -717,7 +722,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
-                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs)
+                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
+                                    steps=ft_steps or None)
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -820,7 +826,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
                 "is required — set pix_per_cm on the video or the project.")
 
-        work = proj.path / "hidra" / vid / "_work"
+        # Short dir key: the full clip name (~85 chars) appears twice in HiDRA's nested
+        # _work/custom_tracking/<lab>/<clip>.parquet tree, which blows past Windows' 260-char path
+        # limit and makes predict fail with a bare "can't open file". Hash it to keep paths short.
+        import hashlib
+        vkey = hashlib.sha1(str(vid).encode("utf-8")).hexdigest()[:10]
+        work = proj.path / "hidra" / vkey / "_work"
         stem = Path(str(entry.get("video_path") or vid)).stem or vid
         progress(3, "exporting tracking")
         exported = hidra.export_tracking(poses, header.node_names, fps, ppc, stem, work)
@@ -830,7 +841,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             h = b["hidra"]
             lo = 5 + int(90 * i / max(len(behaviors), 1))
             span = int(90 / max(len(behaviors), 1))
-            out = proj.path / "hidra" / vid / f"{h['lab']}__{h['action']}"
+            out = proj.path / "hidra" / vkey / f"{h['lab']}__{h['action']}"
             fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc, h.get("weights"),
                              lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m))
             lanes = hidra.to_lanes(fp, h["lab"], h["action"], h.get("collapse", "scene"),
@@ -838,7 +849,18 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             dest = proj.path / "predictions" / vid / f"{b['id']}.npy"
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.save(dest, lanes)
-            done.append({"behavior_id": b["id"], "name": b.get("name"),
+            # DIRECTED head: also save WHO each subject was pointed at, parallel to the lanes, so the
+            # review queue can propose an actor->target pair (Stage 2). The lane collapses over targets;
+            # this keeps the argmax recipient. Non-directed heads write no target file (candidates plain).
+            tgt_written = False
+            if h.get("collapse", "scene") == "directed":
+                try:
+                    tgrid = hidra.directed_targets(fp, h["lab"], h["action"], n_frames, n_animals)
+                    np.save(proj.path / "predictions" / vid / f"{b['id']}.target.npy", tgrid)
+                    tgt_written = True
+                except Exception:                            # a target grid is a nicety; never fail predict over it
+                    pass
+            done.append({"behavior_id": b["id"], "name": b.get("name"), "directed_targets": tgt_written,
                          "lab": h["lab"], "action": h["action"],
                          "collapse": h.get("collapse", "scene"), "rate": h.get("rate", 0.15),
                          "finetuned": bool(h.get("weights")),
@@ -847,13 +869,16 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
-                     smoke: bool = False, configs: list[str] | None = None) -> dict:
+                     smoke: bool = False, configs: list[str] | None = None,
+                     steps: int | None = None) -> dict:
         """Fine-tune a bound head on this project's reviewed labels, via HiDRA's PyTorch fine-tuner
         (finetune.py prepare/train — the old single-shot LABTAIL CLI is gone).
 
         `smoke` runs HiDRA's short dry run (full prepare + a ~600-step train that writes no
         checkpoint) to prove the data + environment are wired up in minutes; `configs` restricts the
         real run to a subset of the five (Predict needs all five, so a subset is for testing only).
+        `steps` caps the per-config training steps (see `hidra.finetune`); `None` keeps HiDRA's
+        8000-step default.
 
         The new fine-tuner stages the tracking parquets AND a positives-only bout CSV, then warm-
         starts the adopted head and adapts it (mode 'tail' by default — the lab tail + embedding +
@@ -953,7 +978,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         label = "smoke test" if smoke else "fine-tuning"
         progress(15, f"{label} {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
         r = hidra.finetune(rt, h, tracking, data_root / "bouts.csv", data_root, tag, ann,
-                           mode=mode, configs=configs, smoke=smoke,
+                           mode=mode, configs=configs, smoke=smoke, steps=steps,
                            progress=lambda p, m: progress(15 + int(p * 0.85), m))
 
         # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
@@ -1216,6 +1241,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                  frames=sum(max(0, r["end"] - r["start"]) for r in rows),
                  behaviors=sorted({r["behavior_id"] for r in rows}),
                  tracks=sorted({r["track"] for r in rows}),
+                 targets=sorted({r.get("target", -1) for r in rows}),
                  sources=sorted({r.get("source") or "manual" for r in rows}))
         return {"ok": True}
 

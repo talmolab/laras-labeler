@@ -768,10 +768,12 @@ def export_tracking(poses: np.ndarray, node_names: list[str], fps: float,
 
 
 def _subproc_env(extra: dict | None = None) -> dict:
-    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR so HiDRA's work_root()
-    returns before its POSIX-only os.getuid() call (which raises AttributeError on Windows and
-    aborts inference before it writes anything). A user-set HIDRA_WORKDIR still wins. On Linux this
-    changes nothing, leaving HiDRA free to prefer /dev/shm."""
+    """Environment for a HiDRA subprocess. On Windows, set HIDRA_WORKDIR to a temp dir so every
+    HiDRA scratch path — the tracking cache AND predict's per-lab workdir, both routed through
+    paths.work_root() — lands under %TEMP% instead of /dev/shm (which on Windows becomes C:\\dev\\shm).
+    A user-set HIDRA_WORKDIR still wins. On Linux this is left unset, so work_root() prefers /dev/shm
+    (RAM). Recent HiDRA also guards its os.getuid() call, so work_root() no longer crashes on Windows
+    without this — but setting it keeps the scratch out of C:\\ and off the current drive root."""
     import os, tempfile
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if os.name == "nt":
@@ -834,26 +836,30 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
                             env=_subproc_env())
     tail: list[str] = []
+    full: list[str] = []
     for line in proc.stdout or []:
         line = line.rstrip()
         if not line:
             continue
+        full.append(line)
         tail = (tail + [line])[-25:]
         progress(min(90, 5 + len(tail) * 3), line[:120])
     if proc.wait() != 0:
-        raise RuntimeError("HiDRA inference failed:\n" + "\n".join(tail[-12:]))
+        # The GUI toast only shows the last few lines; write the WHOLE HiDRA output (and the exact
+        # command) to a file so the real exception/path is never lost to truncation.
+        errlog = Path(work) / "hidra_predict_error.log"
+        try:
+            errlog.write_text("$ " + " ".join(str(c) for c in cmd) + "\n\n" + "\n".join(full),
+                              encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(f"HiDRA inference failed (full log: {errlog}):\n" + "\n".join(tail[-12:]))
 
     # predict.py exits 0 after running nothing if the job sheet selected no servable lab, so a
     # zero-work run has to be caught here or it reads downstream as a behaviour that never occurred.
     joined = "\n".join(tail)
-    if "/dev/shm" in joined:
-        raise RuntimeError(
-            "HiDRA's predict.py hardcodes its scratch directory under /dev/shm "
-            "(predict.py: PERLAB_WORKDIR=f\"/dev/shm/doom_predict_{os.getpid()}\"), which exists "
-            "only on Linux. It overrides the environment, so it cannot be redirected from here, "
-            "and /dev/shm cannot be created on macOS. Change that one line to a temp directory — "
-            "e.g. tempfile.mkdtemp(prefix=\"doom_predict_\") — and inference runs. "
-            "Nothing else in the pipeline is platform-specific.")
+    # (Predict's scratch dir is portable as of HiDRA's paths.work_root() — it no longer hardcodes
+    # /dev/shm, so a /dev/shm mention in the log is the correct Linux RAM path, not a failure.)
     if "running 0 lab classifier set" in joined:
         raise RuntimeError(
             f"HiDRA ran no classifier for ({lab}, {action}) — {lab!r} is not one of the labs it can "
@@ -905,6 +911,40 @@ def to_lanes(frames_parquet: Path, lab: str, action: str, collapse: str,
     return lanes if rate is None else by_rate(lanes, float(rate))[0]
 
 
+def directed_targets(frames_parquet: Path, lab: str, action: str,
+                     n_frames: int, n_animals: int) -> np.ndarray:
+    """For a DIRECTED head, the target track HiDRA points each subject at, per frame -> (F, T) int16.
+
+    `to_lanes(..., 'directed')` collapses the (subject -> target) pairs to one probability per subject
+    (its best score toward anyone), throwing away WHO that best target was. Directed-pair review needs
+    that recipient back, so this recovers it: for each (frame, subject) it records the track index of
+    the target with the max prob -- exactly the pair that set the collapsed lane value. -1 where the
+    subject has no cross-animal row that frame (so a bout with no recoverable target stays undirected,
+    to be picked by hand). Parallel to the lanes array, same shape, same frame indexing."""
+    df = pd.read_parquet(frames_parquet)
+    sel = df[(df["lab"] == lab) & (df["action"] == action)]
+    tgt = np.full((n_frames, n_animals), -1, dtype="int16")
+    if sel.empty:
+        return tgt
+    cross = sel[sel["target"] != "self"]                          # a directed pair, never the self row
+    if cross.empty:
+        return tgt
+    for t in range(n_animals):
+        rows = cross[cross["subject"] == f"mouse{t + 1}"]
+        if rows.empty:
+            continue
+        best = rows.loc[rows.groupby("frame")["prob"].idxmax()]   # the max-prob target per frame == the lane's source
+        frames = best["frame"].to_numpy()
+        keep = (frames >= 0) & (frames < n_frames)
+        try:
+            cols = np.array([track_index(x) for x in best["target"]])
+        except ValueError:
+            continue                                              # a non-mouseN target string -> leave this subject undirected
+        keep &= cols < n_animals
+        tgt[frames[keep], t] = cols[keep].astype("int16")
+    return tgt
+
+
 def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
                  n_animals_by_video: dict | None = None) -> dict:
     """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.
@@ -918,14 +958,16 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
     own un-reviewed, correct detections are negatives, the fastest way to make fine-tuning worse
     than the head it started from.
 
-    TARGET, because the labeler's labels are per (video, track) -- one animal's lane -- while HiDRA
-    scores ordered (agent -> target) pairs and `prepare` needs a concrete target:
+    TARGET, because HiDRA scores ordered (agent -> target) pairs and `prepare` needs a concrete
+    target for each bout:
       - a self-directed head (collapse == 'self') takes ``target = self``;
-      - a directed/scene head in a two-animal clip takes the OTHER animal as the target, which is
-        the only unambiguous reconstruction the per-lane labels allow;
-      - a directed/scene head with more than two animals has no recoverable target (the per-track
-        label does not say which partner), so those rows are SKIPPED and counted in
-        `directed_ambiguous` for the caller to surface -- such behaviours are zero-shot only here.
+      - a directed bout that carries a GUI-picked recipient track (directed labeling) writes that
+        exact partner -- ``mouse{target+1}`` -- for ANY number of animals;
+      - failing that, a directed/scene head in a two-animal clip takes the OTHER animal as the
+        target (the only unambiguous reconstruction the per-lane labels allow);
+      - a directed bout with more than two animals and NO picked target has no recoverable partner,
+        so those rows are SKIPPED and counted in `directed_ambiguous` for the caller to surface --
+        pick a target for them (or they are zero-shot only).
 
     Stored span values are 1 = Happening, 0 = Not-happening, 2 = Unknown (app.py's schema); only 1
     is written. Our runs are half-open [start, stop), which is exactly `prepare`'s exclusive
@@ -953,22 +995,24 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
         tracks = sorted({int(x) for x in df["track"].unique()})
         for t in tracks:
             agent = f"mouse{t + 1}"
-            if self_directed:
-                target = "self"                            # the acting animal itself
-            elif n_animals == 2:
-                target = f"mouse{2 if t == 0 else 1}"      # the only other animal — unambiguous
-            else:
-                # A directed (social) behaviour needs a specific (agent -> target) pair, but a
-                # per-track label records only the acting animal. With !=2 animals the partner is
-                # unrecoverable, and writing target=self would both mis-train the head and, when a
-                # single track is labelled, crash HiDRA's epoch builder (one-mouse label set). Skip
-                # these rows and report them; directed behaviours on >2-animal clips are zero-shot only.
-                target = None
-            for run in labels.get_runs(pid, vid, t, bid).get(bid, []):
+            # get_runs_src runs are [start, stop, value, source, target]; target is the GUI-picked
+            # recipient track for a directed bout (-1 = none/self). Compute the target PER SPAN so a
+            # single actor can direct different bouts at different partners.
+            for run in labels.get_runs_src(pid, vid, t, bid).get(bid, []):
                 a, b, val = int(run[0]), int(run[1]), int(run[2])
+                tgt = int(run[4]) if len(run) > 4 else -1
                 if val != 1 or b <= a:                     # positives only; negatives are implicit
                     continue
-                if target is None:
+                if self_directed:
+                    target = "self"                        # the acting animal itself
+                elif tgt >= 0 and tgt != t and (n_animals == 0 or tgt < n_animals):
+                    target = f"mouse{tgt + 1}"             # the recipient the annotator picked (any # of animals)
+                elif n_animals == 2:
+                    target = f"mouse{2 if t == 0 else 1}"  # fallback: the only other animal is unambiguous
+                else:
+                    # Directed, >2 animals, and no valid stored target (or target == self, which would
+                    # crash HiDRA's epoch builder): unrecoverable. Skip and report — the annotator must
+                    # pick a target for these bouts (directed labeling), else they are zero-shot only.
                     ambiguous += 1
                     continue
                 n_bouts += 1
@@ -989,7 +1033,7 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
-             smoke: bool = False, progress=lambda p, m: None) -> dict:
+             smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
     """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
     ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
     ``train_perlab_heads.py --mode labtail`` CLI is gone).
@@ -1011,6 +1055,11 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     Predict averages all five config checkpoints, so `train` writes all five by default; pass a
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
     ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
+
+    `steps` caps the per-config training steps (HiDRA's default is 8000). F1 typically plateaus
+    well before that (~2000 in practice), so the labeler defaults this to a small value to keep each
+    HITL round fast; pass ``None`` to use HiDRA's own default. Unlike stopping the run by hand mid
+    config (which leaves no checkpoint), a smaller `steps` still writes a full checkpoint per config.
 
     `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
     that writes NO checkpoint, only proving the data + environment are wired up end to end. Use it
@@ -1061,6 +1110,8 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
              "--backend", "torch", "--workdir", str(workdir)]
     if configs:
         train += ["--configs", ",".join(configs)]
+    if steps:
+        train += ["--steps", str(steps)]
     if smoke:
         train.append("--smoke")
     log += _stream(train, "train", 20, 100)
