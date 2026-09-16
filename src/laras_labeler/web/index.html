@@ -1566,7 +1566,11 @@ function renderTimeline() {
     tctx.strokeStyle = active ? "#ffd24a" : "rgba(255,210,74,0.45)"; tctx.lineWidth = 1; tctx.setLineDash([4, 3]);
     tctx.beginPath(); tctx.moveTo(TL_GUT, thrY); tctx.lineTo(W, thrY); tctx.stroke();
     tctx.setLineDash([]);
-    if (active) { tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right"; tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left"; }
+    if (active) {
+      tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right";
+      tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left";
+      tctx.beginPath(); tctx.arc(TL_GUT + 6, thrY, 3, 0, 7); tctx.fill();   // grab handle — drag the line to set the threshold
+    }
     tctx.restore();
     for (const bt of (predictedBouts.get(b.id) || [])) {         // predicted Happening bouts -> blue top marker (clickable)
       const x0 = xOf(bt.s, W), w = Math.max(2, xOf(bt.e, W) - x0);
@@ -3522,11 +3526,29 @@ function jumpToAdjacentLabel(bid, dir) {   // hop the playhead to the prev/next 
   }
   stop(); show(s); selectRunAt(bid, s); busy(`label ${s}–${e}`);
 }
+// ---- draggable detection threshold (the dashed line on the confidence trace) ----
+function predLaneGeom(i) {                          // geometry of behavior lane i's prediction (confidence) sub-lane
+  const ya = RULER + i * ROWH() + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP;
+  return { hhP, baseY: ya + PRED_H - padP };        // baseY = P0 baseline; top = baseY - hhP = P1
+}
+function threshLineAt(x, y, W) {                    // the behavior whose dashed threshold line is under the cursor, or null
+  if (x < TL_GUT || y < RULER) return null;
+  const lanes = laneList(), i = Math.floor((y - RULER) / ROWH());
+  if (i < 0 || i >= lanes.length) return null;
+  const g = predLaneGeom(i), thrY = g.baseY - Math.max(0, Math.min(1, behThresh(lanes[i].id))) * g.hhP;
+  return Math.abs(y - thrY) <= 5 ? lanes[i].id : null;   // grab within 5px of the line
+}
+function threshFromY(i, y) {                        // invert the trace's y->P mapping, clamped to the slider's range/step
+  const g = predLaneGeom(i);
+  return Math.round(Math.max(0.05, Math.min(0.95, (g.baseY - y) / g.hhP)) / 0.05) * 0.05;
+}
 tl.addEventListener("pointerdown", ev => {
   const W = tlWidth(), rect = tl.getBoundingClientRect(), x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   tl.setPointerCapture(ev.pointerId);
   const trimEdge = trimHandleAt(x, y, W);
   if (trimEdge) { stop(); drag = { kind: "trim", edge: trimEdge }; return; }   // grab an accept-boundary to drag it (pause playback so the base can't go stale under it)
+  const thBid = threshLineAt(x, y, W);                                         // grab the dashed line to set the detection threshold by dragging
+  if (thBid != null) { stop(); if (thBid !== activeBid) selectBehavior(thBid); drag = { kind: "thresh", bid: thBid }; return; }
   if (y < RULER) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); return; }
   if (x < TL_GUT) {                                                            // label gutter: only the active row's ‹ › nav arrows are interactive
     const gi = Math.floor((y - RULER) / ROWH());
@@ -3562,6 +3584,9 @@ tl.addEventListener("pointermove", ev => {
   } else if (drag.kind === "paint") {                       // paint only once the pointer travels past the slop
     if (Math.abs(x - drag.startX) > CLICK_SLOP) drag.moved = true;
     drag.curFrame = f; renderTimeline();
+  } else if (drag.kind === "thresh") {                      // drag the dashed line up/down to change the detection threshold, live
+    const i = laneList().findIndex(b => b.id === drag.bid);
+    if (i >= 0) { behPP(drag.bid).hi = threshFromY(i, y); recomputeBouts(drag.bid); renderTimeline(); renderThreshReadout(); }
   } else if (drag.kind === "trim") {                        // drag an edit-boundary (review candidate OR selected labeled bout)
     const trim = reviewCurrent ? reviewTrim : segTrim; if (!trim) return;
     // NB: no ensureTrimVisible() here — widening tlView mid-drag re-maps the cursor's frame (frameAt reads
@@ -3574,6 +3599,7 @@ tl.addEventListener("pointermove", ev => {
 });
 function updateHoverCursor(x, y, f) {
   if (trimHandleAt(x, y, tlWidth())) { tl.style.cursor = "ew-resize"; return; }   // over a trim handle
+  if (threshLineAt(x, y, tlWidth()) != null) { tl.style.cursor = "ns-resize"; return; }   // over the draggable threshold line
   if (y < RULER) { tl.style.cursor = "ew-resize"; return; }
   if (x < TL_GUT) {                                                               // the label gutter — pointer over the active row's nav arrows
     const gi = Math.floor((y - RULER) / ROWH());
@@ -3587,6 +3613,7 @@ function updateHoverCursor(x, y, f) {
   tl.style.cursor = onRun ? "pointer" : "crosshair";       // pointer = an annotation you can click to select
 }
 tl.addEventListener("pointerup", () => {
+  if (drag && drag.kind === "thresh") { drag = null; onThreshCommit(); return; }   // persist the dragged threshold + refresh the Review queue (same as the slider)
   if (drag && drag.kind === "trim" && !reviewCurrent) { commitSegTrim(); drag = null; return; }   // finished editing a labeled bout's bounds
   if (drag && drag.kind === "laneScrub") {
     selectNearest(drag.bid, drag.curF, tlWidth());          // select the bout you landed on (if any)
