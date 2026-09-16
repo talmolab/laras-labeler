@@ -182,12 +182,24 @@ def main(argv=None) -> None:
     if not events_dir.is_dir():
         sys.exit(f"no events found: {events_dir} is not a directory (point me at the project dir or its events/ dir)")
 
+    # behavior_id -> name, so the table names each behavior instead of leaving you to guess the id.
+    names: dict[int, str] = {}
+    for pj in (root / "project.json", events_dir.parent / "project.json"):
+        if pj.exists():
+            try:
+                names = {int(b["id"]): b.get("name", "?") for b in json.loads(pj.read_text(encoding="utf-8")).get("behaviors", [])}
+            except Exception:
+                names = {}
+            break
+
     recs = _read_events(events_dir)
     rows = per_clip(recs, fps=args.fps, behavior_id=args.behavior, by_track=args.by_track)
     if not rows:
         sys.exit(f"no client events in {events_dir} (nothing labeled yet, or wrong --behavior).")
+    for r in rows:
+        r["behavior"] = names.get(r["behavior_id"], "?") if r["behavior_id"] is not None else "(none)"
 
-    cols = ["video_id", "behavior_id"] + (["track"] if args.by_track else []) + [
+    cols = ["video_id", "behavior", "behavior_id"] + (["track"] if args.by_track else []) + [
         "label_s", "review_s", "other_s", "active_s", "manual_bouts", "s_per_manual_bout",
         "candidates_shown", "accepted", "rejected", "decisions", "s_per_decision"]
     w = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
@@ -202,6 +214,21 @@ def main(argv=None) -> None:
           f"· total decisions {sum(r['decisions'] for r in rows)} "
           f"(accepted {sum(r['accepted'] for r in rows)}, rejected {sum(r['rejected'] for r in rows)})")
     print("(total label_s should match the sum of the rounds CSV's label_s, minus rounding.)")
+
+    # Per-behavior rollup: how long labeling took, per named behavior. This is the "how long does it
+    # take me to annotate" answer — label_s is active labeling time (idle/hidden excluded).
+    by: dict[str, dict] = {}
+    for r in rows:
+        d = by.setdefault(r["behavior"], {"label_s": 0.0, "review_s": 0.0, "bouts": 0, "clips": set()})
+        d["label_s"] += r["label_s"]; d["review_s"] += r["review_s"]; d["bouts"] += r["manual_bouts"]
+        if r["manual_bouts"]:
+            d["clips"].add(r["video_id"])
+    print("\nper behavior — active labeling time (label_s):")
+    for name, d in sorted(by.items(), key=lambda kv: -kv[1]["label_s"]):
+        spb = round(d["label_s"] / d["bouts"], 1) if d["bouts"] else None
+        print(f"  {name}: {d['label_s'] / 60:.1f} min labeling · {d['bouts']} bouts (event count) "
+              f"· {len(d['clips'])} clips · {spb} s/bout"
+              + (f" · {d['review_s'] / 60:.1f} min review" if d["review_s"] else ""))
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
