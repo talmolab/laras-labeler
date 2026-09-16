@@ -583,7 +583,7 @@ const TRACK_COLORS = ["#5aa06e", "#d9a54e", "#9a72b8", "#4fa39a", "#c4b45c", "#a
 const NEG_COLOR = "rgba(130,138,150,0.55)";
 // manual-label semantics (same across behaviors): Happening=soft blue, Not-happening=soft red, Unknown=gray hatch
 const HAPPENING_COLOR = "#5f8fc4", NOTHAPPENING_COLOR = "#cc7f7f", UNKNOWN_HATCH = "#9aa3b2";
-const RULER = 24, MANUAL_H = 28, PRED_H = 15, LANE_GAP = 3, ROW_GAP = 8;   // taller painting lane
+const RULER = 24, MANUAL_H = 28, PRED_H = 30, LANE_GAP = 3, ROW_GAP = 8;   // taller painting lane; pred lane holds a confidence trace
 const TL_GUT = 128;   // left gutter reserved for the behavior-name label + prev/next label-nav arrows, so the bars/bouts aren't drawn under it
 const CLICK_SLOP = 4;   // px of pointer travel below which a lane press counts as a click (select), not a drag (paint)
 
@@ -1536,21 +1536,38 @@ function renderTimeline() {
       tctx.fillStyle = b.color; rRect(tctx, TL_GUT, ym, 4, MANUAL_H, 2); tctx.fill();
       tctx.strokeStyle = "rgba(207,214,224,0.32)"; tctx.lineWidth = 1; rRect(tctx, TL_GUT + 0.5, ym + 0.5, W - TL_GUT - 1, MANUAL_H - 1, 6); tctx.stroke();
     }
-    // prediction lane — same color semantics (blue/red), faint = uncertain (|2P-1|)
+    // prediction lane — a CONFIDENCE TRACE: per-frame P(behavior) as a filled curve (0 at the bottom,
+    // 1 at the top), colored blue where it clears the detection threshold and red where it doesn't, with
+    // a dashed line AT the threshold. Raising the "detect ≥" slider lifts the dashed line, so you can see
+    // exactly which peaks stop being bouts — the opacity-only lane made that invisible.
     tctx.fillStyle = "#0c0e13"; rRect(tctx, TL_GUT, ya, W - TL_GUT, PRED_H, 4); tctx.fill();
     const cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
     const proba = predsByBeh.get(b.id);                          // per-frame P for the active track
+    const thr = behThresh(b.id);
+    const padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;   // baseline (P=0) .. top (P=1)
+    const yOfP = p => baseY - Math.max(0, Math.min(1, p)) * hhP;
+    const thrY = yOfP(thr);
     if (proba && proba.length) {
-      const F = meta.n_frames, hy = ya + 3, hh = PRED_H - 6, pw = plotW(W), vS = viewS(), vSpan = viewE() - viewS();
-      for (let x = TL_GUT; x < W; x++) {
-        const p = proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // map into the VISIBLE window (zoom-aware), matching the labels/playhead
-        const m = Math.abs(2 * p - 1);
-        if (m < 0.04) continue;
-        const col = p >= behThresh(b.id) ? cH : cN;
-        tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${Math.pow(m, 0.6).toFixed(3)})`;
-        tctx.fillRect(x, hy, 1, hh);
+      const F = meta.n_frames, pw = plotW(W), vS = viewS(), vSpan = viewE() - viewS();
+      const pAt = x => proba[Math.max(0, Math.min(F - 1, (vS + (x - TL_GUT) / pw * vSpan) | 0))];   // zoom-aware, matches labels/playhead
+      for (let x = TL_GUT; x < W; x++) {                         // filled area under the curve, tinted by threshold crossing
+        const p = pAt(x);
+        if (Number.isNaN(p) || p <= 0.001) continue;
+        const col = p >= thr ? cH : cN, yv = yOfP(p);
+        tctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${p >= thr ? 0.5 : 0.22})`;
+        tctx.fillRect(x, yv, 1, baseY - yv);
       }
+      tctx.strokeStyle = "rgba(207,214,224,0.7)"; tctx.lineWidth = 1; tctx.beginPath();   // the P curve, crisp on top
+      for (let x = TL_GUT; x < W; x++) { const yv = yOfP(Number.isNaN(pAt(x)) ? 0 : pAt(x)); if (x === TL_GUT) tctx.moveTo(x, yv); else tctx.lineTo(x, yv); }
+      tctx.stroke();
     }
+    // dashed detection-threshold line (brighter on the active row); a small value tag at the right edge
+    tctx.save();
+    tctx.strokeStyle = active ? "#ffd24a" : "rgba(255,210,74,0.45)"; tctx.lineWidth = 1; tctx.setLineDash([4, 3]);
+    tctx.beginPath(); tctx.moveTo(TL_GUT, thrY); tctx.lineTo(W, thrY); tctx.stroke();
+    tctx.setLineDash([]);
+    if (active) { tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right"; tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left"; }
+    tctx.restore();
     for (const bt of (predictedBouts.get(b.id) || [])) {         // predicted Happening bouts -> blue top marker (clickable)
       const x0 = xOf(bt.s, W), w = Math.max(2, xOf(bt.e, W) - x0);
       tctx.fillStyle = `rgba(${cH.r},${cH.g},${cH.b},0.95)`;
@@ -1576,7 +1593,8 @@ function renderTimeline() {
       }
       tctx.textAlign = "left";
     }
-    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("pred", 11, ya + PRED_H / 2);
+    // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
+    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
   });
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
@@ -1658,6 +1676,26 @@ function drawTimelineOverlay(W, H, rh) {
   const px = xOf(cur, W);
   tctx.strokeStyle = "#ffd24a"; tctx.lineWidth = 1.5;
   tctx.beginPath(); tctx.moveTo(px, 0); tctx.lineTo(px, H); tctx.stroke();
+  // live confidence readout: a dot on the active behavior's trace at the playhead + its P value,
+  // colored by the threshold (blue = would be a bout, red = below cut). Drawn in the overlay so it
+  // tracks during playback.
+  if (activeBid != null) {
+    const ai = laneList().findIndex(b => b.id === activeBid), proba = predsByBeh.get(activeBid);
+    if (ai >= 0 && proba && proba.length) {
+      const ya = RULER + ai * rh + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;
+      const p = proba[Math.max(0, Math.min(proba.length - 1, cur))];
+      if (!Number.isNaN(p)) {
+        const yv = baseY - Math.max(0, Math.min(1, p)) * hhP, thr = behThresh(activeBid);
+        const c = p >= thr ? hexRgb(HAPPENING_COLOR) : hexRgb(NOTHAPPENING_COLOR);
+        tctx.beginPath(); tctx.arc(px, yv, 2.6, 0, 7); tctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`; tctx.fill();
+        tctx.strokeStyle = "#0c0e13"; tctx.lineWidth = 1; tctx.stroke();
+        tctx.font = "600 9.5px system-ui"; const txt = p.toFixed(2), tw = tctx.measureText(txt).width + 6, left = px + 5 + tw > W;
+        const bx = left ? px - 5 - tw : px + 5;
+        tctx.fillStyle = "rgba(12,14,19,0.85)"; rRect(tctx, bx, yv - 7, tw, 13, 3); tctx.fill();
+        tctx.fillStyle = "#e6edf5"; tctx.textAlign = "left"; tctx.fillText(txt, bx + 3, yv);
+      }
+    }
+  }
 }
 
 async function loadSeries() {
