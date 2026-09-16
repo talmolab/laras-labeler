@@ -911,6 +911,40 @@ def to_lanes(frames_parquet: Path, lab: str, action: str, collapse: str,
     return lanes if rate is None else by_rate(lanes, float(rate))[0]
 
 
+def directed_targets(frames_parquet: Path, lab: str, action: str,
+                     n_frames: int, n_animals: int) -> np.ndarray:
+    """For a DIRECTED head, the target track HiDRA points each subject at, per frame -> (F, T) int16.
+
+    `to_lanes(..., 'directed')` collapses the (subject -> target) pairs to one probability per subject
+    (its best score toward anyone), throwing away WHO that best target was. Directed-pair review needs
+    that recipient back, so this recovers it: for each (frame, subject) it records the track index of
+    the target with the max prob -- exactly the pair that set the collapsed lane value. -1 where the
+    subject has no cross-animal row that frame (so a bout with no recoverable target stays undirected,
+    to be picked by hand). Parallel to the lanes array, same shape, same frame indexing."""
+    df = pd.read_parquet(frames_parquet)
+    sel = df[(df["lab"] == lab) & (df["action"] == action)]
+    tgt = np.full((n_frames, n_animals), -1, dtype="int16")
+    if sel.empty:
+        return tgt
+    cross = sel[sel["target"] != "self"]                          # a directed pair, never the self row
+    if cross.empty:
+        return tgt
+    for t in range(n_animals):
+        rows = cross[cross["subject"] == f"mouse{t + 1}"]
+        if rows.empty:
+            continue
+        best = rows.loc[rows.groupby("frame")["prob"].idxmax()]   # the max-prob target per frame == the lane's source
+        frames = best["frame"].to_numpy()
+        keep = (frames >= 0) & (frames < n_frames)
+        try:
+            cols = np.array([track_index(x) for x in best["target"]])
+        except ValueError:
+            continue                                              # a non-mouseN target string -> leave this subject undirected
+        keep &= cols < n_animals
+        tgt[frames[keep], t] = cols[keep].astype("int16")
+    return tgt
+
+
 def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
                  n_animals_by_video: dict | None = None) -> dict:
     """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.

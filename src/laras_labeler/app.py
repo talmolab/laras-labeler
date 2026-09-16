@@ -849,7 +849,18 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             dest = proj.path / "predictions" / vid / f"{b['id']}.npy"
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.save(dest, lanes)
-            done.append({"behavior_id": b["id"], "name": b.get("name"),
+            # DIRECTED head: also save WHO each subject was pointed at, parallel to the lanes, so the
+            # review queue can propose an actor->target pair (Stage 2). The lane collapses over targets;
+            # this keeps the argmax recipient. Non-directed heads write no target file (candidates plain).
+            tgt_written = False
+            if h.get("collapse", "scene") == "directed":
+                try:
+                    tgrid = hidra.directed_targets(fp, h["lab"], h["action"], n_frames, n_animals)
+                    np.save(proj.path / "predictions" / vid / f"{b['id']}.target.npy", tgrid)
+                    tgt_written = True
+                except Exception:                            # a target grid is a nicety; never fail predict over it
+                    pass
+            done.append({"behavior_id": b["id"], "name": b.get("name"), "directed_targets": tgt_written,
                          "lab": h["lab"], "action": h["action"],
                          "collapse": h.get("collapse", "scene"), "rate": h.get("rate", 0.15),
                          "finetuned": bool(h.get("weights")),

@@ -254,6 +254,30 @@ class Predictor:
         t = int(track)
         return np.asarray(arr[:, t], dtype="float32") if t < arr.shape[1] else None
 
+    def get_target(self, pid: str, vid: str, bid: int, track: int) -> np.ndarray | None:
+        """Per-frame predicted recipient track for one (directed) behavior+subject -> (F,) int16, or
+        None. Written only by the HiDRA predictor for directed heads (see app._hidra_predict), parallel
+        to the proba lanes. -1 marks a frame with no cross-animal target. Used to propose an
+        actor->target pair on a directed candidate (Stage 2)."""
+        p = self._path(pid, vid, bid).with_suffix(".target.npy")
+        if not p.exists():
+            return None
+        arr = np.load(p, mmap_mode="r")                           # (F, T) int16
+        t = int(track)
+        return np.asarray(arr[:, t], dtype="int16") if t < arr.shape[1] else None
+
+    @staticmethod
+    def _dominant_target(seg: np.ndarray | None) -> int:
+        """The recipient track a directed bout most often points at, ignoring -1 (undirected) frames.
+        -1 if the segment is empty or all-undirected — the reviewer then picks the target by hand."""
+        if seg is None or len(seg) == 0:
+            return -1
+        vals = seg[seg >= 0]
+        if len(vals) == 0:
+            return -1
+        u, c = np.unique(vals, return_counts=True)
+        return int(u[int(np.argmax(c))])
+
     def _nose_spout_dist(self, pid: str, vid: str, track: int) -> np.ndarray | None:
         """Per-frame nose→spout distance (body lengths) for one track, read from the feature cache.
         Prefers the ROI distance (`spout_roi_dist`, 0 when the nose is inside the polygon); falls back
@@ -336,6 +360,13 @@ class Predictor:
         for c in cands:
             d = float(np.nanmean(dist[c["start"]:c["end"]])) if dist is not None else float("nan")
             c["spout_dist"] = d if np.isfinite(d) else None
+
+        # Directed-pair review (Stage 2): if HiDRA saved WHO each subject was pointed at, propose the
+        # dominant recipient over each bout so the reviewer confirms/corrects a full actor->target pair.
+        # -1 (no recoverable target) leaves the candidate undirected — the reviewer picks by hand.
+        tgrid = self.get_target(pid, vid, bid, track)
+        for c in cands:
+            c["target"] = self._dominant_target(tgrid[c["start"]:c["end"]]) if tgrid is not None else -1
 
         # v8 "social" gate: drop a candidate drinking bout where >=2 mice have their nose in the spout
         # ROI at once for >= social_gate_s (you can't attribute the drink to one animal). Tags every

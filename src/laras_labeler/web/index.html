@@ -768,6 +768,9 @@ async function boot() {
     }
     if (best < 0) return;
     if (awaitTarget) { setBoutTarget(best); return; }      // picking the recipient of a just-painted directed bout
+    if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid) && best !== activeTrack) {
+      setReviewTarget(best); return;                       // correcting a directed candidate's proposed recipient
+    }
     if (best !== activeTrack) setActiveTrack(best);
   });
   el("loadVideoBtn").onclick = () => el("impVideo").click();
@@ -1819,6 +1822,13 @@ async function setBoutTarget(track) {   // assign the recipient of the just-pain
   await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
   logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
   busy(`${bname(a.bid)}: mouse${a.actor + 1} → mouse${track + 1}`);
+}
+function setReviewTarget(track) {   // correct the recipient of the directed candidate under review (saved on accept)
+  if (!reviewCurrent) return;
+  if (track === activeTrack) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  reviewCurrent.target = track;
+  updateReviewText(); renderTimeline();
+  busy(`${bname(reviewCurrent.bid)}: mouse${activeTrack + 1} → mouse${track + 1} (accept to save)`);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
@@ -3112,8 +3122,16 @@ function updateReviewText() {
   const spoutNote = (sd != null) ? ` · <span style="color:#4ad0ff">nose→spout ${sd.toFixed(2)} BL${sd <= 0.01 ? " (inside)" : ""}</span>` : "";
   const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
   const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>` : "";
+  // Directed behavior: show the actor->target pair HiDRA proposed so accept commits the full pair.
+  // -1 (no recoverable recipient) prompts a hand pick; Shift+1..9 or click a mouse corrects it.
+  const dir = isDirected(reviewCurrent.bid) && nTracks() >= 2;
+  const tgt = reviewCurrent.target;
+  const dirNote = !dir ? ""
+    : (tgt != null && tgt >= 0)
+      ? ` · <span style="color:#e8a33d">mouse${activeTrack + 1} → mouse${tgt + 1}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
+      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+1..9 or click a mouse)</span>`;
   el("reviewQ").innerHTML = `${head} · track ${activeTrack} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
-    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
+    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
   el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
 }
 // Review-session counters, so a review_end says what the sitting produced without the rollup having
@@ -3152,7 +3170,7 @@ function setReviewLayout(on) {
   requestAnimationFrame(() => { if (meta) renderTimeline(); });   // widths reflowed → redraw the lanes
 }
 function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lane
-  activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new" }; reviewTrim = { s: bt.s, e: bt.e };
+  activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new", target: (bt.target != null ? bt.target : NO_TARGET) }; reviewTrim = { s: bt.s, e: bt.e };
   reviewQueue = []; setReviewView(bt.s, bt.e);
   el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)";
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true);
@@ -3168,7 +3186,8 @@ function showCandidate(i) {
   const c = reviewQueue[i];
   const isDis = c.kind === "disagree";
   reviewCurrent = { bid: activeBid, s: c.start, e: c.end, p: c.mean_proba, mode: isDis ? "disagree" : "new",
-                    labelValue: c.label_value, suggestVal: c.suggest_value, conf: c.disagreement, spoutDist: c.spout_dist, maxConcurrent: c.max_concurrent, dropReason: c.drop_reason };
+                    labelValue: c.label_value, suggestVal: c.suggest_value, conf: c.disagreement, spoutDist: c.spout_dist, maxConcurrent: c.max_concurrent, dropReason: c.drop_reason,
+                    target: (c.target != null ? c.target : NO_TARGET) };   // HiDRA's proposed recipient for a directed pair (-1 = pick by hand)
   reviewTrim = { s: c.start, e: c.end };
   el("rvYes").textContent = isDis ? "✓ Change (y)" : "✓ Accept (y)";
   el("rvNo").textContent = isDis ? "✗ Keep (n)" : "✗ Reject (n)";
@@ -3232,9 +3251,11 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
     await applyPaint(bid, t.s, t.e, reviewCurrent.suggestVal === 1 ? 1 : 2, "candidate");   // correct the label to what the model sees
     advanceReview(); return;
   }
-  await applyPaint(bid, t.s, t.e, 1, "candidate");
-  if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;   // commit the actor->target pair on a directed accept
+  await applyPaint(bid, t.s, t.e, 1, "candidate", at);
+  if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");     // trimmed edges are Not-happening (no target)
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
+  if (isDirected(bid) && at >= 0) logEvent("bout_target", { behavior_id: bid, track: activeTrack, target: at, start: t.s, end: t.e, via: "accept" });
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
@@ -3244,9 +3265,10 @@ async function mergeCandidate() {   // "m": accept, but bridge the gap to an adj
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const m = mergeExtent(bid, t.s, t.e);
   if (!m.merged) return acceptCandidate();          // nothing adjacent (e.g. you trimmed away from it) — fall back to a normal accept
-  await applyPaint(bid, t.s, t.e, 1, "candidate");             // the candidate's own (possibly-trimmed) frames
-  if (m.gapBefore) await applyPaint(bid, m.gapBefore[0], m.gapBefore[1], 1, "candidate");   // bridge ONLY the gap —
-  if (m.gapAfter) await applyPaint(bid, m.gapAfter[0], m.gapAfter[1], 1, "candidate");      // the adjacent bout's own frames/provenance are never touched
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
+  await applyPaint(bid, t.s, t.e, 1, "candidate", at);        // the candidate's own (possibly-trimmed) frames
+  if (m.gapBefore) await applyPaint(bid, m.gapBefore[0], m.gapBefore[1], 1, "candidate", at);   // bridge ONLY the gap —
+  if (m.gapAfter) await applyPaint(bid, m.gapAfter[0], m.gapAfter[1], 1, "candidate", at);      // the adjacent bout's own frames/provenance are never touched
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");   // still mark any trimmed-off edges Not-happening, same as Accept
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
   advanceReview();
@@ -3262,7 +3284,8 @@ async function splitCandidate() {
   if (cut <= t.s + 1 || cut >= t.e - 1) { busy("move the playhead inside the bout, then Split"); return; }
   logDecision("split", { cut });
   snapReview();
-  await applyPaint(bid, t.s, cut, 1, "candidate");            // left segment = one Happening bout
+  const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
+  await applyPaint(bid, t.s, cut, 1, "candidate", at);        // left segment = one Happening bout
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate"); // any trimmed-off left edge = Not-happening
   reviewCurrent = { ...reviewCurrent, s: cut, e };            // keep reviewing the remainder
   reviewTrim = { s: cut, e };
@@ -3736,6 +3759,9 @@ window.addEventListener("keydown", e => {
     const t = +e.code.slice(5) - 1;
     if (t < nTracks()) {
       if (awaitTarget) { e.preventDefault(); setBoutTarget(t); return; }
+      if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid)) {   // set/correct the directed candidate's recipient
+        e.preventDefault(); setReviewTarget(t); return;
+      }
       if (selectedSeg && selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {   // retarget an already-selected directed bout
         awaitTarget = { bid: selectedSeg.bid, s: selectedSeg.s, e: selectedSeg.e, k: 1, actor: activeTrack };
         e.preventDefault(); setBoutTarget(t); return;

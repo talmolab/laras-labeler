@@ -59,7 +59,8 @@ def _blank(vid, bid) -> dict:
     return {"video_id": vid, "behavior_id": bid, "active_s": 0.0, "label_s": 0.0, "review_s": 0.0,
             "wait_s": 0.0, "other_s": 0.0, "manual_bouts": 0, "manual_frames": 0,
             "manual_video_s": 0.0, "manual_neg_bouts": 0, "manual_unknown_bouts": 0,
-            "deletes": 0, "trims": 0, "decisions": 0, "candidates_shown": 0}
+            "deletes": 0, "trims": 0, "decisions": 0, "accepted": 0, "rejected": 0,
+            "candidates_shown": 0}
 
 
 def per_clip(recs: list[dict], fps: float = 50.0, behavior_id: int | None = None,
@@ -145,7 +146,13 @@ def per_clip(recs: list[dict], fps: float = 50.0, behavior_id: int | None = None
             B(vid, bid, track)["candidates_shown"] += 1
         elif typ.startswith("candidate_") and typ.split("_", 1)[1] in (
                 "accept", "reject", "merge", "split", "reclassify", "skip"):
-            B(vid, bid, track)["decisions"] += 1
+            b = B(vid, bid, track)
+            b["decisions"] += 1
+            kind = typ.split("_", 1)[1]
+            if kind in ("accept", "merge", "split"):   # all commit the model's proposal as a label
+                b["accepted"] += 1
+            elif kind == "reject":
+                b["rejected"] += 1
 
     rows = []
     for b in buckets.values():
@@ -182,7 +189,7 @@ def main(argv=None) -> None:
 
     cols = ["video_id", "behavior_id"] + (["track"] if args.by_track else []) + [
         "label_s", "review_s", "other_s", "active_s", "manual_bouts", "s_per_manual_bout",
-        "candidates_shown", "decisions", "s_per_decision"]
+        "candidates_shown", "accepted", "rejected", "decisions", "s_per_decision"]
     w = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
     print("  ".join(c.ljust(w[c]) for c in cols))
     print("  ".join("-" * w[c] for c in cols))
@@ -192,7 +199,8 @@ def main(argv=None) -> None:
     print(f"{len(recs)} events · total label_s {round(sum(r['label_s'] for r in rows), 1)} "
           f"· total review_s {round(sum(r['review_s'] for r in rows), 1)} "
           f"· total manual_bouts {sum(r['manual_bouts'] for r in rows)} "
-          f"· total decisions {sum(r['decisions'] for r in rows)}")
+          f"· total decisions {sum(r['decisions'] for r in rows)} "
+          f"(accepted {sum(r['accepted'] for r in rows)}, rejected {sum(r['rejected'] for r in rows)})")
     print("(total label_s should match the sum of the rounds CSV's label_s, minus rounding.)")
 
     if args.csv:
