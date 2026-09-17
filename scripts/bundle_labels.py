@@ -56,6 +56,49 @@ def _bouts(df: pd.DataFrame) -> list[dict]:
     return out
 
 
+_DEC = {"candidate_accept": "accept", "candidate_reject": "reject", "candidate_merge": "merge",
+        "candidate_split": "split", "candidate_reclassify": "reclassify"}
+
+
+def _decisions(evdir: Path, names: dict) -> list[dict]:
+    """Per-decision timing from the event log: each review decision's dwell (dwell_ms) and each manual
+    paint's draw time (paint_start -> paint_commit). Returns one row per action, in time order."""
+    recs = []
+    for p in sorted(evdir.glob("*.jsonl")):
+        for line in p.open(encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                recs.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    recs.sort(key=lambda r: (float(r.get("t_ms") or 0), int(r.get("seq") or 0)))
+    last_start: dict[tuple, float] = {}
+    rows = []
+    for ev in recs:
+        typ = str(ev.get("type", ""))
+        bid = ev.get("behavior_id")
+        if bid is None:
+            continue
+        bid = int(bid); tr = int(ev.get("track") or 0); vid = ev.get("video_id")
+        if typ == "paint_start":
+            last_start[(bid, tr)] = float(ev.get("t_ms") or 0)
+        elif typ == "paint_commit":
+            t = float(ev.get("t_ms") or 0); st = last_start.pop((bid, tr), None)
+            secs = round((t - st) / 1000, 2) if st else ""
+            rows.append({"clip": vid, "behavior": names.get(bid, "?"), "behavior_id": bid, "track": tr,
+                         "decision": "paint", "seconds": secs, "frame": ev.get("frame", ""),
+                         "start": ev.get("start", ""), "end": ev.get("end", "")})
+        elif typ in _DEC:
+            dw = ev.get("dwell_ms")
+            secs = round(float(dw) / 1000, 2) if isinstance(dw, (int, float)) else ""
+            rows.append({"clip": vid, "behavior": names.get(bid, "?"), "behavior_id": bid, "track": tr,
+                         "decision": _DEC[typ], "seconds": secs, "frame": ev.get("frame", ""),
+                         "start": ev.get("start", ""), "end": ev.get("end", "")})
+    return rows
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Bundle project labels (clean, current) into a shareable zip.")
     ap.add_argument("arms", nargs="+", help="one or more `name=path` project arms")
@@ -75,6 +118,8 @@ def main(argv=None) -> None:
 
     tmp = Path(tempfile.mkdtemp(prefix="labels_bundle_"))
     all_rows: list[dict] = []
+    all_dec: list[dict] = []
+    deccols = ["arm", "clip", "behavior", "behavior_id", "track", "decision", "seconds", "frame", "start", "end"]
     summary_lines = []
     for nm, root in arms:
         man = json.loads((root / "project.json").read_text(encoding="utf-8"))
@@ -109,6 +154,15 @@ def main(argv=None) -> None:
             if r["arm"] == nm and r["value"] == "happening":
                 by[r["behavior"]] = by.get(r["behavior"], 0) + 1
         summary_lines.append(f"{nm}: {n_bouts} positive bouts  ({', '.join(f'{k} {v}' for k, v in sorted(by.items()))})")
+        # per-decision timing from the event log (dwell per review decision, draw time per manual paint)
+        evdir = root / "events"
+        if evdir.is_dir():
+            dec = _decisions(evdir, names)
+            for r in dec:
+                r["arm"] = nm
+            all_dec.extend(dec)
+            with (tmp / f"{nm}_decisions.csv").open("w", newline="", encoding="utf-8") as f:
+                wr = _csv.DictWriter(f, fieldnames=deccols, extrasaction="ignore"); wr.writeheader(); wr.writerows(dec)
 
     if not all_rows:
         sys.exit("no bouts found in any arm.")
@@ -118,6 +172,15 @@ def main(argv=None) -> None:
     csv_path = tmp / "bouts.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         wr = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore"); wr.writeheader(); wr.writerows(all_rows)
+    # also a separate CSV per arm, so each can be attached on its own
+    for nm, _root in arms:
+        arm_rows = [r for r in all_rows if r["arm"] == nm]
+        with (tmp / f"{nm}_bouts.csv").open("w", newline="", encoding="utf-8") as f:
+            wr = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore"); wr.writeheader(); wr.writerows(arm_rows)
+    # combined per-decision timing across arms
+    if all_dec:
+        with (tmp / "decisions.csv").open("w", newline="", encoding="utf-8") as f:
+            wr = _csv.DictWriter(f, fieldnames=deccols, extrasaction="ignore"); wr.writeheader(); wr.writerows(all_dec)
 
     readme = tmp / "README.md"
     readme.write_text(
@@ -129,6 +192,12 @@ def main(argv=None) -> None:
         "(frame, end EXCLUSIVE), n_frames, seconds, source (`manual` = hand-drawn, `candidate` = "
         "HITL-accepted from a HiDRA proposal), target (recipient track for directed/social behaviors, "
         "blank otherwise).\n"
+        "- `<arm>_bouts.csv` — the same, split per arm (e.g. `hand_bouts.csv`, `hitl_bouts.csv`) so "
+        "each can be shared on its own.\n"
+        "- `<arm>_decisions.csv` / `decisions.csv` — per-decision TIMING from the event log, one row "
+        "per action in time order: arm, clip, behavior, track, decision (`accept`/`reject`/`merge`/"
+        "`split` for HITL review; `paint` for hand-drawing), `seconds` (time spent on that decision — "
+        "the review dwell for HITL, the draw time for a manual paint), frame, start, end.\n"
         "- `<arm>/labels/<clip>.parquet` — the raw per-frame label store (frame, track, behavior_id, "
         "value, source, target). These are the CURRENT/clean parquets (no `.bak` backups).\n"
         "- `<arm>/project.json` — behavior definitions, clip list, fps, and per-clip metadata.\n\n"
