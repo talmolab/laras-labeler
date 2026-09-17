@@ -116,10 +116,17 @@ def main(argv=None) -> None:
             sys.exit(f"no project.json in {p}")
         arms.append((nm.strip(), p))
 
+    try:                                            # the labeler's own active-time model (15s gap cap, 120s idle break)
+        from laras_labeler.events import summarize as _summarize
+    except Exception:
+        _summarize = None
+
     tmp = Path(tempfile.mkdtemp(prefix="labels_bundle_"))
     all_rows: list[dict] = []
     all_dec: list[dict] = []
+    all_tim: list[dict] = []
     deccols = ["arm", "clip", "behavior", "behavior_id", "track", "decision", "seconds", "frame", "start", "end"]
+    timcols = ["arm", "behavior", "label_active_min", "review_active_min", "draw_min", "finding_min"]
     summary_lines = []
     for nm, root in arms:
         man = json.loads((root / "project.json").read_text(encoding="utf-8"))
@@ -163,6 +170,38 @@ def main(argv=None) -> None:
             all_dec.extend(dec)
             with (tmp / f"{nm}_decisions.csv").open("w", newline="", encoding="utf-8") as f:
                 wr = _csv.DictWriter(f, fieldnames=deccols, extrasaction="ignore"); wr.writeheader(); wr.writerows(dec)
+            # per-behavior active/finding/draw time (finding = active labeling time - drawing gestures)
+            if _summarize is not None:
+                recs = []
+                for p in sorted(evdir.glob("*.jsonl")):
+                    for line in p.open(encoding="utf-8"):
+                        line = line.strip()
+                        if line:
+                            try:
+                                recs.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+                recs.sort(key=lambda r: (float(r.get("t_ms") or 0), int(r.get("seq") or 0)))
+                draw_by: dict[str, float] = {}
+                for r in dec:
+                    try:
+                        sec = float(r["seconds"])
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                    if r["decision"] == "paint" and sec >= 0:
+                        draw_by[r["behavior"]] = draw_by.get(r["behavior"], 0.0) + sec
+                for bid2, bnm in sorted(names.items()):
+                    try:
+                        s = _summarize(recs, behavior_id=bid2)
+                    except Exception:
+                        continue
+                    lab = float(s.get("label_s", 0) or 0) / 60.0
+                    rev = float(s.get("review_s", 0) or 0) / 60.0
+                    draw = draw_by.get(bnm, 0.0) / 60.0
+                    if lab > 0.05 or rev > 0.05:
+                        all_tim.append({"arm": nm, "behavior": bnm, "label_active_min": round(lab, 1),
+                                        "review_active_min": round(rev, 1), "draw_min": round(draw, 1),
+                                        "finding_min": round(max(0.0, lab - draw), 1)})
 
     if not all_rows:
         sys.exit("no bouts found in any arm.")
@@ -181,6 +220,10 @@ def main(argv=None) -> None:
     if all_dec:
         with (tmp / "decisions.csv").open("w", newline="", encoding="utf-8") as f:
             wr = _csv.DictWriter(f, fieldnames=deccols, extrasaction="ignore"); wr.writeheader(); wr.writerows(all_dec)
+    # per-behavior time breakdown (active / drawing / finding-watching)
+    if all_tim:
+        with (tmp / "time_breakdown.csv").open("w", newline="", encoding="utf-8") as f:
+            wr = _csv.DictWriter(f, fieldnames=timcols, extrasaction="ignore"); wr.writeheader(); wr.writerows(all_tim)
 
     readme = tmp / "README.md"
     readme.write_text(
@@ -198,6 +241,11 @@ def main(argv=None) -> None:
         "per action in time order: arm, clip, behavior, track, decision (`accept`/`reject`/`merge`/"
         "`split` for HITL review; `paint` for hand-drawing), `seconds` (time spent on that decision — "
         "the review dwell for HITL, the draw time for a manual paint), frame, start, end.\n"
+        "- `time_breakdown.csv` — active minutes per arm+behavior, split into `draw_min` (drawing "
+        "gestures) and `finding_min` (scanning/watching to locate bouts = active labeling time minus "
+        "drawing), plus `review_active_min`. Active time uses the labeler's model (gaps capped at 15 s, "
+        "idle >120 s excluded). There is no discrete 'scrub' event, so finding_min is that derived "
+        "watch/scan time.\n"
         "- `<arm>/labels/<clip>.parquet` — the raw per-frame label store (frame, track, behavior_id, "
         "value, source, target). These are the CURRENT/clean parquets (no `.bak` backups).\n"
         "- `<arm>/project.json` — behavior definitions, clip list, fps, and per-clip metadata.\n\n"
@@ -218,6 +266,11 @@ def main(argv=None) -> None:
     for s in summary_lines:
         print("  " + s)
     print(f"  {len(all_rows)} total rows in bouts.csv")
+    if all_tim:
+        print("  time breakdown (min): " + " · ".join(
+            f"{t['arm']}/{t['behavior']} find {t['finding_min']}+draw {t['draw_min']}" for t in all_tim))
+    elif _summarize is None:
+        print("  (time_breakdown.csv skipped — could not import laras_labeler.events; run with the labeler env python)")
 
 
 if __name__ == "__main__":
