@@ -62,11 +62,25 @@ def _iou(a, b):
     return inter / u if u else 0.0
 
 
+def _merge(intervals):
+    """Union overlapping/adjacent accepted ranges into distinct bouts — so a merge event or a
+    re-accept doesn't count as an extra bout (matches how the label store RLE-collapses runs)."""
+    if not intervals:
+        return []
+    iv = sorted(intervals); out = [list(iv[0])]
+    for s, e in iv[1:]:
+        if s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [tuple(x) for x in out]
+
+
 def _prf(acc_by_lane, gt_by_lane, iou):
     tp = fp = fn = 0
     lanes = set(acc_by_lane) | set(gt_by_lane)
     for lane in lanes:
-        gt = list(gt_by_lane.get(lane, [])); pr = list(acc_by_lane.get(lane, []))
+        gt = list(gt_by_lane.get(lane, [])); pr = _merge(acc_by_lane.get(lane, []))
         pairs = sorted(((_iou(g, p), gi, pi) for gi, g in enumerate(gt) for pi, p in enumerate(pr)), reverse=True)
         gm, pm = set(), set()
         for v, gi, pi in pairs:
