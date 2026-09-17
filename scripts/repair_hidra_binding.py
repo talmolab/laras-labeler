@@ -57,6 +57,9 @@ def main(argv=None) -> None:
     ap.add_argument("--mode", default="tail", help="finetune_mode recorded on the behavior (default tail)")
     ap.add_argument("--no-restore", action="store_true", help="do not touch the binding, only clear prediction lanes")
     ap.add_argument("--keep-preds", action="store_true", help="do not delete prediction lanes, only fix the binding")
+    ap.add_argument("--zero-shot", action="store_true", help="bind the SHIPPED head (drop weights) so Predict runs "
+                    "zero-shot — for a zero-shot-vs-fine-tuned baseline; re-run without this flag to restore the "
+                    "fine-tuned head afterwards")
     ap.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
     args = ap.parse_args(argv)
 
@@ -78,7 +81,9 @@ def main(argv=None) -> None:
         models = proj / "hidra" / "_finetune" / f"{args.lab}__{args.action}" / "models"
         tag = _tag(pid, args.behavior, args.action)
         weights = None
-        if models.is_dir():
+        if args.zero_shot:
+            print("  --zero-shot: binding the SHIPPED head (no weights) so Predict runs zero-shot")
+        elif models.is_dir():
             pkls = sorted(models.glob(f"*__{tag}.pkl"))
             if pkls:
                 weights = str(models / ("{config}__" + tag + ".pkl"))
