@@ -126,7 +126,7 @@ def main(argv=None) -> None:
     all_dec: list[dict] = []
     all_tim: list[dict] = []
     deccols = ["arm", "clip", "behavior", "behavior_id", "track", "decision", "seconds", "frame", "start", "end"]
-    timcols = ["arm", "behavior", "label_active_min", "review_active_min", "draw_min", "finding_min"]
+    timcols = ["arm", "behavior", "label_active_min", "review_active_min", "draw_min", "finding_min", "watch_video_min"]
     summary_lines = []
     for nm, root in arms:
         man = json.loads((root / "project.json").read_text(encoding="utf-8"))
@@ -190,25 +190,30 @@ def main(argv=None) -> None:
                         continue
                     if r["decision"] == "paint" and sec >= 0:
                         draw_by[r["behavior"]] = draw_by.get(r["behavior"], 0.0) + sec
-                agg: dict[int, list] = {}                    # behavior_id -> [label_s, review_s], summed over its rounds
+                agg: dict[int, list] = {}                    # behavior_id -> [label_s, review_s, manual_video_s, cand_video_s]
                 try:
                     for rnd in _summarize(recs).get("rounds", []):
                         bid2 = rnd.get("behavior_id")
                         if bid2 is None:
                             continue
-                        a = agg.setdefault(int(bid2), [0.0, 0.0])
+                        a = agg.setdefault(int(bid2), [0.0, 0.0, 0.0, 0.0])
                         a[0] += float(rnd.get("label_s", 0) or 0)
                         a[1] += float(rnd.get("review_s", 0) or 0)
+                        a[2] += float(rnd.get("manual_video_s", 0) or 0)
+                        a[3] += float(rnd.get("candidate_video_s", 0) or 0)
                 except Exception as e:
                     print(f"  (time_breakdown skipped for {nm}: {e})")
                 for bid2, bnm in sorted(names.items()):
-                    lab = agg.get(bid2, [0.0, 0.0])[0] / 60.0
-                    rev = agg.get(bid2, [0.0, 0.0])[1] / 60.0
+                    a = agg.get(bid2, [0.0, 0.0, 0.0, 0.0])
+                    lab = a[0] / 60.0
+                    rev = a[1] / 60.0
+                    watch = (a[2] + a[3]) / 60.0         # video actually played (manual scan + candidate review)
                     draw = draw_by.get(bnm, 0.0) / 60.0
                     if lab > 0.05 or rev > 0.05:
                         all_tim.append({"arm": nm, "behavior": bnm, "label_active_min": round(lab, 1),
                                         "review_active_min": round(rev, 1), "draw_min": round(draw, 1),
-                                        "finding_min": round(max(0.0, lab - draw), 1)})
+                                        "finding_min": round(max(0.0, lab - draw), 1),
+                                        "watch_video_min": round(watch, 1)})
 
     if not all_rows:
         sys.exit("no bouts found in any arm.")
@@ -275,7 +280,7 @@ def main(argv=None) -> None:
     print(f"  {len(all_rows)} total rows in bouts.csv")
     if all_tim:
         print("  time breakdown (min): " + " · ".join(
-            f"{t['arm']}/{t['behavior']} find {t['finding_min']}+draw {t['draw_min']}" for t in all_tim))
+            f"{t['arm']}/{t['behavior']} find {t['finding_min']}+draw {t['draw_min']} watch {t['watch_video_min']}" for t in all_tim))
     elif _summarize is None:
         print("  (time_breakdown.csv skipped — could not import laras_labeler.events; run with the labeler env python)")
 
