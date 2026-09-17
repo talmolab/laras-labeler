@@ -143,6 +143,17 @@ def _bout_f1(y: np.ndarray, pred_mask: np.ndarray, iou: float) -> float:
     return 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
 
 
+def _at_thr(y: np.ndarray, p: np.ndarray, thr: float, iou: float):
+    """Frame P/R/F1 (and bout-F1) at ONE fixed threshold — the operating point actually used
+    during labeling. `thr` is on the same scale as the stored prediction lane `p`."""
+    c = p >= thr
+    tp = int(np.count_nonzero(c & y)); fp = int(np.count_nonzero(c & ~y)); fn = int(y.sum()) - tp
+    f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
+    prec = tp / (tp + fp) if tp + fp else 0.0
+    rec = tp / (tp + fn) if tp + fn else 0.0
+    return f1, float(thr), prec, rec, _bout_f1(y, c, iou)
+
+
 def _best_f1(y: np.ndarray, p: np.ndarray, iou: float, grid: int = 200):
     """Sweep thresholds; return (best frame-F1, threshold, precision, recall, bout-F1 at that thr)."""
     lo, hi = float(np.min(p)), float(np.max(p))
@@ -161,7 +172,8 @@ def _best_f1(y: np.ndarray, p: np.ndarray, iou: float, grid: int = 200):
     return best
 
 
-def score(truth: Path, pred: Path, behaviours, videos, iou):
+def score(truth: Path, pred: Path, behaviours, videos, iou, thresholds=None):
+    thresholds = thresholds or {}
     tman, pman = _manifest(truth), _manifest(pred)
     t_ids, p_ids = _behavior_ids(tman), _behavior_ids(pman)
     nfr = {v["video_id"]: int(v.get("n_frames") or 0) for v in tman.get("videos", [])}
@@ -194,11 +206,20 @@ def score(truth: Path, pred: Path, behaviours, videos, iou):
             print(f"  note: no prediction lanes found for {disp!r} — did you Predict this arm?"); continue
         p = np.concatenate(P); y = np.concatenate(Y)
         f1, thr, prec, rec, bf1 = _best_f1(y, p, iou)
-        out.append({"behavior": disp, "n_frames": int(y.size), "prevalence": round(float(y.mean()), 4),
-                    "auroc": round(_auroc(y, p), 4), "ap": round(_ap(y, p), 4),
-                    "best_f1": round(f1, 4), "best_thr": round(thr, 4),
-                    "precision": round(prec, 4), "recall": round(rec, 4),
-                    "bout_f1": round(bf1, 4)})
+        row = {"behavior": disp, "n_frames": int(y.size), "prevalence": round(float(y.mean()), 4),
+               "auroc": round(_auroc(y, p), 4), "ap": round(_ap(y, p), 4),
+               "best_f1": round(f1, 4), "best_thr": round(thr, 4),
+               "precision": round(prec, 4), "recall": round(rec, 4),
+               "bout_f1": round(bf1, 4)}
+        # Labeling-threshold operating point: F1 at the FIXED threshold used during review, not the
+        # oracle best-F1. Report it as the primary paper number when a threshold is supplied.
+        use_thr = thresholds.get(nm, thresholds.get("*"))
+        if use_thr is not None:
+            lf1, lthr, lprec, lrec, lbf1 = _at_thr(y, p, use_thr, iou)
+            row.update({"label_thr": round(lthr, 4), "f1_at_thr": round(lf1, 4),
+                        "prec_at_thr": round(lprec, 4), "rec_at_thr": round(lrec, 4),
+                        "bout_f1_at_thr": round(lbf1, 4)})
+        out.append(row)
     return out
 
 
@@ -210,30 +231,64 @@ def main():
     ap.add_argument("--behaviors", help="comma-separated behaviour names (default: all in truth)")
     ap.add_argument("--videos", help="comma-separated video_ids, e.g. a held-out set (default: all)")
     ap.add_argument("--iou", type=float, default=0.5, help="bout-match IoU for the bout-F1 column (default 0.5)")
+    ap.add_argument("--thresholds", help="fixed operating point(s) used during LABELING, so F1 is scored at the "
+                    "threshold you actually reviewed at (not the oracle best-F1). Comma-separated `name=value` "
+                    "(name matched like --behaviors), or a single bare value applied to all, e.g. "
+                    "`grooming=0.75,sniff=0.6` or `0.6`. Threshold is on the stored prediction-lane scale.")
     ap.add_argument("--round", type=int, help="tag these scores with a round number (for the rounds curve)")
     ap.add_argument("--csv", type=Path, help="append the scores here (round curve accumulates across runs)")
     args = ap.parse_args()
 
     behaviours = [b.strip() for b in args.behaviors.split(",") if b.strip()] if args.behaviors else None
     videos = [v.strip() for v in args.videos.split(",") if v.strip()] if args.videos else None
-    rows = score(args.truth, args.pred, behaviours, videos, args.iou)
+    thresholds = None
+    if args.thresholds:
+        thresholds = {}
+        for tok in args.thresholds.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                thresholds[_norm(k)] = float(v)
+            else:
+                thresholds["*"] = float(tok)          # bare value -> applies to every behaviour
+    rows = score(args.truth, args.pred, behaviours, videos, args.iou, thresholds)
     if not rows:
         sys.exit("ERROR: nothing scored — check --behaviors, and that the arm has predictions/ lanes.")
 
-    hdr = f"{'behaviour':<18}{'AUROC':>8}{'AP':>8}{'best F1':>9}{'@thr':>7}{'prec':>7}{'rec':>7}{'bout F1':>9}{'prev':>7}"
-    print("\n" + hdr); print("-" * len(hdr))
-    for r in rows:
-        print(f"{r['behavior']:<18}{r['auroc']:>8.3f}{r['ap']:>8.3f}{r['best_f1']:>9.3f}"
-              f"{r['best_thr']:>7.3f}{r['precision']:>7.3f}{r['recall']:>7.3f}{r['bout_f1']:>9.3f}"
-              f"{r['prevalence']:>7.3f}")
-    print()
+    have_thr = any("f1_at_thr" in r for r in rows)
+    if have_thr:
+        # Labeling-threshold view leads; best-F1 kept alongside so the recalibration gap stays visible.
+        hdr = (f"{'behaviour':<18}{'AUROC':>8}{'AP':>8}{'thr':>7}{'F1@thr':>8}{'prec':>7}{'rec':>7}"
+               f"{'boutF1':>8}{'bestF1':>8}{'prev':>7}")
+        print("\n" + hdr); print("-" * len(hdr))
+        for r in rows:
+            if "f1_at_thr" in r:
+                print(f"{r['behavior']:<18}{r['auroc']:>8.3f}{r['ap']:>8.3f}{r['label_thr']:>7.3f}"
+                      f"{r['f1_at_thr']:>8.3f}{r['prec_at_thr']:>7.3f}{r['rec_at_thr']:>7.3f}"
+                      f"{r['bout_f1_at_thr']:>8.3f}{r['best_f1']:>8.3f}{r['prevalence']:>7.3f}")
+            else:
+                print(f"{r['behavior']:<18}{r['auroc']:>8.3f}{r['ap']:>8.3f}{'—':>7}{'—':>8}"
+                      f"{'—':>7}{'—':>7}{'—':>8}{r['best_f1']:>8.3f}{r['prevalence']:>7.3f}"
+                      "   (no --thresholds for this behaviour)")
+        print()
+    else:
+        hdr = f"{'behaviour':<18}{'AUROC':>8}{'AP':>8}{'best F1':>9}{'@thr':>7}{'prec':>7}{'rec':>7}{'bout F1':>9}{'prev':>7}"
+        print("\n" + hdr); print("-" * len(hdr))
+        for r in rows:
+            print(f"{r['behavior']:<18}{r['auroc']:>8.3f}{r['ap']:>8.3f}{r['best_f1']:>9.3f}"
+                  f"{r['best_thr']:>7.3f}{r['precision']:>7.3f}{r['recall']:>7.3f}{r['bout_f1']:>9.3f}"
+                  f"{r['prevalence']:>7.3f}")
+        print()
     if args.csv:
         for r in rows:
             if args.round is not None:
                 r["round"] = args.round
         df = pd.DataFrame(rows)
         cols = (["round"] if args.round is not None else []) + \
-               ["behavior", "auroc", "ap", "best_f1", "best_thr", "precision", "recall", "bout_f1",
+               ["behavior", "auroc", "ap", "label_thr", "f1_at_thr", "prec_at_thr", "rec_at_thr",
+                "bout_f1_at_thr", "best_f1", "best_thr", "precision", "recall", "bout_f1",
                 "prevalence", "n_frames"]
         df = df[[c for c in cols if c in df.columns]]
         if args.csv.exists():
