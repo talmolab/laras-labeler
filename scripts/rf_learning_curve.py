@@ -94,7 +94,7 @@ def main(argv=None):
     rng = np.random.RandomState(0)
     pts = []
     for k in sizes:
-        f1s, aps = [], []
+        f1s, aps, frms, posfrms = [], [], [], []
         # keep the pos:neg bout ratio of the full set when subsampling
         kneg = max(2, int(round(k * nN / max(nP, 1))))
         for rep in range(args.repeats):
@@ -106,11 +106,15 @@ def main(argv=None):
             f1, apv = _grouped_f1_ap(X[mask], y[mask], groups[mask], seed=rep)
             if f1 is not None:
                 f1s.append(f1); aps.append(apv)
+                frms.append(int(mask.sum())); posfrms.append(int((y[mask] == 1).sum()))
         if f1s:
             pts.append({"pos_bouts": k, "neg_bouts": kneg, "n_runs": len(f1s),
+                        "train_frames": int(round(float(np.mean(frms)))),      # total labeled frames the RF trained on
+                        "pos_frames": int(round(float(np.mean(posfrms)))),     # behavior-positive frames among them
                         "f1_mean": round(float(np.mean(f1s)), 3), "f1_sd": round(float(np.std(f1s)), 3),
                         "ap_mean": round(float(np.mean(aps)), 3), "ap_sd": round(float(np.std(aps)), 3)})
-            print(f"  {k:>3} pos bouts → F1 {pts[-1]['f1_mean']:.3f} ± {pts[-1]['f1_sd']:.3f} · AP {pts[-1]['ap_mean']:.3f}")
+            print(f"  {k:>3} pos bouts ({pts[-1]['train_frames']} train frames) → "
+                  f"F1 {pts[-1]['f1_mean']:.3f} ± {pts[-1]['f1_sd']:.3f} · AP {pts[-1]['ap_mean']:.3f}")
 
     if not pts:
         sys.exit("no usable subsample sizes (too few bouts per class).")
