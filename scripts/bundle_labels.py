@@ -190,13 +190,20 @@ def main(argv=None) -> None:
                         continue
                     if r["decision"] == "paint" and sec >= 0:
                         draw_by[r["behavior"]] = draw_by.get(r["behavior"], 0.0) + sec
+                agg: dict[int, list] = {}                    # behavior_id -> [label_s, review_s], summed over its rounds
+                try:
+                    for rnd in _summarize(recs).get("rounds", []):
+                        bid2 = rnd.get("behavior_id")
+                        if bid2 is None:
+                            continue
+                        a = agg.setdefault(int(bid2), [0.0, 0.0])
+                        a[0] += float(rnd.get("label_s", 0) or 0)
+                        a[1] += float(rnd.get("review_s", 0) or 0)
+                except Exception as e:
+                    print(f"  (time_breakdown skipped for {nm}: {e})")
                 for bid2, bnm in sorted(names.items()):
-                    try:
-                        s = _summarize(recs, behavior_id=bid2)
-                    except Exception:
-                        continue
-                    lab = float(s.get("label_s", 0) or 0) / 60.0
-                    rev = float(s.get("review_s", 0) or 0) / 60.0
+                    lab = agg.get(bid2, [0.0, 0.0])[0] / 60.0
+                    rev = agg.get(bid2, [0.0, 0.0])[1] / 60.0
                     draw = draw_by.get(bnm, 0.0) / 60.0
                     if lab > 0.05 or rev > 0.05:
                         all_tim.append({"arm": nm, "behavior": bnm, "label_active_min": round(lab, 1),
