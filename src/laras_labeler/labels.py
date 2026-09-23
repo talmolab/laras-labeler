@@ -135,6 +135,46 @@ class LabelStore:
         df = self._df(pid, vid)
         return df[df["behavior_id"] == int(behavior_id)][["track", "frame", "value"]]
 
+    # Column order for the project-wide CSV export (see app.py /labels.csv). track/target are shown
+    # 1-based to match the GUI's track chips; frames are half-open [start_frame, end_frame).
+    EXPORT_COLS = ["video_id", "video", "behavior", "behavior_id", "track", "target",
+                   "value", "value_label", "source", "start_frame", "end_frame", "n_frames",
+                   "start_sec", "end_sec", "duration_sec"]
+
+    def export_bouts(self, pid: str, positives_only: bool = True) -> list[dict]:
+        """Every labeled bout across the project, flattened for CSV export: one row per contiguous
+        (video, track, behavior, value, source, target) run. Reads the CURRENT parquets, so the
+        `.parquet.bak` backups are never included. `positives_only` keeps only Happening bouts."""
+        _VAL = {1: "Happening", 0: "Not-happening", 2: "Unknown"}
+        proj = self.store.get(pid)
+        bnames = {int(b["id"]): str(b.get("name", b["id"])) for b in proj.behaviors}
+        rows: list[dict] = []
+        for v in proj.videos:
+            vid = v["video_id"]
+            vname = Path(str(v.get("video_path") or "")).name or vid
+            fps = float(v.get("fps") or 0) or None
+            df = self._df(pid, vid)
+            for tr in sorted(int(t) for t in df["track"].unique()):
+                sub = df[df["track"] == tr]
+                for b in sorted(int(x) for x in sub["behavior_id"].unique()):
+                    s2 = sub[sub["behavior_id"] == b]
+                    for st, en, val, src, tgt in _rle_src(
+                            s2["frame"].to_numpy(), s2["value"].to_numpy(),
+                            s2["source"].to_numpy(), s2["target"].to_numpy()):
+                        if positives_only and val != 1:
+                            continue
+                        row = {"video_id": vid, "video": vname, "behavior": bnames.get(b, str(b)),
+                               "behavior_id": b, "track": tr + 1,                 # 1-based to match the GUI
+                               "target": (tgt + 1) if tgt >= 0 else "",           # recipient (directed); blank = self/undirected
+                               "value": val, "value_label": _VAL.get(val, str(val)), "source": src,
+                               "start_frame": st, "end_frame": en, "n_frames": en - st}
+                        if fps:
+                            row["start_sec"] = round(st / fps, 3)
+                            row["end_sec"] = round(en / fps, 3)
+                            row["duration_sec"] = round((en - st) / fps, 3)
+                        rows.append(row)
+        return rows
+
     def put_spans(self, pid: str, vid: str, spans: list[dict], source: str = "manual") -> None:
         """Each span may carry its own `source` (e.g. 'candidate' for accepted suggestions);
         falls back to the call-level `source` (default 'manual')."""
