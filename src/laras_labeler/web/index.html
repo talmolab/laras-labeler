@@ -193,6 +193,8 @@
     <button id="timerReset" style="padding:1px 7px; font-size:12px">⟲</button>
     <button id="timingExport" title="Download the per-round annotation-timing table (CSV): how long each round took, split into hand-labeling vs candidate review, what each produced, and the model that came out. Derived from the event log this session writes to &lt;project&gt;/events/*.jsonl."
             style="padding:1px 7px; font-size:12px">⤓ rounds</button>
+    <button id="labelsExport" title="Export ALL labels for this project as a CSV: one row per bout across every clip, track and behavior, with names, frame span, and seconds. Only the current labels (never the .bak backups). Hold Shift to also include Not-happening/Unknown bouts."
+            style="padding:1px 7px; font-size:12px">⬇ labels CSV</button>
     <span id="timerLog" class="status" style="color:#7b8494; font-size:11px"></span>
   </span>
 </header>
@@ -321,7 +323,7 @@
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
     <span class="sep"></span>
     <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
-           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (you pick the target after painting — click the other mouse, or Shift+1..9). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
+           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
       <input type="checkbox" id="dirToggle"> directed (actor→target)
     </label>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
@@ -465,7 +467,7 @@
   <canvas id="timeline" title="per behavior: manual lane (your labels) + auto lane (classifier)"></canvas>
 
   <div class="row" style="margin-top:8px">
-    <span class="status">Features · <b id="featTrackLabel">track 0</b></span>
+    <span class="status">Features · <b id="featTrackLabel">track 1</b></span>
     <span class="status" style="color:#6b7280">per-frame feature time-series for the selected track (synced to the playhead)</span>
   </div>
   <canvas id="features" title="per-frame feature time-series"></canvas>
@@ -1221,8 +1223,8 @@ function drawPose() {
     if (active && n) {   // label + halo on the animal being annotated
       octx.globalAlpha = 1; octx.strokeStyle = color; octx.lineWidth = 2;
       octx.font = "bold 18px system-ui"; octx.textAlign = "center"; octx.textBaseline = "bottom";
-      octx.fillStyle = "rgba(0,0,0,0.55)"; octx.fillText(`track ${t}`, topX + 1, topY - 8);
-      octx.fillStyle = color; octx.fillText(`track ${t}`, topX, topY - 9);
+      octx.fillStyle = "rgba(0,0,0,0.55)"; octx.fillText(`track ${t + 1}`, topX + 1, topY - 8);
+      octx.fillStyle = color; octx.fillText(`track ${t + 1}`, topX, topY - 9);
       octx.textAlign = "left"; octx.textBaseline = "alphabetic";
     }
   }
@@ -1525,7 +1527,7 @@ function renderTimeline() {
         const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
         tctx.save();
         tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
-        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);
+        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);   // target shown as its 1-based track number, matching the chips
         tctx.restore();
       }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
@@ -1566,7 +1568,11 @@ function renderTimeline() {
     tctx.strokeStyle = active ? "#ffd24a" : "rgba(255,210,74,0.45)"; tctx.lineWidth = 1; tctx.setLineDash([4, 3]);
     tctx.beginPath(); tctx.moveTo(TL_GUT, thrY); tctx.lineTo(W, thrY); tctx.stroke();
     tctx.setLineDash([]);
-    if (active) { tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right"; tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left"; }
+    if (active) {
+      tctx.fillStyle = "#ffd24a"; tctx.font = "600 9px system-ui"; tctx.textAlign = "right";
+      tctx.fillText("≥" + thr.toFixed(2), W - 3, thrY - 5 < ya + 6 ? thrY + 6 : thrY - 5); tctx.textAlign = "left";
+      tctx.beginPath(); tctx.arc(TL_GUT + 6, thrY, 3, 0, 7); tctx.fill();   // grab handle — drag the line to set the threshold
+    }
     tctx.restore();
     for (const bt of (predictedBouts.get(b.id) || [])) {         // predicted Happening bouts -> blue top marker (clickable)
       const x0 = xOf(bt.s, W), w = Math.max(2, xOf(bt.e, W) - x0);
@@ -1855,23 +1861,23 @@ function syncDirectedToggle() {   // reflect the active behavior's `directed` fl
 }
 async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
   const a = awaitTarget; if (!a) return;
-  if (track === a.actor) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  if (track === a.actor) { busy("target can't be the acting track — press Shift + a different track number"); return; }
   awaitTarget = null;
   await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
   logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
-  busy(`${bname(a.bid)}: mouse${a.actor + 1} → mouse${track + 1}`);
+  busy(`${bname(a.bid)}: track ${a.actor + 1} → track ${track + 1}`);
 }
 function setReviewTarget(track) {   // correct the recipient of the directed candidate under review (saved on accept)
   if (!reviewCurrent) return;
-  if (track === activeTrack) { busy("target can't be the acting mouse — click a different mouse"); return; }
+  if (track === activeTrack) { busy("target can't be the acting track — press Shift + a different track number"); return; }
   reviewCurrent.target = track;
   updateReviewText(); renderTimeline();
-  busy(`${bname(reviewCurrent.bid)}: mouse${activeTrack + 1} → mouse${track + 1} (accept to save)`);
+  busy(`${bname(reviewCurrent.bid)}: track ${activeTrack + 1} → track ${track + 1} (accept to save)`);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
   awaitTarget = { bid, s, e, k, actor: activeTrack };
-  busy(`${bname(bid)}: click the TARGET mouse (or Shift+1..9), Esc to skip`);
+  busy(`${bname(bid)}: press Shift + the target's track number (e.g. Shift+2), Esc to skip`);
 }
 
 // ---------- select + delete a single annotation ----------
@@ -1913,9 +1919,9 @@ function updateSelStatus() {
     let dir = "";
     if (selectedSeg.val === 1 && isDirected(selectedSeg.bid)) {
       const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
-      dir = tt >= 0 ? ` · → mouse${tt + 1}` : ` · no target yet (Shift+1..9)`;
+      dir = tt >= 0 ? ` · → track ${tt + 1}` : ` · no target yet (Shift + track number)`;
     }
-    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
+    busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack + 1}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
   } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
 }
@@ -2045,12 +2051,17 @@ function hidraReflect() {
   const pick = hidraPick(), bound = !!pick;
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).disabled = !bound;
 
+  // Once this behavior's head has been fine-tuned on reviewed labels it stops being the shipped
+  // zero-shot head — a Predict now loads the adapted weights — so the label must say so.
+  const beh = behaviors.find(x => x.id === activeBid);
+  const ftMode = beh && beh.hidra && beh.hidra.weights ? (beh.hidra.finetune_mode || "fine-tuned") : null;
+
   const predict = el("predict"), train = el("train");
   const ppc = parseFloat(el("hidraPpc").value);
   const needScale = bound && !(ppc > 0);
   if (bound) {
-    predict.textContent = `▶ Predict — ${pick.action}`;
-    train.textContent = "⚙ HiDRA fine-tune";
+    predict.textContent = ftMode ? `▶ Predict — ${pick.action} (fine-tuned)` : `▶ Predict — ${pick.action}`;
+    train.textContent = ftMode ? "⚙ HiDRA re-tune" : "⚙ HiDRA fine-tune";
     predict.disabled = !HIDRA_RT?.can_infer || needScale;
     train.disabled = !HIDRA_RT?.can_infer;
   } else {
@@ -2064,7 +2075,8 @@ function hidraReflect() {
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
     : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
-    : `shipped threshold ${pick.threshold.toFixed(2)} · recalibrated to ${el("hidraRate").value} of frames`;
+    : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
+    : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
@@ -2286,7 +2298,7 @@ async function hidraInit() {
     } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
     logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
     if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
-    busy(val ? `${bname(activeBid)} is directed — paint a bout, then click the TARGET mouse (or Shift+1..9)` : `${bname(activeBid)} is no longer directed`);
+    busy(val ? `${bname(activeBid)} is directed — paint a bout, then press Shift + the target's track number` : `${bname(activeBid)} is no longer directed`);
     renderTimeline();
   };
 
@@ -2359,12 +2371,12 @@ function renderTrackBar() {
     chip.className = "chip trk" + (t === activeTrack ? " active" : "");
     chip.style.borderRadius = "20px";
     if (t === activeTrack) chip.style.boxShadow = "inset 0 0 0 2px " + color;
-    chip.innerHTML = `<span class="sw" style="background:${color}"></span><span class="bname">track ${t}</span>`
+    chip.innerHTML = `<span class="sw" style="background:${color}"></span><span class="bname">track ${t + 1}</span>`
       + (t < 9 ? `<span class="k">${t + 1}</span>` : "");
     chip.onclick = () => setActiveTrack(t);
     bar.appendChild(chip);
   }
-  const fl = el("featTrackLabel"); if (fl) fl.textContent = "track " + activeTrack;
+  const fl = el("featTrackLabel"); if (fl) fl.textContent = "track " + (activeTrack + 1);
 }
 async function onTrackChange() {
   invalidateTlCache();                 // the new track's labels/heatstrip load async — don't blit the old track's base meanwhile
@@ -2682,7 +2694,7 @@ function renderTrainset(ts) {
       trow.style.cssText = "display:flex; gap:5px; align-items:center; flex-wrap:wrap; margin:3px 0 3px 10px";
       const col = TRACK_COLORS[t.track % TRACK_COLORS.length];
       const lab = document.createElement("span"); lab.className = "status";
-      lab.innerHTML = `<span class="sw" style="background:${col}"></span> track ${t.track} `
+      lab.innerHTML = `<span class="sw" style="background:${col}"></span> track ${t.track + 1} `
         + `<span style="color:#6b7280">(${t.pos_bouts}+/${t.neg_bouts}−)</span>`;
       trow.appendChild(lab);
       const bts = ts.bouts.filter(x => x.video_id === v.video_id && x.track === t.track);
@@ -2706,13 +2718,13 @@ async function jumpToTrainBout(vidId, x) {
   }
   if (bid != null && bid !== activeBid) await selectBehavior(bid);   // …so make the panel's behavior the active one
   if (x.track >= nTracks()) {                       // frozen bout's track may exceed a since-shrunk clip's poses
-    busy(`track ${x.track} isn't in "${vidId}" (this clip now has ${nTracks()}) — poses changed since training`);
+    busy(`track ${x.track + 1} isn't in "${vidId}" (this clip now has ${nTracks()}) — poses changed since training`);
     return;
   }
   await setActiveTrack(x.track);
   playBout(x.start, x.end);                           // auto-play the clicked training-set bout
   selectRunAt(bid, x.start);                         // best-effort highlight of the exact run (if still labeled)
-  busy(`${vidId} · track ${x.track} · bout ${x.start}–${x.end} (${x.value === 1 ? "Happening" : "Not-happening"})`);
+  busy(`${vidId} · track ${x.track + 1} · bout ${x.start}–${x.end} (${x.value === 1 ? "Happening" : "Not-happening"})`);
 }
 async function copyTrainset() {
   if (!lastTrainset) return;
@@ -2757,7 +2769,7 @@ function renderLabelStats(d) {
       for (const t of cl.tracks) {
         const col = TRACK_COLORS[t.track % TRACK_COLORS.length];
         let rowPos = 0;
-        html += `<tr><td style="padding:3px 10px 3px 2px">${sw(col)}track ${t.track}</td>`;
+        html += `<tr><td style="padding:3px 10px 3px 2px">${sw(col)}track ${t.track + 1}</td>`;
         for (const c of cols) {
           const cell = t.sources[c]; html += `<td style="text-align:right; padding:3px 12px">${lsCell(cell)}</td>`;
           if (cell) { const p = cell.pos_bouts || 0; clipTot[c] = (clipTot[c] || 0) + p; behTot[c] = (behTot[c] || 0) + p; rowPos += p; }
@@ -3147,7 +3159,7 @@ function updateReviewText() {
     const sugPos = reviewCurrent.suggestVal === 1;
     const sug = sugPos ? "Happening" : "Not-happening", sugCol = sugPos ? HAPPENING_COLOR : NOTHAPPENING_COLOR;
     const head = reviewQueue.length ? `Disagreement <b>${reviewIdx + 1}/${reviewQueue.length}</b>` : `Disagreement`;
-    el("reviewQ").innerHTML = `${head} · track ${activeTrack} · <b style="color:${b.color}">${b.name}</b> · `
+    el("reviewQ").innerHTML = `${head} · track ${activeTrack + 1} · <b style="color:${b.color}">${b.name}</b> · `
       + `frames <b>${t.s}–${t.e}</b> (${t.e - t.s}f) · you labeled <b>${yours}</b>, `
       + `model says <b style="color:${sugCol}">${sug}</b> (p=${(reviewCurrent.conf ?? 0).toFixed(2)}). &nbsp; Change to <b>${sug}</b>? &nbsp; ${loc}`;
     el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y change to model · n keep yours · ⏎ next";
@@ -3161,14 +3173,14 @@ function updateReviewText() {
   const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
   const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>` : "";
   // Directed behavior: show the actor->target pair HiDRA proposed so accept commits the full pair.
-  // -1 (no recoverable recipient) prompts a hand pick; Shift+1..9 or click a mouse corrects it.
+  // -1 (no recoverable recipient) prompts a hand pick; Shift + the target's track number corrects it.
   const dir = isDirected(reviewCurrent.bid) && nTracks() >= 2;
   const tgt = reviewCurrent.target;
   const dirNote = !dir ? ""
     : (tgt != null && tgt >= 0)
-      ? ` · <span style="color:#e8a33d">mouse${activeTrack + 1} → mouse${tgt + 1}</span> <span style="opacity:.6">(Shift+1..9 or click to change)</span>`
-      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift+1..9 or click a mouse)</span>`;
-  el("reviewQ").innerHTML = `${head} · track ${activeTrack} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
+      ? ` · <span style="color:#e8a33d">track ${activeTrack + 1} → track ${tgt + 1}</span> <span style="opacity:.6">(Shift + track number to change)</span>`
+      : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift + the target's track number)</span>`;
+  el("reviewQ").innerHTML = `${head} · track ${activeTrack + 1} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
     + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
   el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
 }
@@ -3522,11 +3534,29 @@ function jumpToAdjacentLabel(bid, dir) {   // hop the playhead to the prev/next 
   }
   stop(); show(s); selectRunAt(bid, s); busy(`label ${s}–${e}`);
 }
+// ---- draggable detection threshold (the dashed line on the confidence trace) ----
+function predLaneGeom(i) {                          // geometry of behavior lane i's prediction (confidence) sub-lane
+  const ya = RULER + i * ROWH() + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP;
+  return { hhP, baseY: ya + PRED_H - padP };        // baseY = P0 baseline; top = baseY - hhP = P1
+}
+function threshLineAt(x, y, W) {                    // the behavior whose dashed threshold line is under the cursor, or null
+  if (x < TL_GUT || y < RULER) return null;
+  const lanes = laneList(), i = Math.floor((y - RULER) / ROWH());
+  if (i < 0 || i >= lanes.length) return null;
+  const g = predLaneGeom(i), thrY = g.baseY - Math.max(0, Math.min(1, behThresh(lanes[i].id))) * g.hhP;
+  return Math.abs(y - thrY) <= 5 ? lanes[i].id : null;   // grab within 5px of the line
+}
+function threshFromY(i, y) {                        // invert the trace's y->P mapping, clamped to the slider's range/step
+  const g = predLaneGeom(i);
+  return Math.round(Math.max(0.05, Math.min(0.95, (g.baseY - y) / g.hhP)) / 0.05) * 0.05;
+}
 tl.addEventListener("pointerdown", ev => {
   const W = tlWidth(), rect = tl.getBoundingClientRect(), x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   tl.setPointerCapture(ev.pointerId);
   const trimEdge = trimHandleAt(x, y, W);
   if (trimEdge) { stop(); drag = { kind: "trim", edge: trimEdge }; return; }   // grab an accept-boundary to drag it (pause playback so the base can't go stale under it)
+  const thBid = threshLineAt(x, y, W);                                         // grab the dashed line to set the detection threshold by dragging
+  if (thBid != null) { stop(); if (thBid !== activeBid) selectBehavior(thBid); drag = { kind: "thresh", bid: thBid }; return; }
   if (y < RULER) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); return; }
   if (x < TL_GUT) {                                                            // label gutter: only the active row's ‹ › nav arrows are interactive
     const gi = Math.floor((y - RULER) / ROWH());
@@ -3562,6 +3592,9 @@ tl.addEventListener("pointermove", ev => {
   } else if (drag.kind === "paint") {                       // paint only once the pointer travels past the slop
     if (Math.abs(x - drag.startX) > CLICK_SLOP) drag.moved = true;
     drag.curFrame = f; renderTimeline();
+  } else if (drag.kind === "thresh") {                      // drag the dashed line up/down to change the detection threshold, live
+    const i = laneList().findIndex(b => b.id === drag.bid);
+    if (i >= 0) { behPP(drag.bid).hi = threshFromY(i, y); recomputeBouts(drag.bid); renderTimeline(); renderThreshReadout(); }
   } else if (drag.kind === "trim") {                        // drag an edit-boundary (review candidate OR selected labeled bout)
     const trim = reviewCurrent ? reviewTrim : segTrim; if (!trim) return;
     // NB: no ensureTrimVisible() here — widening tlView mid-drag re-maps the cursor's frame (frameAt reads
@@ -3574,6 +3607,7 @@ tl.addEventListener("pointermove", ev => {
 });
 function updateHoverCursor(x, y, f) {
   if (trimHandleAt(x, y, tlWidth())) { tl.style.cursor = "ew-resize"; return; }   // over a trim handle
+  if (threshLineAt(x, y, tlWidth()) != null) { tl.style.cursor = "ns-resize"; return; }   // over the draggable threshold line
   if (y < RULER) { tl.style.cursor = "ew-resize"; return; }
   if (x < TL_GUT) {                                                               // the label gutter — pointer over the active row's nav arrows
     const gi = Math.floor((y - RULER) / ROWH());
@@ -3587,6 +3621,7 @@ function updateHoverCursor(x, y, f) {
   tl.style.cursor = onRun ? "pointer" : "crosshair";       // pointer = an annotation you can click to select
 }
 tl.addEventListener("pointerup", () => {
+  if (drag && drag.kind === "thresh") { drag = null; onThreshCommit(); return; }   // persist the dragged threshold + refresh the Review queue (same as the slider)
   if (drag && drag.kind === "trim" && !reviewCurrent) { commitSegTrim(); drag = null; return; }   // finished editing a labeled bout's bounds
   if (drag && drag.kind === "laneScrub") {
     selectNearest(drag.bid, drag.curF, tlWidth());          // select the bout you landed on (if any)
@@ -3682,6 +3717,13 @@ el("timingExport").onclick = async () => {   // per-round annotation timings (ev
   const a = document.createElement("a");
   a.href = `/api/projects/${PID}/timing.csv`; a.download = `${PID}-rounds.csv`; a.click();
   busy("downloaded per-round timing CSV — raw event log: <project>/events/*.jsonl · full rollup: /api/projects/" + PID + "/timing");
+};
+el("labelsExport").onclick = (ev) => {   // export all project labels as one CSV (Shift = include Not-happening/Unknown)
+  if (!PID) return busy("open a project first");
+  const all = ev.shiftKey;
+  const a = document.createElement("a");
+  a.href = `/api/projects/${PID}/labels.csv${all ? "?value=all" : ""}`; a.download = `${PID}-labels.csv`; a.click();
+  busy(all ? "exported all labels (incl. Not-happening/Unknown) as CSV" : "exported label CSV (Happening bouts) — Shift-click for all values");
 };
 el("statsBtn").onclick = openStats; el("statsClose").onclick = () => el("statsPanel").classList.remove("on");
 el("statsExport").onclick = () => {   // download the full precision-stats history for the active behavior as CSV
@@ -3790,12 +3832,12 @@ window.addEventListener("keydown", e => {
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
   if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
   if (settingCage && e.key === "Escape") { e.preventDefault(); setCageMode(false); busy("cage ROI cancelled"); return; }
-  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift+1..9 to set it later)"); return; }
+  if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift + track number to set it later)"); return; }
   if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedSeg) { e.preventDefault(); deleteSelectedSeg(); return; }
-  if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track (e.code is layout-safe; Shift+1 would otherwise be '!')
+  if (e.shiftKey && /^Digit[0-9]$/.test(e.code)) {   // Shift+number: set the directed bout's TARGET (recipient) track — digit is the 1-based track number, so track = digit-1 (e.code is layout-safe)
     const t = +e.code.slice(5) - 1;
-    if (t < nTracks()) {
+    if (t >= 0 && t < nTracks()) {
       if (awaitTarget) { e.preventDefault(); setBoutTarget(t); return; }
       if (reviewCurrent && reviewCurrent.mode === "new" && isDirected(reviewCurrent.bid)) {   // set/correct the directed candidate's recipient
         e.preventDefault(); setReviewTarget(t); return;
@@ -3807,7 +3849,7 @@ window.addEventListener("keydown", e => {
     }
   }
   if (e.key === "Tab") { e.preventDefault(); cycleTrack(e.shiftKey ? -1 : 1); return; }        // cycle tracks
-  if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }
+  if (e.key >= "1" && e.key <= "9") { const t = +e.key - 1; if (t < nTracks()) { setActiveTrack(t); return; } }   // digit is the 1-based track number, so track = digit-1 (key 0 falls through to zoom-reset)
   if (reviewing && e.key === "y") return acceptCandidate();
   if (reviewing && e.key === "n") return rejectCandidate();
   if (reviewing && (e.key === "r" || e.key === "R")) { e.preventDefault(); return replayCandidate(); }

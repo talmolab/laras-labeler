@@ -158,11 +158,11 @@ def score(truth_dir: Path, pred_dir: Path, behaviours: list[str] | None,
     t_nframes = {v["video_id"]: int(v.get("n_frames") or 0) for v in tman.get("videos", [])}
 
     want = {_norm(b) for b in behaviours} if behaviours else None
-    vid_filter = set(videos) if videos else None
+    vid_filter = list(videos) if videos else None                       # substring match, so `clip_001` finds the long video_id
     truth_vids = [v["video_id"] for v in tman.get("videos", [])
-                  if vid_filter is None or v["video_id"] in vid_filter]
+                  if vid_filter is None or any(f in v["video_id"] for f in vid_filter)]
     if vid_filter:
-        missing = vid_filter - set(truth_vids)
+        missing = [f for f in vid_filter if not any(f in tv for tv in truth_vids)]
         if missing:
             print(f"  warning: --videos not in the truth project, skipped: {sorted(missing)}")
 

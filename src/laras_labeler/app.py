@@ -1259,6 +1259,25 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         _proj(pid)
         return labels.source_stats(pid)
 
+    @app.get("/api/projects/{pid}/labels.csv")
+    def labels_csv(pid: str, value: str = "pos"):
+        """Export the whole project's labels as one CSV — a row per bout across every clip, track and
+        behavior, with behavior/clip names, frame span and (when fps is known) seconds. `value=pos`
+        (default) keeps Happening bouts; `value=all` includes Not-happening/Unknown. Reads the current
+        parquets, so the `.parquet.bak` backups are never exported."""
+        import csv as _csv
+        import io as _io
+        proj = _proj(pid)
+        rows = labels.export_bouts(pid, positives_only=(value != "all"))
+        buf = _io.StringIO()
+        w = _csv.DictWriter(buf, fieldnames=LabelStore.EXPORT_COLS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+        fname = f"{proj.name or pid}-labels.csv".replace("/", "_").replace(" ", "_")
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"',
+                                 "Cache-Control": "no-cache"})
+
     # ---- annotation event log + timing rollup (events.py) ----
     # How long does a round of annotation actually take, and is the human-in-the-loop loop cheaper
     # than painting labels by hand? Nothing else on disk can answer that: labels record WHAT was
