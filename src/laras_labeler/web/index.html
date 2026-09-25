@@ -1638,6 +1638,16 @@ function renderTimeline() {
     // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
     tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
   });
+  // Social window (entry/exit of a second animal): dim everything outside it so it's obvious at a
+  // glance where labeling/review even applies. Drawn into the base (before captureTimelineBase) so
+  // it survives the playback fast-path repaint, not just a full render. No-op for a clip with no
+  // window set (e.g. an alone-condition control clip).
+  if (meta.social_start != null && meta.social_end != null) {
+    tctx.fillStyle = "rgba(0,0,0,0.45)";
+    const wx0 = xOf(meta.social_start, W), wx1 = xOf(meta.social_end, W);
+    if (wx0 > TL_GUT) tctx.fillRect(TL_GUT, RULER, wx0 - TL_GUT, H - RULER);
+    if (wx1 < W) tctx.fillRect(wx1, RULER, W - wx1, H - RULER);
+  }
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
   drawFeatures(W, dpr);
@@ -1871,6 +1881,15 @@ async function syncRange(bid, s, e) {   // reads per-frame value+source+target s
   scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
 async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
+  // Social window: every paint path (manual, drag, erase, candidate accept/trim/merge/split) funnels
+  // through here, so clamping once here covers all of them rather than patching each call site. The
+  // server clips again on write regardless (the authoritative guarantee — see put_labels); this just
+  // keeps the client's own label arrays/undo stack from ever showing something the server would
+  // reject. No-op for a clip with no window set.
+  if (meta && meta.social_start != null && meta.social_end != null) {
+    s = Math.max(s, meta.social_start); e = Math.min(e, meta.social_end);
+    if (e <= s) { busy("outside the social window — nothing to label there"); return; }
+  }
   clearSel();                                        // any label edit invalidates a highlighted selection
   const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
   const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo

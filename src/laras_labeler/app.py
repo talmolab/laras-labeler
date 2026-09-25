@@ -64,6 +64,11 @@ class SetSpout(BaseModel):
     y: float | None = None
 
 
+class SetSocialWindow(BaseModel):
+    start_frame: int | None = None   # half-open [start_frame, end_frame); both None clears the window
+    end_frame: int | None = None
+
+
 class SetSpoutRoi(BaseModel):
     points: list[list[float]] | None = None   # [[x,y], ...] polygon vertices; None/empty clears the ROI
 
@@ -183,7 +188,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # always blank and the "set px/cm" warning never cleared, so Predict looked permanently
         # gated even on a clip whose scale was set and which Predict would have run.
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
-                "pix_per_cm": entry.get("pix_per_cm"), **eff}
+                "pix_per_cm": entry.get("pix_per_cm"),
+                "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
     # separate the human's time from the machine's, and the machine's time has to be recorded where the
@@ -539,6 +545,29 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         entry["spout"] = None if body.x is None or body.y is None else [float(body.x), float(body.y)]
         p.save()
         return {"spout": entry["spout"]}
+
+    @app.put("/api/projects/{pid}/videos/{vid}/social-window")
+    def set_social_window(pid: str, vid: str, body: SetSocialWindow):
+        """Set (or clear) THIS clip's social window — the frame range where a second animal is
+        actually in the arena (e.g. entry/exit times for a social session; left unset for an
+        alone-condition control clip, which then behaves exactly as before). Labels outside it are
+        clipped on write (see put_labels), training/candidates/metrics only ever see labeled or
+        predicted frames inside it, and the feature cache is only computed for it (also invalidates
+        the cache, since the window feeds compute_per_track_features's input slice)."""
+        p = _video(pid, vid)
+        entry = p.video(vid)
+        n = entry["n_frames"]
+        if body.start_frame is None or body.end_frame is None:
+            entry["social_start"] = None
+            entry["social_end"] = None
+        else:
+            s, e = int(body.start_frame), int(body.end_frame)
+            if not (0 <= s < e <= n):
+                raise HTTPException(400, f"social window must satisfy 0 <= start < end <= {n}")
+            entry["social_start"] = s
+            entry["social_end"] = e
+        p.save()
+        return {"social_start": entry["social_start"], "social_end": entry["social_end"]}
 
     @app.put("/api/projects/{pid}/videos/{vid}/spout-roi")
     def set_video_spout_roi(pid: str, vid: str, body: SetSpoutRoi):
@@ -1252,8 +1281,21 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     @app.put("/api/projects/{pid}/labels/{vid}")
     def put_labels(pid: str, vid: str, spans: list[LabelSpan]):
-        _video(pid, vid)
+        p = _video(pid, vid)
         rows = [s.model_dump() for s in spans]
+        # Hard backstop for the social window: even if a client bypasses the GUI's paint clamp (a
+        # direct API call, an importer, a stale tab), a label can never land outside the window a
+        # clip has set -- clip each span to the intersection, drop it if there is none. A clip with
+        # no window (e.g. an alone-condition control) is unaffected.
+        entry = p.video(vid) or {}
+        ws, we = entry.get("social_start"), entry.get("social_end")
+        if ws is not None and we is not None:
+            clipped = []
+            for r in rows:
+                s, e = max(r["start"], ws), min(r["end"], we)
+                if e > s:
+                    clipped.append({**r, "start": s, "end": e})
+            rows = clipped
         labels.put_spans(pid, vid, rows)
         # Server-side backstop for the event log: the browser's semantic events (which paint, which
         # accept) are richer, but they live in a queue that a closed tab or a crash can lose. Every

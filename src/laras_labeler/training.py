@@ -203,6 +203,11 @@ class Trainer:
             rdf = self.labels.rows_for_behavior(pid, vid, bid)      # track, frame, value
             if len(rdf) == 0:
                 continue
+            ws, we = v.get("social_start"), v.get("social_end")
+            if ws is not None and we is not None:                   # social window: never train outside it
+                rdf = rdf[(rdf["frame"] >= ws) & (rdf["frame"] < we)]
+            if len(rdf) == 0:
+                continue
             if self.features.status(pid, vid)["status"] != "ready":
                 skipped.append({"video_id": vid, "reason": "features not ready"})
                 continue
