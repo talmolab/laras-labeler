@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import contextlib
 import json
 import shutil
 import threading
@@ -206,6 +207,23 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return (f"no pixels-per-cm for {what}. HiDRA's features are in centimetres, so a scale is required "
                 "— type px/cm for the video, or (for sDANNCE poses) convert them with "
                 "lab_scripts/dannce_to_slp.py, which measures it from the camera calibration." + found)
+
+    # HiDRA runs ONE AT A TIME on this machine. A run needs roughly 10 GiB of GPU memory and a scratch folder
+    # keyed by the head, so overlapping runs -- a second Predict click while the first is still going, or
+    # several clicks each of which runs every bound head -- either exhaust the GPU ("CUDA out of memory") or
+    # delete each other's scratch files ("FileNotFoundError ... _work/perlab_allbeh/..."), and the jobs die.
+    # A later request now waits its turn and says so in its progress line instead of crashing.
+    _hidra_lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def _hidra_exclusive(progress, what: str):
+        if not _hidra_lock.acquire(blocking=False):
+            progress(1, f"waiting for another HiDRA job to finish before {what} …")
+            _hidra_lock.acquire()
+        try:
+            yield
+        finally:
+            _hidra_lock.release()
 
     def _meta(pid: str, vid: str) -> dict:
         proj = store.get(pid)
@@ -790,8 +808,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
-                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                    steps=steps, mode=ft_mode)
+                with _hidra_exclusive(progress, "fine-tuning"):
+                    return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
+                                        steps=steps, mode=ft_mode)
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -1081,8 +1100,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         def job(progress):
             out = {}
             if bound:
-                out["hidra"] = _hidra_predict(pid, vid, bound,
-                                              lambda p, m: progress(int(p * (70 if predictor.trained_behaviors(pid) else 100) / 100), m))
+                with _hidra_exclusive(progress, "predicting"):
+                    out["hidra"] = _hidra_predict(pid, vid, bound,
+                                                  lambda p, m: progress(int(p * (70 if predictor.trained_behaviors(pid) else 100) / 100), m))
             if predictor.trained_behaviors(pid):
                 base = 70 if bound else 0
                 span = 30 if bound else 100

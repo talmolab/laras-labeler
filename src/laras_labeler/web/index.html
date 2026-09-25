@@ -2470,7 +2470,11 @@ async function addBehavior() {
   const key = prompt("Hotkey (single char, optional):") || null;
   const r = await api(`/behaviors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, key }) });
   if (!r.ok) { alert("Could not add: " + (await r.json()).detail); return; }
+  const created = await r.json().catch(() => null);
   await reloadBehaviors();
+  // Make the new behavior the active one. Otherwise the previously active behavior stays selected, and the
+  // next thing you do -- typically choosing its HiDRA classifier -- silently rebinds THAT one instead.
+  if (created && created.id != null) await selectBehavior(created.id);
 }
 async function reloadBehaviors() {
   behaviors = await (await api(`/behaviors`)).json();
