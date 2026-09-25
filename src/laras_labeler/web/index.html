@@ -349,7 +349,7 @@
       <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
              title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
       <label class="status" for="hidraPpc">px/cm:</label>
-      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
+      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:88px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
     </span>
@@ -2114,7 +2114,23 @@ function hidraReflect() {
 
   const predict = el("predict"), train = el("train");
   const ppc = parseFloat(el("hidraPpc").value);
-  const needScale = bound && !(ppc > 0);
+  // A scale MEASURED from the camera calibration (server-side scale.py) satisfies the requirement; a typed
+  // value always wins over it. If a measured scale exists but must not be used for this clip (different
+  // shape, broken file) the server says why and we show that instead of a generic warning.
+  const auto = meta && meta.pix_per_cm_auto;
+  const autoOk = !!(auto && auto.usable);
+  const needScale = bound && !(ppc > 0) && !autoOk;
+  {
+    const pin = el("hidraPpc");
+    pin.placeholder = autoOk ? `${auto.pix_per_cm.toFixed(1)} auto` : "px/cm";
+    pin.dataset.autoTip = autoOk
+      ? `Automatic: ${auto.pix_per_cm.toFixed(2)} px/cm, ${auto.note}` +
+        (auto.iqr ? ` (the middle half of the measurements span ${auto.iqr[0].toFixed(1)}–${auto.iqr[1].toFixed(1)})` : "") +
+        ". Type a number to override it; clear the box to use this again."
+      : "";
+    if (!pin.dataset.baseTip) pin.dataset.baseTip = pin.title;
+    pin.title = pin.dataset.autoTip ? pin.dataset.autoTip + "\n\n" + pin.dataset.baseTip : pin.dataset.baseTip;
+  }
   if (bound) {
     predict.textContent = ftMode ? `▶ Predict — ${pick.action} (fine-tuned)` : `▶ Predict — ${pick.action}`;
     train.textContent = ftMode ? "⚙ HiDRA re-tune" : "⚙ HiDRA fine-tune";
@@ -2130,9 +2146,11 @@ function hidraReflect() {
   el("hidraNote").textContent =
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
-    : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
+    : needScale ? (auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres")
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
     : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  if (bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer)
+    el("hidraNote").textContent += ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)`;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;

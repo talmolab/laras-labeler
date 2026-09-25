@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from fastapi.staticfiles import StaticFiles
 
 from . import config, hidra, poseio
+from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series
@@ -177,6 +178,35 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             raise HTTPException(404, "video not found")
         return proj
 
+    def _auto_scale(entry: dict) -> dict | None:
+        """The px/cm this clip's poses can supply on their own (a sidecar measured by the pose
+        converter from the camera calibration) -- see scale.py for the rules, including what happens
+        when the video's size differs from the one the scale was measured on."""
+        return pxscale.auto_scale(entry.get("slp_path"), entry.get("width"), entry.get("height"))
+
+    def _effective_ppc(proj, entry: dict) -> tuple[float | None, str | None]:
+        """px/cm for HiDRA and where it came from. Precedence: a value typed for THIS clip, then a
+        project-wide one, then a value MEASURED from the camera calibration. Never a guess: with none
+        of the three the caller must refuse to run, as it always did."""
+        v = entry.get("pix_per_cm")
+        if v:
+            return float(v), "video"
+        v = proj.manifest.get("pix_per_cm")
+        if v:
+            return float(v), "project"
+        auto = _auto_scale(entry)
+        if auto and auto.get("usable"):
+            return float(auto["pix_per_cm"]), "calibration"
+        return None, None
+
+    def _no_scale_message(entry: dict, what: str) -> str:
+        auto = _auto_scale(entry)
+        found = (f" A calibration scale was found next to the poses but cannot be used: {auto['why']}."
+                 if auto and not auto.get("usable") else "")
+        return (f"no pixels-per-cm for {what}. HiDRA's features are in centimetres, so a scale is required "
+                "— type px/cm for the video, or (for sDANNCE poses) convert them with "
+                "lab_scripts/dannce_to_slp.py, which measures it from the camera calibration." + found)
+
     def _meta(pid: str, vid: str) -> dict:
         proj = store.get(pid)
         entry = proj.video(vid) or {}
@@ -189,6 +219,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # gated even on a clip whose scale was set and which Predict would have run.
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
                 "pix_per_cm": entry.get("pix_per_cm"),
+                "pix_per_cm_auto": _auto_scale(entry),
                 "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
@@ -857,11 +888,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # seconds. A container's declared fps can disagree with the rig's true rate (ours declares
         # 30 for 50 fps video), so the project's recorded value wins and is reported back.
         fps = float(entry.get("fps") or 30.0)
-        ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
+        ppc, ppc_src = _effective_ppc(proj, entry)
         if ppc is None:
-            raise RuntimeError(
-                "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
-                "is required — set pix_per_cm on the video or the project.")
+            raise RuntimeError(_no_scale_message(entry, "this video"))
 
         # Short dir key: the full clip name (~85 chars) appears twice in HiDRA's nested
         # _work/custom_tracking/<lab>/<clip>.parquet tree, which blows past Windows' 260-char path
@@ -903,7 +932,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                          "finetuned": bool(h.get("weights")),
                          "above_cut": int((lanes >= 0.6).sum()), "frames": n_frames})
         progress(100, "done")
-        return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
+        return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "pix_per_cm_source": ppc_src, "export": exported}
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
                      smoke: bool = False, configs: list[str] | None = None,
@@ -979,11 +1008,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 poses = poses[:n_frames]
             n_by[vid] = int(poses.shape[1])
             fps = float(entry.get("fps") or 30.0)
-            ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
+            ppc, _ = _effective_ppc(proj, entry)
             if ppc is None:
-                raise RuntimeError(
-                    f"no pixels-per-cm for {vid}. HiDRA's features are in centimetres, so a scale "
-                    "is required — set pix_per_cm on the video or the project.")
+                raise RuntimeError(_no_scale_message(entry, vid))
             stem = Path(str(entry.get("video_path") or vid)).stem or vid
             hidra.export_tracking(poses, header.node_names, fps, ppc, stem, tracking)
             meta_rows.append((f"{stem}.parquet", fps, ppc))
