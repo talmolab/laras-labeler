@@ -94,15 +94,21 @@ class Project:
         vid, i = stem, 2
         while vid in existing:
             vid, i = f"{stem}-{i}", i + 1
-        labels = sio.load_file(str(slp_path or video_path))
-        v = labels.videos[0]
-        # the .slp may reference the video by a path that doesn't exist on this machine
-        # (e.g. an uploaded file) — repoint it at the actual video so shape/frames resolve.
-        if slp_path and video_path and Path(video_path).exists():
-            try:
-                v.replace_filename(str(video_path))
-            except Exception:
-                pass
+        if slp_path:
+            labels = sio.load_file(str(slp_path))
+            v = labels.videos[0]
+            # the .slp may reference the video by a path that doesn't exist on this machine
+            # (e.g. an uploaded file) — repoint it at the actual video so shape/frames resolve.
+            if video_path and Path(video_path).exists():
+                try:
+                    v.replace_filename(str(video_path))
+                except Exception:
+                    pass
+        else:
+            # no poses yet (labeling-only mode, e.g. an alone-condition control video with no
+            # sDANNCE output): sio.load_file on a bare video (sleap-io >=0.9) returns a Video
+            # directly, not a Labels wrapping one -- it has no `.videos` to unwrap.
+            v = sio.load_video(video_path)
         entry = {
             "video_id": vid,
             "video_path": video_path,
