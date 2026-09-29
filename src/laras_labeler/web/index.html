@@ -244,7 +244,7 @@
       <button id="rvReplay" title="Replay this bout from the start (r)">↺ Replay (r)</button>
       <button id="rvTrimS" title="Set the accept-range START to the playhead ([)">◂ Start</button>
       <button id="rvTrimE" title="Set the accept-range END to the playhead (])">End ▸</button>
-      <button id="rvSplit" title="This candidate spans more than one bout: accept up to the playhead as one bout, then keep reviewing the rest (s)">✂ Split (s)</button>
+      <button id="rvSplit" title="This candidate spans more than one bout: split at the playhead — the part up to the playhead is saved as a confirmed bout, and the remainder becomes the next candidate to review (s)">✂ Split at playhead (s)</button>
       <div class="sep"></div>
       <button id="rvYes" class="yes">✓ Accept (y)</button>
       <button id="rvNo" class="no">✗ Reject (n)</button>
@@ -267,9 +267,11 @@
 
   <div class="row" id="playbar">
     <button id="first" title="First frame (Home)">⏮</button>
-    <button id="prev">◀</button>
+    <button id="prev" title="Previous frame (←)">◀</button>
+    <button id="back5" title="Back 5 frames (Shift+←)">⟪ 5</button>
     <button id="play">▶ Play</button>
-    <button id="next">▶</button>
+    <button id="fwd5" title="Forward 5 frames (Shift+→)">5 ⟫</button>
+    <button id="next" title="Next frame (→)">▶</button>
     <button id="last" title="Last frame (End)">⏭</button>
     <input type="range" id="scrub" min="0" max="0" value="0">
     <span class="counter" id="counter">0 / 0</span>
@@ -555,7 +557,7 @@
     </div>
     <div class="hint-box">
       <h4>Video &amp; keys</h4>
-      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll. Ruler = scrub · <b>←/→</b> step (Ctrl ±30) · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
+      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
   </div>
 
@@ -3167,7 +3169,8 @@ function updateReviewText() {
   }
   const dropped = candidateMode === "dropped";
   const label = dropped ? "Filtered-out" : "Candidate";
-  const head = reviewQueue.length ? `${label} <b>${reviewIdx + 1}/${reviewQueue.length}</b>` : `Predicted <b style="color:${b.color}">${b.name}</b>`;
+  let head = reviewQueue.length ? `${label} <b>${reviewIdx + 1}/${reviewQueue.length}</b>` : `Predicted <b style="color:${b.color}">${b.name}</b>`;
+  if (reviewCurrent.fromSplit) head += ` · <span style="color:#8a5cf6">✂ split piece ${reviewCurrent.splitPiece}</span>`;   // this candidate is the remainder of a just-split bout
   const sd = reviewCurrent.spoutDist;
   const spoutNote = (sd != null) ? ` · <span style="color:#4ad0ff">nose→spout ${sd.toFixed(2)} BL${sd <= 0.01 ? " (inside)" : ""}</span>` : "";
   const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
@@ -3332,15 +3335,19 @@ async function splitCandidate() {
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const cut = cur;                                            // split at the playhead
   if (cut <= t.s + 1 || cut >= t.e - 1) { busy("move the playhead inside the bout, then Split"); return; }
-  logDecision("split", { cut });
+  const piece = reviewCurrent.splitPiece || 1;
+  logDecision("split", { cut, piece });
   snapReview();
   const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
-  await applyPaint(bid, t.s, cut, 1, "candidate", at);        // left segment = one Happening bout
+  await applyPaint(bid, t.s, cut, 1, "candidate", at);        // left segment = one confirmed Happening bout
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate"); // any trimmed-off left edge = Not-happening
-  reviewCurrent = { ...reviewCurrent, s: cut, e };            // keep reviewing the remainder
+  // Keep reviewing the REMAINDER, but present it clearly as the next candidate (its own bout), not as
+  // the same one silently shrinking — fromSplit/splitPiece drive the header badge and the message.
+  reviewCurrent = { ...reviewCurrent, s: cut, e, fromSplit: true, splitPiece: piece + 1 };
   reviewTrim = { s: cut, e };
   evCandShownT = Date.now();                                  // the remainder is a fresh judgement
   setReviewView(cut, e); updateReviewText(); renderTimeline(); playBout(cut, e);
+  busy(`✂ Split at frame ${cut}: piece ${piece} (${t.s}–${cut}) saved as a bout · now reviewing piece ${piece + 1} (${cut}–${e}) — accept, split again, or reject`);
 }
 async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: keep your label. reviewed: un-review.
   if (!reviewCurrent) return;
@@ -3677,6 +3684,8 @@ if (ov) {                                            // overview strip: click/dr
 // ---------- wiring ----------
 el("prev").onclick = () => { stop(); show(cur - 1); };
 el("next").onclick = () => { stop(); show(cur + 1); };
+el("back5").onclick = () => { stop(); show(cur - 5); };
+el("fwd5").onclick = () => { stop(); show(cur + 5); };
 el("first").onclick = () => { stop(); show(0); };
 el("last").onclick = () => { stop(); show(meta.n_frames - 1); };
 el("play").onclick = () => play();   // don't pass the click event as stopAt
@@ -3861,8 +3870,8 @@ window.addEventListener("keydown", e => {
   if (!reviewing && selectedSeg && segTrim && e.key === "[") { e.preventDefault(); segTrim.s = Math.max(0, Math.min(cur, segTrim.e - 1)); return commitSegTrim(); }   // set the selected bout's start to the playhead
   if (!reviewing && selectedSeg && segTrim && e.key === "]") { e.preventDefault(); segTrim.e = Math.min(meta.n_frames, Math.max(cur + 1, segTrim.s + 1)); return commitSegTrim(); }   // set its end to the playhead
   if (reviewing && e.key === "Enter") return nextCandidate();
-  if (e.key === "ArrowLeft") { stop(); show(cur - (e.ctrlKey ? 30 : 1)); }       // arrows always scrub frames (even in review)
-  else if (e.key === "ArrowRight") { stop(); show(cur + (e.ctrlKey ? 30 : 1)); }
+  if (e.key === "ArrowLeft") { stop(); show(cur - (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }       // arrows scrub frames (Ctrl ±30, Shift ±5), even in review
+  else if (e.key === "ArrowRight") { stop(); show(cur + (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }
   else if (e.key === " ") { e.preventDefault(); play(); }
   else if (e.key === "p") setMode("pos");
   else if (e.key === "n" && !reviewing) setMode("neg");
