@@ -349,6 +349,8 @@
       <label class="status" for="hidraPpc">px/cm:</label>
       <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
+      <button id="hidraPublish" style="display:none"
+              title="Copy this behavior's fine-tuned classifier into the HCM classifier library, so any behavior in any project can pick it from the classifier list and Predict with it straight away. A fine-tune otherwise lives only in this project, and the next re-tune replaces it. Library entries never change once saved: saving again makes a new version.">⇪ add to library</button>
       <span class="status" id="hidraNote"></span>
     </span>
     <div class="sep"></div>
@@ -2032,14 +2034,25 @@ async function selectBehavior(bid) {
 // the plain labeler.
 let HIDRA = null;                      // null = unavailable; otherwise the shipped head catalogue
 let HIDRA_RT = null;                   // runtime probe: can inference actually run here
+let HIDRA_LIB = [];                    // published fine-tuned classifiers (library.py), e.g. HCM
 
-const hidraPick = () => (HIDRA || []).find(x => `${x.lab}|${x.action}` === el("hidraHead").value);
+// A library entry is picked as `lib:<id>` and answers as the head it was fine-tuned from, plus the
+// entry itself, so everything below that reads lab/action/collapse works for both.
+function hidraPick() {
+  const v = el("hidraHead").value || "";
+  if (v.startsWith("lib:")) {
+    const e = HIDRA_LIB.find(x => x.id === v.slice(4));
+    return e && { lab: e.base.lab, action: e.base.action, collapse: e.collapse || "scene",
+                  threshold: NaN, entry: e };
+  }
+  return (HIDRA || []).find(x => `${x.lab}|${x.action}` === v);
+}
 
 function hidraSyncBehavior() {
-  if (!HIDRA || activeBid == null) return;
-  const b = (behaviors || []).find(x => x.id === activeBid);
+  if (!HIDRA) return;
+  const b = activeBid == null ? null : (behaviors || []).find(x => x.id === activeBid);
   const h = b && b.hidra;
-  el("hidraHead").value = h ? `${h.lab}|${h.action}` : "";
+  el("hidraHead").value = !h ? "" : h.library ? `lib:${h.library}` : `${h.lab}|${h.action}`;
   if (h) {
     el("hidraCollapse").value = h.collapse || "scene";
     el("hidraRate").value = h.rate ?? 0.15;
@@ -2051,7 +2064,8 @@ function hidraSyncBehavior() {
 // run HiDRA when the behavior is unbound, or offer inference the runtime cannot do.
 function hidraReflect() {
   const pick = hidraPick(), bound = !!pick;
-  for (const id of ["hidraCollapse", "hidraRate"]) el(id).disabled = !bound;
+  el("hidraCollapse").disabled = !bound || !!(pick && pick.entry);   // a library entry fixes it
+  el("hidraRate").disabled = !bound;
 
   // Once this behavior's head has been fine-tuned on reviewed labels it stops being the shipped
   // zero-shot head — a Predict now loads the adapted weights — so the label must say so.
@@ -2073,8 +2087,17 @@ function hidraReflect() {
     train.disabled = false;
   }
 
+  const pub = el("hidraPublish");
+  if (pub) pub.style.display = bound && ftMode && !(beh.hidra.library) ? "" : "none";
+  if (pub && beh && beh.hidra && beh.hidra.published_as)
+    pub.textContent = "⇪ add to library again";
+  else if (pub) pub.textContent = "⇪ add to library";
+  const lib = pick && pick.entry, tr = lib && lib.trained || {};
   el("hidraNote").textContent =
-    !bound ? "using this project's own model"
+    activeBid == null ? "select a behavior first — a classifier is chosen per behavior"
+    : !bound ? "using this project's own model"
+    : lib && HIDRA_RT?.can_infer && !needScale
+      ? `library: ${lib.name} v${lib.version} · fine-tuned on ${tr.bouts ?? "?"} bouts / ${(tr.videos || []).length || "?"} clips from ${lib.source?.project || "?"} · recalibrated to ${el("hidraRate").value} of frames`
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
     : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
@@ -2126,21 +2149,74 @@ async function hidraSaveFps() {
 }
 
 async function hidraSave() {
-  if (!HIDRA || activeBid == null) return;
-  const [lab, action] = (el("hidraHead").value || "|").split("|");
+  if (!HIDRA) return;
+  // With no behavior selected there is nothing to bind the classifier to. This used to return
+  // silently, leaving the picker showing a head that nothing used -- and Predict then said
+  // "nothing to predict with" with the head apparently chosen right there.
+  if (activeBid == null) { el("hidraHead").value = ""; hidraReflect(); return; }
+  const v = el("hidraHead").value || "";
+  const rate = parseFloat(el("hidraRate").value);
+  let body;
+  if (v.startsWith("lib:")) body = { library: v.slice(4), rate };
+  else {
+    const [lab, action] = (v || "|").split("|");
+    body = { lab, action, collapse: el("hidraCollapse").value, rate };
+  }
   const r = await fetch(`/api/projects/${PID}/behaviors/${activeBid}/hidra`, {
-    method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lab, action, collapse: el("hidraCollapse").value,
-                           rate: parseFloat(el("hidraRate").value) }),
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   if (r.ok) {
     const h = await r.json();
     const b = (behaviors || []).find(x => x.id === activeBid);
     if (b) { if (h && h.action) b.hidra = h; else delete b.hidra; }
   } else {
-    el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
+    const msg = (await r.json().catch(() => ({}))).detail || "could not save";
+    hidraSyncBehavior();                 // show what is actually bound, not the failed pick
+    el("hidraNote").textContent = "⚠ " + msg;
     return;
   }
+  hidraReflect();
+}
+
+async function hidraLoadLibrary() {
+  try {
+    const r = await fetch("/api/hidra/library");
+    HIDRA_LIB = r.ok ? ((await r.json()).entries || []) : [];
+  } catch { HIDRA_LIB = []; }
+}
+
+function hidraLibraryOptions() {
+  if (!HIDRA_LIB.length) return "";
+  const byDom = new Map();
+  for (const e of HIDRA_LIB) {
+    const d = (e.domain || "other").toUpperCase();
+    if (!byDom.has(d)) byDom.set(d, []);
+    byDom.get(d).push(e);
+  }
+  return [...byDom].map(([d, es]) => `<optgroup label="${d} library — fine-tuned">` + es.map(e =>
+    `<option value="lib:${e.id}">${e.name} v${e.version} · ${e.base.action}/${e.base.lab}</option>`
+  ).join("") + `</optgroup>`).join("");
+}
+
+async function hidraPublish() {
+  const b = (behaviors || []).find(x => x.id === activeBid);
+  if (!b || !b.hidra || !b.hidra.weights) return;
+  const name = prompt("Name for this classifier in the HCM library (e.g. drinking):", b.name || b.hidra.action);
+  if (name == null || !name.trim()) return;
+  const notes = prompt("Notes (optional) — cohort, camera, anything a later user should know:", "") || "";
+  const r = await fetch(`/api/projects/${PID}/behaviors/${activeBid}/hidra/publish`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim(), notes }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { busy("could not add to library: " + (d.detail || r.status)); return; }
+  b.hidra.published_as = d.id;
+  logEvent("hidra_publish", { behavior_id: activeBid, entry: d.id, version: d.version });
+  await hidraLoadLibrary();
+  const sel = el("hidraHead"), keep = sel.value;
+  sel.querySelectorAll("optgroup[data-lib]").forEach(g => g.remove());
+  sel.insertAdjacentHTML("beforeend", hidraLibraryOptions().replaceAll("<optgroup ", "<optgroup data-lib "));
+  sel.value = keep;
+  busy(`added to library as ${d.id} (${d.n_checkpoints} checkpoints) — pick it from the classifier list in any project`);
   hidraReflect();
 }
 
@@ -2262,8 +2338,10 @@ async function hidraInit() {
     byCat.get(c).push(h);
   }
   const order = [...CATS.filter(c => byCat.has(c)), ...[...byCat.keys()].filter(c => !CATS.includes(c))];
+  await hidraLoadLibrary();
   el("hidraHead").innerHTML =
     `<option value="">— none — use this project's own model</option>` +
+    hidraLibraryOptions().replaceAll("<optgroup ", "<optgroup data-lib ") +
     order.map(c => {
       const hs = byCat.get(c).slice().sort((a, b) =>
         a.action.localeCompare(b.action) || a.lab.localeCompare(b.lab));
@@ -2289,6 +2367,7 @@ async function hidraInit() {
     hidraSave();
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
+  el("hidraPublish").onclick = hidraPublish;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
   el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed

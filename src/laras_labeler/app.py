@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import config, hidra, poseio
+from . import config, hidra, library, poseio
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series
@@ -144,6 +144,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     _saved = config.load_app_settings(settings.projects_root)
     if _saved.get("hidra_home") or _saved.get("hidra_python"):
         hidra.configure(_saved.get("hidra_home"), _saved.get("hidra_python"))
+    library.configure(settings.projects_root)
     app.state.settings = settings
     app.state.store = store
     app.state.vm = vm
@@ -991,6 +992,17 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             if live is not None:
                 live.setdefault("hidra", {})["weights"] = r["weights"]
                 live["hidra"]["finetune_mode"] = mode
+                # What this checkpoint was trained on, so publishing it to the library can say so.
+                # A re-tune of a library classifier starts again from the shipped head on THIS
+                # project's labels, so it is a project fine-tune now, no longer the library entry.
+                live["hidra"].pop("library", None)
+                live["hidra"]["trained"] = {
+                    "bouts": ann.get("bouts"), "spans": ann.get("spans"),
+                    "videos": ann.get("video_ids") or [], "steps": steps,
+                    "configs": configs, "backend": rt.get("backend"),
+                    "fps": sorted({m[1] for m in meta_rows}),
+                    "pix_per_cm": sorted({m[2] for m in meta_rows}),
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
                 proj.save()
         if ann.get("directed_ambiguous"):
             r["directed_ambiguous"] = ann["directed_ambiguous"]
@@ -1368,6 +1380,39 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         """The shipped (lab, action) heads, for the behavior->classifier picker."""
         return hidra.catalog()
 
+    # --- HiDRA classifier library (library.py) ------------------------------------------------
+    @app.get("/api/hidra/library")
+    def hidra_library(domain: str | None = None):
+        """Published fine-tuned classifiers (e.g. the HCM library), for the picker."""
+        return {"root": str(library.root()), "entries": library.entries(domain)}
+
+    @app.post("/api/projects/{pid}/behaviors/{bid}/hidra/publish")
+    def publish_hidra_head(pid: str, bid: int, body: dict = Body(default={})):
+        """Copy this behavior's fine-tuned checkpoints into the library as a new, immutable entry.
+
+        Needed because a fine-tune lives in a staging dir the next fine-tune wipes; publishing is
+        what makes it a classifier other projects can bind to."""
+        proj = _behavior(pid, bid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        h = beh.get("hidra") or {}
+        if not h.get("weights"):
+            raise HTTPException(409, "this behavior has no fine-tuned HiDRA classifier to publish — "
+                                     "bind a head, review its proposals, then ⚙ HiDRA fine-tune")
+        if h.get("library"):
+            raise HTTPException(409, f"this behavior already uses library classifier {h['library']}")
+        name = str(body.get("name") or beh.get("name") or h["action"]).strip()
+        try:
+            entry = library.publish(
+                name=name, behavior=str(beh.get("name") or name), head=h, weights=h["weights"],
+                trained=h.get("trained"), notes=str(body.get("notes") or ""),
+                domain=str(body.get("domain") or library.DEFAULT_DOMAIN).strip() or library.DEFAULT_DOMAIN,
+                source={"project": proj.pid, "behavior_id": bid, "behavior": beh.get("name")})
+        except FileNotFoundError as e:
+            raise HTTPException(409, str(e))
+        h["published_as"] = entry["id"]
+        proj.save()
+        return entry
+
     @app.put("/api/projects/{pid}/behaviors/{bid}/hidra")
     def set_hidra_head(pid: str, bid: int, body: dict = Body(...)):
         """Bind a behavior to a head — or unbind it by posting an empty action.
@@ -1378,7 +1423,21 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         proj = store.get(pid)
         beh = next(b for b in proj.behaviors if b["id"] == bid)
         action = (body.get("action") or "").strip()
-        if not action:
+        lib_id = (body.get("library") or "").strip()
+        if lib_id:
+            # A library classifier brings its own head, collapse, rate and checkpoints; only the
+            # review rate is the user's to change here (prevalence differs between projects).
+            try:
+                entry = library.get(lib_id)
+            except KeyError:
+                raise HTTPException(404, f"no library classifier {lib_id!r}")
+            beh["hidra"] = library.binding(entry)
+            if body.get("rate") is not None:
+                rate = float(body["rate"])
+                if not 0 < rate < 1:
+                    raise HTTPException(400, "rate must be between 0 and 1")
+                beh["hidra"]["rate"] = rate
+        elif not action:
             beh.pop("hidra", None)
         else:
             known = {(h["lab"], h["action"]) for h in hidra.catalog()}
@@ -1397,7 +1456,16 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             rate = float(body.get("rate", 0.15))
             if not 0 < rate < 1:
                 raise HTTPException(400, "rate must be between 0 and 1")
+            prev = beh.get("hidra") or {}
             beh["hidra"] = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+            # Re-saving the SAME head (a collapse or review-rate change) keeps its fine-tune. This
+            # used to replace the whole dict, so nudging the review rate silently dropped `weights`
+            # and the next Predict went back to zero-shot (scripts/repair_hidra_binding.py exists
+            # because of it). A different head is a different classifier and starts clean.
+            if (prev.get("lab"), prev.get("action")) == (lab, action) and not prev.get("library"):
+                for k in ("weights", "finetune_mode", "trained", "published_as"):
+                    if k in prev:
+                        beh["hidra"][k] = prev[k]
         proj.save()
         return beh.get("hidra", {})
 
