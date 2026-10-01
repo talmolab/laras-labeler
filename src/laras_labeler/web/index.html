@@ -1256,9 +1256,9 @@ function drawIdentityMarkers() {
     octx.beginPath(); octx.arc(cx, cy, r, 0, Math.PI * 2);
     octx.fillStyle = color; octx.fill();
     octx.lineWidth = active ? 3 : 2; octx.strokeStyle = "rgba(0,0,0,0.65)"; octx.stroke();
-    octx.font = `bold ${active ? 15 : 12}px system-ui`;   // track number, white with dark outline (legible on any disc color)
-    octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t), cx, cy + 0.5);
-    octx.fillStyle = "#fff"; octx.fillText(String(t), cx, cy + 0.5);
+    octx.font = `bold ${active ? 15 : 12}px system-ui`;   // 1-based track number (matches the chips and number keys), white with dark outline (legible on any disc color)
+    octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t + 1), cx, cy + 0.5);
+    octx.fillStyle = "#fff"; octx.fillText(String(t + 1), cx, cy + 0.5);
   }
   octx.textAlign = "left"; octx.textBaseline = "alphabetic";
 }
