@@ -1031,6 +1031,26 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
             "directed_ambiguous": ambiguous}
 
 
+_TRAIN_HELP: dict[tuple, str] = {}   # cache of `finetune train --help` text, keyed by command prefix
+
+
+def _train_has_flag(entry: list[str], flag: str) -> bool:
+    """Does this HiDRA checkout's ``finetune train`` accept ``flag``? Probed once per command prefix
+    (``--help`` is cheap and side-effect-free) and cached, so a flag added by a newer HiDRA can be
+    used when present without breaking an older checkout that predates it. Any probe failure is treated
+    as 'unsupported' — the fine-tune then runs exactly as before."""
+    import subprocess
+    key = tuple(entry)
+    if key not in _TRAIN_HELP:
+        try:
+            r = subprocess.run(entry + ["train", "--help"], capture_output=True, text=True,
+                               timeout=60, env=_subproc_env())
+            _TRAIN_HELP[key] = (r.stdout or "") + (r.stderr or "")
+        except (subprocess.SubprocessError, OSError):
+            _TRAIN_HELP[key] = ""
+    return flag in _TRAIN_HELP[key]
+
+
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
              smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
@@ -1114,6 +1134,13 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
         train += ["--steps", str(steps)]
     if smoke:
         train.append("--smoke")
+    # Feature caching computes the frozen backbone once per training window instead of every step —
+    # the change that makes fine-tuning fast enough to run inside an annotation round (~10 min) rather
+    # than tens of minutes. It is the whole point of the HITL fine-tuning refactor; without it the
+    # labeler pays the full per-step cost. Older HiDRA checkouts predate the flag, so only pass it when
+    # this checkout's `train` advertises it (probed once, cached) — never break an older install.
+    elif _train_has_flag(entry, "--cache-features"):
+        train.append("--cache-features")
     log += _stream(train, "train", 20, 100)
 
     # A real run must leave at least one {config}__{tag}.pkl behind. `finetune.py train` can exit 0
