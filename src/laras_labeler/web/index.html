@@ -2872,7 +2872,11 @@ function unlabeledSubruns(bouts, arr, minBout = 3) {
 function recomputeBouts(bid) {   // refresh the clickable predicted bouts from cached proba minus current labels
   const p = predsByBeh.get(bid);
   if (!p) { predictedBouts.delete(bid); return; }
-  const hi = behThresh(bid), lo = Math.max(0.05, hi - 0.2);
+  // lo == hi: a bout spans exactly the above-threshold region, so its DURATION tracks the detect
+  // slider (raise it -> shorter bouts) and never reaches into frames clearly below the line. (A wide
+  // hysteresis tail — the old lo = hi - 0.2 — made candidates spill well under the threshold.) Brief
+  // dips are still bridged by boutsFromProba's smoothing + min-gap, so this doesn't fragment bouts.
+  const hi = behThresh(bid), lo = hi;
   predictedBouts.set(bid, unlabeledSubruns(boutsFromProba(p, hi, lo, 5, behMinBout(bid)), labelState.get(bid)));
 }
 async function loadPredictions(bid) {
@@ -2882,19 +2886,28 @@ async function loadPredictions(bid) {
 }
 async function loadAllPredictions() { for (const b of behaviors) await loadPredictions(b.id); }
 
-// JS port of the backend hysteresis (smooth -> hi/lo -> min-bout) for the clickable auto lane.
-function boutsFromProba(proba, hi = 0.6, lo = 0.4, smooth = 5, minBout = 3) {
+// JS port of the backend bouts_from_proba (smooth -> hi/lo runs -> min-bout filter -> min-gap merge)
+// for the clickable auto lane. Mirrors predict.py exactly — same order (filter THEN merge) and the same
+// min_gap bridge — so the lane matches the review queue even at lo == hi (no hysteresis tail), where a
+// brief dip below the threshold would otherwise split the lane but not the queue.
+function boutsFromProba(proba, hi = 0.6, lo = 0.4, smooth = 5, minBout = 3, minGap = 3) {
   const F = proba.length, r = Math.floor(smooth / 2), p = new Float32Array(F);
   for (let i = 0; i < F; i++) { let s = 0, c = 0; for (let j = Math.max(0, i - r); j <= Math.min(F - 1, i + r); j++) { const v = proba[j]; if (!Number.isNaN(v)) { s += v; c++; } } p[i] = c ? s / c : 0; }
-  const bouts = []; let i = 0;
+  const kept = []; let i = 0;   // supra-lo runs that contain a frame >= hi and are >= minBout
   while (i < F) {
     if (p[i] >= lo) {
       let j = i; while (j < F && p[j] >= lo) j++;
       let hasHi = false; for (let k = i; k < j; k++) if (p[k] >= hi) { hasHi = true; break; }
-      if (hasHi && j - i >= minBout) { let mp = 0; for (let k = i; k < j; k++) mp += p[k]; bouts.push({ s: i, e: j, p: mp / (j - i) }); }
+      if (hasHi && j - i >= minBout) kept.push([i, j]);
       i = j;
     } else i++;
   }
+  const bouts = [];   // bridge gaps shorter than minGap, then attach each bout's mean proba
+  for (const [s, e] of kept) {
+    if (bouts.length && s - bouts[bouts.length - 1].e < minGap) bouts[bouts.length - 1].e = e;
+    else bouts.push({ s, e });
+  }
+  for (const b of bouts) { let mp = 0; for (let k = b.s; k < b.e; k++) mp += p[k]; b.p = mp / (b.e - b.s); }
   return bouts;
 }
 // ---- detection threshold (Ann Kennedy's tunable cut) ------------------------------------------
@@ -2930,7 +2943,7 @@ function onThreshInput() {
 }
 async function onThreshCommit() {
   if (activeBid == null) return;
-  const hi = behThresh(activeBid), lo = Math.max(0.05, hi - 0.2);
+  const hi = behThresh(activeBid), lo = hi;   // lo == hi: bout span = above-threshold region (see recomputeBouts)
   behPP(activeBid).lo = lo;
   logEvent("pred_threshold_set", { behavior_id: activeBid, name: bname(activeBid),
                                    threshold: hi, min_bout: behMinBout(activeBid),

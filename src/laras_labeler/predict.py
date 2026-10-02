@@ -345,7 +345,11 @@ class Predictor:
         min_len = max(1, int(pp["min_bout"]), int(pp.get("min_cand", 0) or 0))   # candidate floor (>= min_bout)
         max_cand = int(pp.get("max_cand", 0) or 0)
         cands = []
-        for s, e in bouts_from_proba(proba, pp["smooth"], pp["hi"], pp["lo"], pp["min_bout"], pp["min_gap"]):
+        # lo == hi: a candidate spans exactly the above-threshold region, so its duration tracks the
+        # detect slider and never extends into frames clearly below it (the old lo = hi - 0.2 tail let
+        # candidates spill well under the line). Keeps the review queue identical to the timeline lane,
+        # which uses the same lo == hi. Brief dips are still bridged by smoothing + min_gap.
+        for s, e in bouts_from_proba(proba, pp["smooth"], pp["hi"], pp["hi"], pp["min_bout"], pp["min_gap"]):
             for us0, ue0 in _unlabeled_subruns(labeled, s, e, min_len):
                 for us, ue in _split_capped(us0, ue0, max_cand):   # long sustained bouts -> <=max_cand review windows
                     mp = float(np.nanmean(proba[us:ue]))
@@ -420,7 +424,7 @@ class Predictor:
             if e <= s:
                 continue
             contra = (1.0 - proba[s:e]) if int(v) == 1 else proba[s:e]   # model's confidence AGAINST your label
-            for cs, ce in bouts_from_proba(contra, pp["smooth"], pp["hi"], pp["lo"], pp["min_bout"], pp["min_gap"]):
+            for cs, ce in bouts_from_proba(contra, pp["smooth"], pp["hi"], pp["hi"], pp["min_bout"], pp["min_gap"]):   # lo == hi: span = above-threshold region (see candidates)
                 a, b = s + cs, s + ce
                 score = float(np.nanmean(contra[cs:ce]))       # how strongly the model disagrees (0..1)
                 cands.append({"start": a, "end": b, "mid": (a + b) // 2, "track": int(track),
