@@ -257,6 +257,8 @@
     <div class="row" id="rvMergeRow" style="margin-top:8px; display:none">
       <button id="rvMerge" title="Bridges the gap so this doesn't stay split into two bouts (m)">⛓ Merge with adjacent bout (m)</button>
     </div>
+    <div class="status" id="rvLeft" style="margin-top:8px; font-variant-numeric:tabular-nums"
+         title="New detections still unlabeled on this clip for this behavior, per animal. The queue is worked until the active animal reads 0."></div>
     <div class="row" style="margin-top:8px">
       <select id="rvReclassify" title="Not this behavior, but IS another one — marks the current behavior Not-happening and the chosen one Happening over this range, then moves on">
         <option value="">↷ mark as other behavior…</option>
@@ -380,6 +382,8 @@
     <input type="number" id="candN" value="10" min="1" max="50" step="1" style="width:52px"
            title="Max candidates to suggest per review, best-ranked first (retrain or reopen the dropdown above to apply a change)">
     <button id="review" disabled>Review candidates</button>
+    <span class="status" id="candLeft" style="color:#8b93a2; font-variant-numeric:tabular-nums"
+          title="New detections still unlabeled on this clip for the selected behavior, per animal, at the current thresholds — what each animal's Review queue still holds however many batches it takes. An animal is done when it reads 0."></span>
     <div class="sep"></div>
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
@@ -858,7 +862,7 @@ function clearStage() {
   predsByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
-  el("review").disabled = true; el("review").textContent = "Review candidates";
+  el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
   cur = 0; scrub.value = 0; scrub.max = 0; counter.textContent = "0 / 0";
   const fi = el("frameInput"); fi.value = ""; fi.max = 0;
@@ -869,6 +873,7 @@ function clearStage() {
 }
 
 async function openVideo(vidId) {
+  renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
   stop();                       // don't carry playback (or its stale wall-clock anchor) across a clip switch
   vid = vidId;
   meta = projMeta.videos.find(v => v.video_id === vidId);
@@ -1834,6 +1839,7 @@ async function syncRange(bid, s, e) {   // reads per-frame value+source+target s
   await api(`/labels/${vid}?behavior=${bid}&track=${activeTrack}&start=${s}&end=${e}`, { method: "DELETE" });
   const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt }));  // state 1/2/3 -> stored 1/0/2
   if (spans.length) await api(`/labels/${vid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spans) });
+  scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
 async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
   clearSel();                                        // any label edit invalidates a highlighted selection
@@ -2965,15 +2971,55 @@ async function onMinBoutChange() {
   busy(`min bout ${n} frames (${(n / (meta?.fps || 30)).toFixed(2)}s) — lane + Review queue updated`);
 }
 
-async function loadCandidates(bid) {
+// Remaining 'new' proposals per animal on this clip x behavior (GET .../remaining/<vid>). The Review
+// queue serves candN at a time, so a batch running out says nothing about the queue; this count is what
+// says an animal is done. Refreshed with every queue load and, debounced, after every label write.
+let remainingSeq = 0, remainingTimer = null, candSeq = 0;
+async function fetchRemaining(bid) {
+  const seq = ++remainingSeq, v = vid;
+  let rem = null;
+  if (bid != null && v) {
+    try { const r = await api(`/behaviors/${bid}/remaining/${v}`); if (r.ok) rem = await r.json(); } catch (e) {}
+  }
+  if (seq === remainingSeq) renderRemaining(rem);       // a newer request (track/behavior/clip switch) wins
+  return rem;
+}
+function scheduleRemaining() {   // one decision is several label writes: count once they have all landed
+  clearTimeout(remainingTimer);
+  remainingTimer = setTimeout(() => fetchRemaining(activeBid), 300);
+}
+function renderRemaining(rem) {   // "left: animal 1: 0 · animal 2: 12 · animal 3: 5", the active animal in bold
+  const ts = rem && rem.tracks ? Object.keys(rem.tracks).map(Number).sort((a, b) => a - b) : [];
+  const html = !ts.length ? "" : "new detections left: " + ts.map(t => {
+    const txt = `animal ${t + 1}: ${rem.tracks[t]}`;
+    return t === activeTrack ? `<b style="color:${rem.tracks[t] ? "#e7eaf1" : "#7fb069"}">${txt}</b>` : txt;
+  }).join(" · ");
+  for (const id of ["candLeft", "rvLeft"]) { const n = el(id); if (n) n.innerHTML = html; }
+}
+const skipKey = (bid, s, e) => `${bid}:${s}:${e}`;
+// `skip` is set only by a mid-review refill: the keys of items skipped in this sitting. It over-asks by
+// that many and drops them, so a stable queue order can't keep serving skipped items ahead of the rest.
+// Returns the server's list (before that filter), or null if the server refused (so a refill can tell a
+// failed load from an empty queue). A load overtaken by a newer one (track/behavior/clip switch) changes
+// nothing, so a slow refill for the old animal can't overwrite the new animal's queue.
+async function loadCandidates(bid, skip = null) {
+  const seq = ++candSeq;
   const n = Math.max(1, Math.min(50, parseInt(el("candN").value, 10) || 10));
-  const r = await api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${n}&mode=${candidateMode}&order=${candidateOrder}`);
-  reviewQueue = r.ok ? await r.json() : []; reviewIdx = 0;
+  const ask = skip ? n + skip.size : n;
+  const [r, rem] = await Promise.all([
+    api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${ask}&mode=${candidateMode}&order=${candidateOrder}`),
+    fetchRemaining(bid)]);
+  const got = r.ok ? await r.json() : [];
+  if (seq !== candSeq) return r.ok ? got : null;
+  reviewQueue = skip ? got.filter(c => !skip.has(skipKey(bid, c.start, c.end))).slice(0, n) : got; reviewIdx = 0;
   logEvent("candidates_load", { behavior_id: bid, name: bname(bid), queue_mode: candidateMode,
-                                order: candidateOrder, requested: n, queue_len: reviewQueue.length });
+                                order: candidateOrder, requested: n, queue_len: reviewQueue.length,
+                                remaining_total: rem ? rem.total : null, remaining_by_track: rem ? rem.tracks : null,
+                                ...(skip ? { refill: true, skipped_this_sitting: skip.size } : {}) });
   const noun = candidateMode === "mislabel" ? "mislabels" : candidateMode === "dropped" ? "filtered-out" : "candidates";
   el("review").disabled = reviewQueue.length === 0;
   el("review").textContent = reviewQueue.length ? `Review ${noun} (${reviewQueue.length})` : `Review ${noun}`;
+  return r.ok ? got : null;
 }
 function pollJob(jid, onDone) {
   const t = setInterval(async () => {
@@ -3203,6 +3249,7 @@ function updateReviewText() {
 // Review-session counters, so a review_end says what the sitting produced without the rollup having
 // to re-derive it, and every decision carries its own dwell time (candidate shown -> call made).
 let evReviewT0 = 0, evReviewN = {};
+let reviewSkipped = new Set();          // skipKey()s passed over with ⏎ in this sitting (see refillReview)
 function logDecision(kind, extra) {
   const c = reviewCurrent || {}, t = reviewTrim || {};
   evReviewN[kind] = (evReviewN[kind] || 0) + 1;
@@ -3224,7 +3271,7 @@ async function startReview() {
          : "no unlabeled candidates — retrain after labeling more");
     return;
   }
-  evReviewT0 = Date.now(); evReviewN = {};
+  evReviewT0 = Date.now(); evReviewN = {}; reviewSkipped = new Set();
   logEvent("review_start", { behavior_id: activeBid, name: bname(activeBid), queue_mode: candidateMode,
                              order: candidateOrder, queue_len: reviewQueue.length });
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true); showCandidate(0);
@@ -3248,7 +3295,7 @@ function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lan
 }
 function showCandidate(i) {
   reviewIdx = i;
-  if (i >= reviewQueue.length) { closeReview(); busy("reviewed — Train again to refine"); return; }
+  if (i >= reviewQueue.length) { refillReview(); return; }   // the BATCH ran out — the queue may not have
   const c = reviewQueue[i];
   const isDis = c.kind === "disagree";
   reviewCurrent = { bid: activeBid, s: c.start, e: c.end, p: c.mean_proba, mode: isDis ? "disagree" : "new",
@@ -3374,7 +3421,38 @@ async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: 
   await applyPaint(bid, s, e, 2, "candidate");
   advanceReview();
 }
-function nextCandidate() { if (!reviewCurrent) return; logDecision("skip"); advanceReview(); }   // advance without writing (e.g. after painting inside)
+function nextCandidate() {   // advance without writing (e.g. after painting inside); it stays in the queue
+  if (!reviewCurrent) return;
+  logDecision("skip");
+  reviewSkipped.add(skipKey(reviewCurrent.bid, reviewCurrent.s, reviewCurrent.e));
+  advanceReview();
+}
+// The loaded batch is used up, but the queue is per clip x behavior x animal and loads only candN at a
+// time — closing here (as this used to, with "reviewed — Train again") is how whole queues were left
+// unworked. Fetch what is left and carry on; close only when the server has nothing left for this
+// animal, or when everything left was already skipped in this sitting (so ⏎ can't loop forever).
+async function refillReview() {
+  const bid = activeBid, t = activeTrack, v = vid;
+  reviewCurrent = null; reviewTrim = null;               // nothing is under review while it loads: y/n are no-ops
+  el("reviewQ").textContent = "loading the next proposals…"; renderTimeline();
+  let left;
+  try { left = await loadCandidates(bid, reviewSkipped); }
+  catch (e) { left = null; }
+  if (!el("reviewPanel").classList.contains("on") || reviewCurrent) return;   // closed, or undo/bout review took over
+  if (bid !== activeBid || t !== activeTrack || v !== vid) {   // switched animal/behavior/clip while loading
+    closeReview(); busy("review closed — the animal, behavior or clip changed; press Review to continue"); return;
+  }
+  if (left == null) { closeReview(); busy("could not load the next proposals — press Review to continue"); return; }
+  if (reviewQueue.length) { clearReviewUndo(); showCandidate(0); return; }   // undo can't step back into the old batch
+  closeReview();
+  if (left.length) {                                     // only skipped items remain: say so, and leave them queued
+    await loadCandidates(bid);
+    busy(`${left.length} skipped proposal${left.length === 1 ? "" : "s"} still undecided on animal ${t + 1} — press Review to decide ${left.length === 1 ? "it" : "them"}`);
+  } else {
+    busy(candidateMode === "new" ? `No proposals left for animal ${t + 1} on this clip`
+         : `No ${candidateMode === "mislabel" ? "likely mislabels" : "filtered-out bouts"} left for animal ${t + 1} on this clip`);
+  }
+}
 function advanceReview() { if (reviewQueue.length) showCandidate(reviewIdx + 1); else closeReview(); }
 function closeReview() {
   if (evReviewT0) {
@@ -3382,8 +3460,16 @@ function closeReview() {
                              order: candidateOrder, duration_ms: Date.now() - evReviewT0, ...evReviewN });
     evReviewT0 = 0; evReviewN = {};
   }
-  reviewCurrent = null; reviewTrim = null; tlView = null; clearReviewUndo(); el("reviewPanel").classList.remove("on"); setReviewLayout(false); el("reviewQ").textContent = ""; renderTimeline(); }
-function endReview() { closeReview(); busy("reviewed — Train again to refine"); }
+  reviewCurrent = null; reviewTrim = null; tlView = null; reviewSkipped = new Set(); clearReviewUndo(); el("reviewPanel").classList.remove("on"); setReviewLayout(false); el("reviewQ").textContent = ""; renderTimeline(); }
+async function endReview() {   // "Done": say whether this animal's queue is actually finished
+  const t = activeTrack;
+  closeReview();
+  const rem = await fetchRemaining(activeBid), k = rem && rem.tracks ? rem.tracks[t] : null;
+  const what = candidateMode === "new" ? "proposal" : "new detection";   // the counts are new-detection counts
+  busy(k == null ? "review closed"
+       : k ? `review closed — ${k} ${what}${k === 1 ? "" : "s"} still left for animal ${t + 1} on this clip`
+       : `review closed — no ${what}s left for animal ${t + 1} on this clip`);
+}
 // ---- review-level undo: a review action (accept/reject/split/merge/reclassify) is a COMPOUND edit
 // (several applyPaint writes + a queue move); snapshot the review position + the label-undo depth BEFORE
 // it, so one Undo reverts all its writes AND returns to that candidate. ----

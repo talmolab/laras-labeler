@@ -1050,6 +1050,17 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             raise HTTPException(400, f"order must be one of {', '.join(CANDIDATE_ORDERS)}")
         return predictor.candidates(pid, vid, bid, track, n, mode, order)
 
+    @app.get("/api/projects/{pid}/behaviors/{bid}/remaining/{vid}")
+    def get_remaining(pid: str, vid: str, bid: int):
+        """How many 'new' candidates each animal's queue still holds on this clip:
+        {video_id, behavior_id, tracks: {"0": n, ...}, total, mode: "new"}. The review queue serves
+        candN at a time, so an exhausted batch is not an empty queue; this is the number that says
+        whether a clip x behavior x animal is done. Read-only and unlogged, so the GUI can refresh it
+        after every decision."""
+        _behavior(pid, bid)
+        _video(pid, vid)
+        return predictor.remaining(pid, vid, bid)
+
     @app.post("/api/projects/{pid}/behaviors/{bid}/reviewed")
     def set_reviewed(pid: str, bid: int, body: ReviewedBout):
         """Mark (or un-mark) a bout as reviewed-for-mislabels, so it drops out of the mislabel queue

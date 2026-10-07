@@ -252,7 +252,11 @@ class Predictor:
             return None
         arr = np.load(p, mmap_mode="r")                           # (F, T)
         t = int(track)
-        return np.asarray(arr[:, t], dtype="float32") if t < arr.shape[1] else None
+        # A COPY, so the file is unmapped on return: the review counts read every lane after each label
+        # write, and a mapped file cannot be rewritten on Windows while a Predict saves a fresh lane.
+        out = np.array(arr[:, t], dtype="float32", copy=True) if t < arr.shape[1] else None
+        del arr
+        return out
 
     def get_target(self, pid: str, vid: str, bid: int, track: int) -> np.ndarray | None:
         """Per-frame predicted recipient track for one (directed) behavior+subject -> (F,) int16, or
@@ -264,7 +268,9 @@ class Predictor:
             return None
         arr = np.load(p, mmap_mode="r")                           # (F, T) int16
         t = int(track)
-        return np.asarray(arr[:, t], dtype="int16") if t < arr.shape[1] else None
+        out = np.array(arr[:, t], dtype="int16", copy=True) if t < arr.shape[1] else None   # copy: see get_proba
+        del arr
+        return out
 
     @staticmethod
     def _dominant_target(seg: np.ndarray | None) -> int:
@@ -399,6 +405,27 @@ class Predictor:
             return dropped[:n]
 
         return _order_candidates(cands, order, n, (vid, bid, track))
+
+    def n_tracks(self, pid: str, vid: str, bid: int) -> int:
+        """How many animal lanes a behavior's predictions have on one clip (the .npy's second axis);
+        0 when the clip has not been predicted for it."""
+        p = self._path(pid, vid, bid)
+        if not p.exists():
+            return 0
+        arr = np.load(p, mmap_mode="r")                           # reads the header, not the data
+        n = int(arr.shape[1]) if arr.ndim == 2 else 0
+        del arr                                                   # unmap now: Windows can't overwrite a mapped file
+        return n
+
+    def remaining(self, pid: str, vid: str, bid: int) -> dict:
+        """Per-animal count of 'new' review candidates still unlabeled on one clip — exactly what each
+        track's queue would still serve, however many batches it takes. A queue loads candN at a time,
+        so 'the batch ran out' says nothing about the queue; this does. Iterates the prediction lanes
+        (not the tracks that happen to have labels), so an animal never opened still counts. Read-only."""
+        tracks = {str(t): len(self.candidates(pid, vid, bid, t, n=10**9, mode="new"))
+                  for t in range(self.n_tracks(pid, vid, bid))}
+        return {"video_id": vid, "behavior_id": int(bid), "tracks": tracks,
+                "total": sum(tracks.values()), "mode": "new"}
 
     def disagreements(self, pid: str, vid: str, bid: int, track: int, n: int = 12) -> list[dict]:
         """Labeled bouts the model is *confident* you got wrong — the "annotations aren't perfect"
