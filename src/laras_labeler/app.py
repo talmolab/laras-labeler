@@ -702,7 +702,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
     def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
                        ft_smoke: bool = False, ft_configs: str | None = None,
-                       ft_steps: int | None = None, ft_mode: str = "tail"):
+                       ft_steps: int = 8000, ft_mode: str = "tail"):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
@@ -715,14 +715,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         needs all five). `ft_mode` picks what the fine-tune retrains, per run: `tail` (default) the
         per-lab tail + lab embedding + head, the LABTAIL adaptation the paper's fine-tuned heads used;
         `?ft_mode=head` only the linear head (much faster per step); `?ft_mode=embedding` the lab
-        embedding + head. `ft_steps` caps the per-config training steps; omitted, it follows the
-        mode (hidra.FINETUNE_DEFAULT_STEPS: 2500 for tail, as the paper's LABTAIL sweep ran; 8000 for
-        head, where a head-only sweep found F1 plateaus), and `?ft_steps=0` defers to HiDRA's own
-        default. The `ft_*` options are ignored by this project's own model path."""
+        embedding + head. `ft_steps` caps the per-config training steps: default 8000, HiDRA's own
+        default both in finetune.py and in the research trainer's LABTAIL path (whose defaults its
+        docs say reproduce the published runs); `?ft_steps=2000` gives a shorter round on a slow GPU,
+        and `?ft_steps=0` defers to whatever HiDRA's default is. The `ft_*` options are ignored by
+        this project's own model path."""
         _behavior(pid, bid)
         if ft_mode not in hidra.FINETUNE_MODES:
             raise HTTPException(400, f"ft_mode must be one of {', '.join(hidra.FINETUNE_MODES)}")
-        steps = hidra.FINETUNE_DEFAULT_STEPS[ft_mode] if ft_steps is None else (ft_steps or None)
+        steps = ft_steps or None
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 
         beh = next((b for b in store.get(pid).behaviors if b["id"] == bid), {})
