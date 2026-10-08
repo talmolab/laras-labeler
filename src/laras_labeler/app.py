@@ -702,7 +702,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
     def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
                        ft_smoke: bool = False, ft_configs: str | None = None,
-                       ft_steps: int = 8000):
+                       ft_steps: int = 8000, ft_mode: str = "head"):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
@@ -712,11 +712,18 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         `ft_smoke`/`ft_configs` apply only to a HiDRA-bound behavior's fine-tune: `?ft_smoke=true`
         runs HiDRA's short dry run (prepare + a no-checkpoint train) to verify the wiring in minutes,
         and `?ft_configs=15fps_5bp` restricts the real run to a config subset (for testing — Predict
-        needs all five). `ft_steps` caps the per-config training steps: default 8000, where a
-        fine-tuning sweep found F1 plateaus (also HiDRA's own default); `?ft_steps=2000` trades some
-        accuracy for a shorter round on a slow GPU, and `?ft_steps=0` defers to whatever HiDRA's
-        default is. All three are ignored by this project's own model path."""
+        needs all five). `ft_mode` picks what the fine-tune retrains, per run: `head` (default) only
+        the linear head, on cached features -- HiDRA's own default, and fast enough for an
+        annotation round; `?ft_mode=tail` also retrains the per-lab tail + lab embedding (the
+        LABTAIL adaptation: stronger, but every step re-runs the tail, so many times slower);
+        `?ft_mode=embedding` the lab embedding + head. `ft_steps` caps the per-config training
+        steps: default 8000, HiDRA's own default, and where a head-only sweep found F1 plateaus;
+        `?ft_steps=2000` gives a shorter round, and `?ft_steps=0` defers to whatever HiDRA's
+        default is. The `ft_*` options are ignored by this project's own model path."""
         _behavior(pid, bid)
+        if ft_mode not in hidra.FINETUNE_MODES:
+            raise HTTPException(400, f"ft_mode must be one of {', '.join(hidra.FINETUNE_MODES)}")
+        steps = ft_steps or None
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 
         beh = next((b for b in store.get(pid).behaviors if b["id"] == bid), {})
@@ -724,7 +731,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
                 return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                    steps=ft_steps or None)
+                                    steps=steps, mode=ft_mode)
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -871,7 +878,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
                      smoke: bool = False, configs: list[str] | None = None,
-                     steps: int | None = None) -> dict:
+                     steps: int | None = None, mode: str = "head") -> dict:
         """Fine-tune a bound head on this project's reviewed labels, via HiDRA's PyTorch fine-tuner
         (finetune.py prepare/train — the old single-shot LABTAIL CLI is gone).
 
@@ -882,10 +889,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         8000-step default.
 
         The new fine-tuner stages the tracking parquets AND a positives-only bout CSV, then warm-
-        starts the adopted head and adapts it (mode 'tail' by default — the lab tail + embedding +
-        head, the LABTAIL analogue). Every non-bout frame of a staged video is a NEGATIVE, so only
-        videos with reviewed positives for this behavior are staged; the caller must have reviewed
-        them exhaustively (see hidra.export_bouts). The resulting per-config checkpoints are recorded
+        starts the adopted head and adapts it (`mode` 'head' by default — only the linear head;
+        'tail' also adapts the lab tail + embedding, the LABTAIL analogue). The mode is chosen per
+        run, never inherited from the behavior's `finetune_mode`, which only records how the current
+        weights were trained: inheriting it would let one experiment in another mode silently switch
+        every later round of that behavior. Every non-bout frame of a staged video is a NEGATIVE,
+        so only videos with reviewed positives for this behavior are staged; the caller must have
+        reviewed them exhaustively (see hidra.export_bouts). The resulting per-config checkpoints are recorded
         on the behavior as `weights`, so the next Predict loads the adapted head automatically."""
         rt = hidra.runtime()
         if not rt["can_infer"]:
@@ -975,7 +985,6 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                                "head's proposals first, then train")
 
         tag = "".join(c if c.isalnum() else "_" for c in f"{proj.pid}_{bid}_{h['action']}")[:48]
-        mode = h.get("finetune_mode") or "tail"
         label = "smoke test" if smoke else "fine-tuning"
         progress(15, f"{label} {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
         r = hidra.finetune(rt, h, tracking, data_root / "bouts.csv", data_root, tag, ann,

@@ -1051,8 +1051,14 @@ def _train_has_flag(entry: list[str], flag: str) -> bool:
     return flag in _TRAIN_HELP[key]
 
 
+# HiDRA's `finetune.py train --mode` choices: 'head' only the linear head (HiDRA's default; fast, least
+# data); 'tail' also the per-lab LSTM/FF tail + lab embedding (LABTAIL; stronger, far slower per step);
+# 'embedding' the lab embedding + head.
+FINETUNE_MODES = ("head", "tail", "embedding")
+
+
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
-             tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
+             tag: str, counts: dict, mode: str = "head", configs: list[str] | None = None,
              smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
     """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
     ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
@@ -1065,20 +1071,22 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
          config to ``{data_root}/models`` as ``{config}__{tag}.pkl``.
 
     `mode` chooses what is adapted (this is the LABTAIL family):
-      - ``tail`` (default): the per-lab LSTM/FF tail + lab embedding + head projection -- the
-        closest analogue to the old LABTAIL, the strongest adaptation, and the one the user asks for
-        by name. It makes the OTHER labs' heads in the checkpoint unusable, which is why Predict must
-        pass ``--labs {lab}`` (the labeler always infers one head, so this is a non-issue here).
-      - ``head``: only the linear head (leaves every other lab intact; needs the least data).
+      - ``head`` (default): only the linear head. With feature caching each step trains one linear
+        layer on cached features, so it is fast; it needs the least data and leaves every other lab
+        intact. HiDRA's own default.
+      - ``tail``: the per-lab LSTM/FF tail + lab embedding + head projection -- the closest analogue
+        to the old LABTAIL and the strongest adaptation, but every step re-runs the tail, so it is
+        many times slower. It makes the OTHER labs' heads in the checkpoint unusable, which is why
+        Predict must pass ``--labs {lab}`` (the labeler always infers one head, so this is a
+        non-issue here).
       - ``embedding``: the lab embedding + head.
 
     Predict averages all five config checkpoints, so `train` writes all five by default; pass a
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
     ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
 
-    `steps` caps the per-config training steps (HiDRA's default is 8000). A fine-tuning sweep found
-    F1 plateaus around 8000 steps, so the labeler's Train passes 8000 by default; a smaller value
-    shortens a round on a slow GPU at some cost in accuracy. Pass ``None`` to use HiDRA's own
+    `steps` caps the per-config training steps. The labeler's Train passes 8000 by default: HiDRA's
+    own default, and where a head-only sweep found F1 plateaus. Pass ``None`` to use HiDRA's own
     default. Unlike stopping the run by hand mid config (which leaves no checkpoint), a smaller
     `steps` still writes a full checkpoint per config.
 
