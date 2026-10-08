@@ -1051,6 +1051,16 @@ def _train_has_flag(entry: list[str], flag: str) -> bool:
     return flag in _TRAIN_HELP[key]
 
 
+# HiDRA's `finetune.py train --mode` choices: 'tail' retrains the per-lab LSTM/FF tail + lab embedding +
+# head (LABTAIL, what the paper's fine-tuned heads used); 'head' only the linear head (fast, least data);
+# 'embedding' the lab embedding + head.
+FINETUNE_MODES = ("tail", "head", "embedding")
+# Per-config steps when a Train does not say. tail/embedding: 2500, the FT_STEPS the paper's LABTAIL
+# budget sweep ran (hidra-apply train/sweep.py). head: 8000, where a head-only sweep found F1 plateaus
+# (also HiDRA's own default). A step count tuned for one mode is not a plateau for another.
+FINETUNE_DEFAULT_STEPS = {"tail": 2500, "embedding": 2500, "head": 8000}
+
+
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "tail", configs: list[str] | None = None,
              smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
@@ -1076,10 +1086,9 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
     ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
 
-    `steps` caps the per-config training steps (HiDRA's default is 8000). A fine-tuning sweep found
-    F1 plateaus around 8000 steps, so the labeler's Train passes 8000 by default; a smaller value
-    shortens a round on a slow GPU at some cost in accuracy. Pass ``None`` to use HiDRA's own
-    default. Unlike stopping the run by hand mid config (which leaves no checkpoint), a smaller
+    `steps` caps the per-config training steps (HiDRA's default is 8000). The labeler's Train picks
+    it per mode (FINETUNE_DEFAULT_STEPS: 2500 for tail, as the paper's LABTAIL sweep ran; 8000 for
+    head, where a head-only sweep found F1 plateaus). Pass ``None`` to use HiDRA's own default. Unlike stopping the run by hand mid config (which leaves no checkpoint), a smaller
     `steps` still writes a full checkpoint per config.
 
     `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
