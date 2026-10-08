@@ -702,7 +702,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
     def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
                        ft_smoke: bool = False, ft_configs: str | None = None,
-                       ft_steps: int = 2000):
+                       ft_steps: int = 8000):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
@@ -712,9 +712,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         `ft_smoke`/`ft_configs` apply only to a HiDRA-bound behavior's fine-tune: `?ft_smoke=true`
         runs HiDRA's short dry run (prepare + a no-checkpoint train) to verify the wiring in minutes,
         and `?ft_configs=15fps_5bp` restricts the real run to a config subset (for testing — Predict
-        needs all five). `ft_steps` caps the per-config training steps (default 2000, where F1
-        plateaus in practice; `?ft_steps=0` uses HiDRA's own 8000-step default). All three are
-        ignored by this project's own model path."""
+        needs all five). `ft_steps` caps the per-config training steps: default 8000, where a
+        fine-tuning sweep found F1 plateaus (also HiDRA's own default); `?ft_steps=2000` trades some
+        accuracy for a shorter round on a slow GPU, and `?ft_steps=0` defers to whatever HiDRA's
+        default is. All three are ignored by this project's own model path."""
         _behavior(pid, bid)
         scope = None if predict_videos is None else [s for s in (x.strip() for x in predict_videos.split(",")) if s]
 

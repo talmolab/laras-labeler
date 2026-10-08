@@ -1076,10 +1076,11 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     subset in `configs` only to prove the wiring cheaply. The returned `weights` is the
     ``{config}``-templated path predict.py (and `infer(..., weights=...)`) loads.
 
-    `steps` caps the per-config training steps (HiDRA's default is 8000). F1 typically plateaus
-    well before that (~2000 in practice), so the labeler defaults this to a small value to keep each
-    HITL round fast; pass ``None`` to use HiDRA's own default. Unlike stopping the run by hand mid
-    config (which leaves no checkpoint), a smaller `steps` still writes a full checkpoint per config.
+    `steps` caps the per-config training steps (HiDRA's default is 8000). A fine-tuning sweep found
+    F1 plateaus around 8000 steps, so the labeler's Train passes 8000 by default; a smaller value
+    shortens a round on a slow GPU at some cost in accuracy. Pass ``None`` to use HiDRA's own
+    default. Unlike stopping the run by hand mid config (which leaves no checkpoint), a smaller
+    `steps` still writes a full checkpoint per config.
 
     `smoke` runs HiDRA's own short dry run: it does the full `prepare` and a ~600-step `train`
     that writes NO checkpoint, only proving the data + environment are wired up end to end. Use it
