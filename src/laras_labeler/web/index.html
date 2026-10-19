@@ -675,7 +675,8 @@ const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metrics
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
 let poses = null, poseShape = null;
 let behaviors = [], activeBid = null, mode = "pos";
-let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
+let labelState = new Map(), predsByBeh = new Map(), predInfoByBeh = new Map(),   // predInfoByBeh: which model made each lane (server X-Pred-Model)
+    sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
 const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
 let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
@@ -897,7 +898,7 @@ function clearStage() {
   if (videoBackend) { try { videoBackend.close(); } catch (e) {} videoBackend = null; }
   frameOrder = null; pfStart = 0; pfEnd = -1;
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
-  predsByBeh = new Map(); predictedBouts = new Map();
+  predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
@@ -936,7 +937,7 @@ async function openVideo(vidId) {
   metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${meta.fps.toFixed(1)} fps · `
     + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
   await loadVideoBackend();
-  predsByBeh = new Map(); predictedBouts = new Map();
+  predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   activeTrack = 0;
   renderTrackBar();
   renderClipBar();
@@ -1678,6 +1679,8 @@ function renderTimeline() {
     }
     // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
     tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
+    const tag = predTag(b.id);                                   // which model drew this trace (⚠ = a newer one isn't applied here)
+    if (tag) { tctx.fillStyle = tag.stale ? "#ffb347" : "#7f9bbd"; tctx.fillText("· " + tag.text, 11 + tctx.measureText("conf ").width, ya + PRED_H / 2); }
   });
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
@@ -2149,12 +2152,22 @@ function hidraReflect() {
     train.disabled = false;
   }
 
-  el("hidraNote").textContent =
+  const base =
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
     : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
     : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  // What the configuration above says Predict WILL use can differ from what made the trace on screen
+  // (a fine-tune that was not applied yet) — say which one you are looking at, loudly when it's stale.
+  const info = predInfoByBeh.get(activeBid);
+  const shown = !info ? (predsByBeh.has(activeBid) ? "" : " · no predictions on this clip yet")
+    : info.stale ? ` · ⚠ timeline shows ${info.label || "older"} predictions (${hhmm(info.predicted_at)}), ${info.why}`
+        + (info.no_model ? " — press ⚙ Train to fit this project's own model (there is none yet to Predict with)"
+           : /checkpoints are missing/.test(info.why || "") ? "" : " — press ▶ Predict to apply the current model")
+    : ` · timeline shows ${info.label} predictions (${hhmm(info.predicted_at)})`;
+  el("hidraNote").textContent = base + shown;
+  el("hidraNote").style.color = info && info.stale ? "#ffb347" : "";
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
@@ -2217,7 +2230,8 @@ async function hidraSave() {
     el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
     return;
   }
-  hidraReflect();
+  if (vid) { await loadPredictions(activeBid); renderTimeline(); }   // re-judge the on-screen lane against the new binding
+  else hidraReflect();
 }
 
 // The setup row: only reachable when the server answered /status, so HiDRA is present in this
@@ -2957,10 +2971,25 @@ function recomputeBouts(bid) {   // refresh the clickable predicted bouts from c
 }
 async function loadPredictions(bid) {
   const r = await api(`/predict/${vid}?behavior=${bid}&track=${activeTrack}`);
-  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout(); }
-  else { predsByBeh.delete(bid); predictedBouts.delete(bid); }
+  if (r.ok) {
+    let info = null; try { info = JSON.parse(r.headers.get("X-Pred-Model") || "null"); } catch (e) { /* older server */ }
+    if (info) predInfoByBeh.set(bid, info); else predInfoByBeh.delete(bid);
+    const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout();
+  }
+  else { predsByBeh.delete(bid); predInfoByBeh.delete(bid); predictedBouts.delete(bid); }
+  if (bid === activeBid) hidraReflect();   // the note says which model the trace on screen came from
 }
 async function loadAllPredictions() { for (const b of behaviors) await loadPredictions(b.id); }
+// Short tag for a lane's confidence trace: which model drew it, or ⚠ when a newer model exists that
+// has not been applied to this clip (e.g. right after a HiDRA fine-tune). null = nothing to say.
+function predTag(bid) {
+  const i = predInfoByBeh.get(bid);
+  if (!i) return null;
+  if (i.stale) return { text: "⚠ old", stale: true };
+  if (i.engine === "hidra") return { text: /fine-tuned/.test(i.label || "") ? "tuned" : "zero-shot", stale: false };
+  return null;                             // the project's own, current model: plain "conf" as before
+}
+const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
 
 // JS port of the backend bouts_from_proba (smooth -> hi/lo runs -> min-bout filter -> min-gap merge)
 // for the clickable auto lane. Mirrors predict.py exactly — same order (filter THEN merge) and the same
@@ -3133,11 +3162,12 @@ if (el("timerToggle")) { el("timerToggle").onclick = toggleTimer; el("timerReset
 async function train() {
   if (activeBid == null) return;
   const bid = activeBid, bname = (behaviors.find(x => x.id === bid) || {}).name;   // capture the model being trained (activeBid may change during the async job)
+  const vid0 = vid;                                                               // ...and the clip (the user may switch clips during a long fine-tune)
   const t0 = Date.now();                                                          // wall-clock of the train job (feature compute + CV + fit)
   busy("starting…");
   // Scope the post-fit prediction sweep (the fit itself always pools every labeled clip). Sweeping a
   // 17-clip project costs minutes; re-predicting just the clip under review costs seconds.
-  const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid)}`;
+  const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid0)}`;
   logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips" });
   const r = await api(`/behaviors/${bid}/train${scope}`, { method: "POST" });
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
@@ -3175,8 +3205,15 @@ async function train() {
           + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
           + `(this only proves the pipeline; run Train without smoke for the real fit)`);
       } else {
-        busy(`Fine-tuned ${r.action} (${r.lab}, ${r.mode}) on ${r.bouts} reviewed bout`
-          + `${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · press ▶ Predict to apply it`);
+        // The fit is followed by a predict on the "predict:" scope, so say where the new weights now show
+        const ap = r.predict || {}, nOk = (ap.videos || []).length, sk = ap.skipped || [];
+        const here = (ap.videos || []).includes(vid);
+        const applied = here ? `applied to ${nOk === 1 ? "this clip" : `${nOk} clips`} — the timeline now shows the fine-tuned model`
+          : nOk ? `applied to ${nOk} clip${nOk === 1 ? "" : "s"}, but not the one on screen — press ▶ Predict here to see it`
+          : "not applied yet — press ▶ Predict to see it on the timeline";
+        const skipped = sk.length ? ` · ⚠ not applied to ${sk.length} clip${sk.length === 1 ? "" : "s"}: ${sk[0].error}` : "";
+        busy(`✓ Fine-tuned ${r.action} (${r.lab}, ${r.mode}) on ${r.bouts} reviewed bout`
+          + `${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · ${applied}${skipped}`);
       }
     } else if (r) {                            // make it explicit that ALL tracks & clips were pooled, not just the active one
       const tks = (r.tracks || []).map(t => `t${t}:${(r.pos_by_track || {})[t] || 0}+`).join(" ");
