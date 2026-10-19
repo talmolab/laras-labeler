@@ -1501,33 +1501,37 @@ function runsOf(arr, s = 0, e = arr.length) {
 }
 
 const ROWH = () => MANUAL_H + LANE_GAP + PRED_H + ROW_GAP;
-// Composite lane: every behavior in one strip under the ruler — your Happening labels on top, the
-// model's detected bouts below, one thin band per behavior in its own color so co-occurring behaviors
-// stay visible. Display-only (a press there scrubs, like the ruler). Hidden with fewer than 2 behaviors.
-const COMP_HALF = () => Math.max(20, Math.min(48, behaviors.length * 6));   // ≥ ~5px band per behavior, capped
-const COMP_H = () => behaviors.length >= 2 ? 2 * COMP_HALF() + LANE_GAP + ROW_GAP : 0;
+// Composite lane: every behavior's Happening labels in ONE row under the ruler, drawn like a manual
+// lane but in each behavior's own color. Where behaviors overlap, the row is split into one stripe per
+// behavior for that stretch so neither hides the other. Display-only (a press there scrubs, like the
+// ruler). Hidden with fewer than 2 behaviors.
+const COMP_H = () => behaviors.length >= 2 ? MANUAL_H + ROW_GAP : 0;
 const LANES_Y = () => RULER + COMP_H();   // top of the first per-behavior lane
 function drawComposite(W) {
   if (!COMP_H()) return;
-  const half = COMP_HALF(), bh = half / behaviors.length;
-  const rows = [["labels", RULER + 2], ["detected", RULER + 2 + half + LANE_GAP]];
-  for (const [name, y] of rows) {
-    tctx.fillStyle = "#141922"; rRect(tctx, TL_GUT, y, W - TL_GUT, half, 4); tctx.fill();
-    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = "#6b7c93"; tctx.textAlign = "left";
-    tctx.fillText(name === "labels" ? "all · labels" : "all · detected", 11, y + half / 2);
+  const ym = RULER, F = meta.n_frames;
+  tctx.fillStyle = "#141922"; rRect(tctx, TL_GUT, ym, W - TL_GUT, MANUAL_H, 6); tctx.fill();
+  tctx.font = "600 13px system-ui"; tctx.fillStyle = "#ccd3de"; tctx.textAlign = "left";
+  tctx.fillText("all behaviors", 11, ym + MANUAL_H / 2);
+  // stable behavior order (not laneList), so stripes don't reshuffle when the active behavior changes
+  const arrs = behaviors.map(b => labelState.get(b.id));
+  const maskAt = f => {                                          // which behaviors are Happening at f, as a bitmask
+    let m = 0;                                                   // (2 ** k, not 1 << k: exact past 31 behaviors)
+    for (let k = 0; k < arrs.length; k++) if (arrs[k] && arrs[k][f] === 1) m += 2 ** k;
+    return m;
+  };
+  let s = 0, mask = maskAt(0);
+  for (let f = 1; f <= F; f++) {                                 // runs of a constant set of Happening behaviors
+    const nxt = f < F ? maskAt(f) : -1;
+    if (nxt === mask) continue;
+    if (mask) {
+      const on = behaviors.filter((_, k) => Math.floor(mask / 2 ** k) % 2);
+      const x0 = xOf(s, W), w = Math.max(1, xOf(f, W) - x0), y0 = ym + 3, h = MANUAL_H - 6;
+      if (on.length === 1) { tctx.fillStyle = on[0].color; rRect(tctx, x0, y0, w, h, 3); tctx.fill(); }
+      else on.forEach((b, j) => { tctx.fillStyle = b.color; tctx.fillRect(x0, y0 + j * h / on.length, w, h / on.length); });
+    }
+    s = f; mask = nxt;
   }
-  behaviors.forEach((b, k) => {   // stable behavior order (not laneList), so bands don't reshuffle on select
-    tctx.fillStyle = b.color;
-    const yl = rows[0][1] + k * bh, yd = rows[1][1] + k * bh, h = Math.max(1, bh - (bh > 3 ? 1 : 0));
-    const arr = labelState.get(b.id);
-    if (arr) for (const [s, e, v] of runsOf(arr)) {
-      if (v !== 1) continue;                                     // Happening only; negatives/unknown would drown it
-      const x0 = xOf(s, W); tctx.fillRect(x0, yl, Math.max(1, xOf(e, W) - x0), h);
-    }
-    for (const bt of (predictedBouts.get(b.id) || [])) {
-      const x0 = xOf(bt.s, W); tctx.fillRect(x0, yd, Math.max(1, xOf(bt.e, W) - x0), h);
-    }
-  });
 }
 function rRect(ctx, x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); ctx.beginPath(); ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); }
 // Timeline lane order: the ACTIVE behavior is floated to the top lane so it stays visible next to the
