@@ -36,6 +36,17 @@
              align-items: center; background: rgba(14,17,23,0.72); backdrop-filter: blur(8px);
              border: 1px solid var(--border-strong); border-radius: 10px; padding: 4px 6px; line-height: 1.2; }
   #zoomCtl button { padding: 2px 9px; font-size: 15px; border-radius: 6px; }
+  #zoomCtl #imgAdjBtn.on { background: #3a3220; border-color: #ffd24a; color: #ffd24a; }   /* an adjustment is active */
+  #imgAdj { position: absolute; top: 52px; right: 10px; z-index: 6; display: grid;
+            grid-template-columns: auto 140px 42px; gap: 6px 8px; align-items: center;
+            background: rgba(14,17,23,0.88); backdrop-filter: blur(8px); border: 1px solid var(--border-strong);
+            border-radius: 10px; padding: 8px 10px; font-size: 12px; color: #c2c9d4; line-height: 1.4; }   /* #stage sets line-height: 0 */
+  #imgAdj[hidden] { display: none; }
+  #imgAdj input[type=range] { width: 100%; min-width: 0; margin: 0; }   /* global ranges have min-width: 200px */
+  #imgAdj span { text-align: right; font-variant-numeric: tabular-nums; color: #b8c0cc; }
+  #imgAdj .imgAdjBtns { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
+  #imgAdj .imgAdjBtns button { padding: 2px 10px; font-size: 12px; }
+  #imgAdj #imgAuto.on { border-color: #ffd24a; color: #ffd24a; }   /* auto levels in effect */
   #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center;
                         font-variant-numeric: tabular-nums; }
   #poseCtl { position: absolute; top: 10px; left: 10px; z-index: 5; background: rgba(14,17,23,0.72);
@@ -233,7 +244,34 @@
       <span id="zoomLabel">1.0×</span>
       <button id="zIn" title="Zoom in (+)">＋</button>
       <button id="zReset" title="Reset zoom (0)">⤢</button>
+      <button id="imgAdjBtn" title="Brightness / contrast of the video (display only — poses, features and labels are unaffected)">☀</button>
     </div>
+    <div id="imgAdj" hidden>
+      <label for="imgBright">Brightness</label>
+      <input type="range" id="imgBright" min="50" max="300" step="5" value="100" title="Double-click to reset">
+      <span id="imgBrightVal">100%</span>
+      <label for="imgContrast">Contrast</label>
+      <input type="range" id="imgContrast" min="50" max="300" step="5" value="100" title="Double-click to reset">
+      <span id="imgContrastVal">100%</span>
+      <label for="imgGamma">Gamma</label>
+      <input type="range" id="imgGamma" min="0.5" max="3" step="0.05" value="1" title="Above 1 lifts the shadows without blowing out the highlights — usually the most useful control for a dark cage. Double-click to reset">
+      <span id="imgGammaVal">1.00</span>
+      <div class="imgAdjBtns">
+        <button id="imgAuto" title="Stretch THIS frame's darkest..brightest range to full black..white (auto levels). Re-press after moving to a differently-lit clip">Auto</button>
+        <button id="imgAdjReset">Reset</button>
+      </div>
+    </div>
+    <!-- levels (auto) then gamma, referenced from #frame's CSS filter only when either is active -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <filter id="imgAdjFilter" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="linear" class="lv" slope="1" intercept="0"/><feFuncG type="linear" class="lv" slope="1" intercept="0"/><feFuncB type="linear" class="lv" slope="1" intercept="0"/>
+        </feComponentTransfer>
+        <feComponentTransfer>
+          <feFuncR type="gamma" class="gm" exponent="1"/><feFuncG type="gamma" class="gm" exponent="1"/><feFuncB type="gamma" class="gm" exponent="1"/>
+        </feComponentTransfer>
+      </filter>
+    </svg>
   </div>
   <aside id="behaviorRail" class="siderail">
     <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div></div>
@@ -875,6 +913,7 @@ function clearStage() {
 async function openVideo(vidId) {
   renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
   stop();                       // don't carry playback (or its stale wall-clock anchor) across a clip switch
+  if (imgLevels) { imgLevels = null; applyImgAdj(); }   // auto levels were measured on the old clip's lighting
   vid = vidId;
   meta = projMeta.videos.find(v => v.video_id === vidId);
   spoutRoi = meta.spout_roi || null;              // per-clip spout ROI (from this clip's meta; falls back to project default)
@@ -1515,23 +1554,21 @@ function drawComposite(W) {
   tctx.fillText("all behaviors", 11, ym + MANUAL_H / 2);
   // stable behavior order (not laneList), so stripes don't reshuffle when the active behavior changes
   const arrs = behaviors.map(b => labelState.get(b.id));
-  const maskAt = f => {                                          // which behaviors are Happening at f, as a bitmask
-    let m = 0;                                                   // (2 ** k, not 1 << k: exact past 31 behaviors)
-    for (let k = 0; k < arrs.length; k++) if (arrs[k] && arrs[k][f] === 1) m += 2 ** k;
-    return m;
-  };
-  let s = 0, mask = maskAt(0);
-  for (let f = 1; f <= F; f++) {                                 // runs of a constant set of Happening behaviors
-    const nxt = f < F ? maskAt(f) : -1;
-    if (nxt === mask) continue;
-    if (mask) {
-      const on = behaviors.filter((_, k) => Math.floor(mask / 2 ** k) % 2);
+  const on = (k, f) => !!arrs[k] && arrs[k][f] === 1;
+  const same = (f, g) => { for (let k = 0; k < arrs.length; k++) if (on(k, f) !== on(k, g)) return false; return true; };
+  tctx.save(); tctx.beginPath(); tctx.rect(TL_GUT, ym, W - TL_GUT, MANUAL_H); tctx.clip();   // zoomed: runs off-view must not paint over the gutter
+  const vS = viewS(), vE = viewE();
+  for (let s = 0, f = 1; f <= F; f++) {                          // runs of a constant set of Happening behaviors
+    if (f < F && same(f, s)) continue;
+    const set = behaviors.filter((_, k) => on(k, s));
+    if (set.length && f > vS && s < vE) {                        // skip empty runs and runs outside the zoom window
       const x0 = xOf(s, W), w = Math.max(1, xOf(f, W) - x0), y0 = ym + 3, h = MANUAL_H - 6;
-      if (on.length === 1) { tctx.fillStyle = on[0].color; rRect(tctx, x0, y0, w, h, 3); tctx.fill(); }
-      else on.forEach((b, j) => { tctx.fillStyle = b.color; tctx.fillRect(x0, y0 + j * h / on.length, w, h / on.length); });
+      if (set.length === 1) { tctx.fillStyle = set[0].color; rRect(tctx, x0, y0, w, h, 3); tctx.fill(); }
+      else set.forEach((b, j) => { tctx.fillStyle = b.color; tctx.fillRect(x0, y0 + j * h / set.length, w, h / set.length); });
     }
-    s = f; mask = nxt;
+    s = f;
   }
+  tctx.restore();
 }
 function rRect(ctx, x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); ctx.beginPath(); ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); }
 // Timeline lane order: the ACTIVE behavior is floated to the top lane so it stays visible next to the
@@ -3928,6 +3965,63 @@ el("showApproaches").onclick = () => toggleApproaches();
 el("zIn").onclick = () => setZoom(zoom * 1.3);
 el("zOut").onclick = () => setZoom(zoom / 1.3);
 el("zReset").onclick = () => setZoom(1);
+// Video display adjustments: brightness / contrast / gamma, plus one-click auto levels. Applied as a CSS
+// filter on the frame canvas only — the pose overlay is a separate canvas, so skeletons keep their
+// colors, and nothing is re-decoded. Display only: features, training and exports never see it.
+// Levels + gamma go through the SVG #imgAdjFilter, referenced only while one of them is active, so the
+// plain brightness/contrast path stays a cheap built-in filter. Brightness/contrast/gamma are remembered
+// per browser; auto levels are not (they belong to the frame they were measured on).
+const IMG_ADJ_KEY = "ll_imgAdj";
+const IMG_ADJ_DEFAULT = { b: 100, c: 100, g: 1 };
+const IMG_ADJ_RANGE = { b: [50, 300], c: [50, 300], g: [0.5, 3] };
+let imgAdj = { ...IMG_ADJ_DEFAULT }, imgLevels = null;   // imgLevels: {lo, hi} in 0..255, from Auto
+try {
+  const saved = JSON.parse(localStorage.getItem(IMG_ADJ_KEY) || "{}");
+  for (const k of ["b", "c", "g"]) if (Number.isFinite(saved[k])) imgAdj[k] = Math.max(IMG_ADJ_RANGE[k][0], Math.min(IMG_ADJ_RANGE[k][1], saved[k]));
+} catch (e) { /* keep defaults */ }
+function applyImgAdj() {
+  const { b, c, g } = imgAdj, svgOn = g !== 1 || !!imgLevels;
+  const isDefault = b === 100 && c === 100 && !svgOn;
+  const slope = imgLevels ? 255 / (imgLevels.hi - imgLevels.lo) : 1, icept = imgLevels ? -imgLevels.lo / (imgLevels.hi - imgLevels.lo) : 0;
+  document.querySelectorAll("#imgAdjFilter .lv").forEach(f => { f.setAttribute("slope", slope); f.setAttribute("intercept", icept); });
+  document.querySelectorAll("#imgAdjFilter .gm").forEach(f => f.setAttribute("exponent", 1 / g));   // C' = C^(1/g): g > 1 lifts shadows
+  const parts = [];
+  if (svgOn) parts.push("url(#imgAdjFilter)");
+  if (b !== 100) parts.push(`brightness(${b}%)`);
+  if (c !== 100) parts.push(`contrast(${c}%)`);
+  frameEl.style.filter = parts.join(" ");
+  el("imgBright").value = b; el("imgContrast").value = c; el("imgGamma").value = g;
+  el("imgBrightVal").textContent = b + "%"; el("imgContrastVal").textContent = c + "%"; el("imgGammaVal").textContent = g.toFixed(2);
+  el("imgAuto").classList.toggle("on", !!imgLevels);
+  el("imgAdjBtn").classList.toggle("on", !isDefault);
+  try { localStorage.setItem(IMG_ADJ_KEY, JSON.stringify(imgAdj)); } catch (e) { /* not persisted */ }
+}
+function autoLevels() {   // 0.5th..99.5th luminance percentile of the frame on screen -> full black..white
+  if (!meta) return;
+  const d = vctx.getImageData(0, 0, frameEl.width, frameEl.height).data, hist = new Uint32Array(256);
+  let n = 0;
+  for (let i = 0; i < d.length; i += 16) { hist[(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0]++; n++; }   // every 4th pixel
+  const pct = q => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= q * n) return v; } return 255; };
+  const lo = pct(0.005), hi = pct(0.995);
+  if (hi - lo < 8) { busy("auto levels: this frame is nearly uniform — nothing to stretch"); return; }
+  imgLevels = { lo, hi }; applyImgAdj();
+  busy(`auto levels: ${lo}–${hi} stretched to full range`);
+}
+el("imgAdjBtn").onclick = () => { el("imgAdj").hidden = !el("imgAdj").hidden; el("imgAdjBtn").blur(); };   // else Space/Enter re-toggle it
+// A click on a slider's <label> would focus the slider without any pointerup/change on it, trapping focus
+// (the shortcuts skip INPUT targets) — keep the captions as captions.
+document.querySelectorAll("#imgAdj label").forEach(l => { l.onmousedown = e => e.preventDefault(); l.onclick = e => e.preventDefault(); });
+for (const [id, k] of [["imgBright", "b"], ["imgContrast", "c"], ["imgGamma", "g"]]) {
+  const s = el(id);
+  s.oninput = () => { imgAdj[k] = +s.value; applyImgAdj(); };
+  // hand focus back, or the keyboard shortcuts stay dead (they skip INPUT targets). pointerup, not just
+  // change: a drag that ends where it began fires no change event.
+  s.onpointerup = s.onchange = () => s.blur();
+  s.ondblclick = () => { imgAdj[k] = IMG_ADJ_DEFAULT[k]; applyImgAdj(); s.blur(); };
+}
+el("imgAuto").onclick = () => { autoLevels(); el("imgAuto").blur(); };
+el("imgAdjReset").onclick = () => { imgAdj = { ...IMG_ADJ_DEFAULT }; imgLevels = null; applyImgAdj(); el("imgAdjReset").blur(); };
+applyImgAdj();
 stageInner.addEventListener("wheel", ev => {
   if (!(ev.ctrlKey || ev.metaKey)) return;         // plain scroll -> page scrolls; Ctrl/⌘+scroll (or pinch) -> zoom
   ev.preventDefault();
