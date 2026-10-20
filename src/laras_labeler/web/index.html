@@ -1694,6 +1694,7 @@ function drawTimelineOverlay(W, H, rh) {
       const y = LANES_Y() + ri * rh, ym = y, t = reviewTrim || reviewCurrent;
       const xc0 = xOf(reviewCurrent.s, W), xc1 = xOf(reviewCurrent.e, W);
       const xt0 = xOf(t.s, W), xt1 = xOf(t.e, W), cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
+      const gxe = xOf(Math.max(t.s, t.e - 1), W);   // end grip sits on the last included frame so it lines up with the playhead
       const isDis = reviewCurrent.mode === "disagree";
       const cAcc = (isDis && reviewCurrent.suggestVal === 0) ? cN : cH;   // disagree fills the range with the model's verdict color
       tctx.fillStyle = `rgba(${cAcc.r},${cAcc.g},${cAcc.b},0.30)`; tctx.fillRect(xt0, ym + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);
@@ -1701,7 +1702,7 @@ function drawTimelineOverlay(W, H, rh) {
       if (!isDis && t.e < reviewCurrent.e) { tctx.fillStyle = `rgba(${cN.r},${cN.g},${cN.b},0.30)`; tctx.fillRect(xt1, ym + 3, xc1 - xt1, MANUAL_H - 6); }
       tctx.strokeStyle = "#ffd24a"; tctx.lineWidth = 1.5;
       tctx.strokeRect(xc0, y + 1, Math.max(2, xc1 - xc0), rh - ROW_GAP - 2);                                    // candidate bracket
-      for (const xx of [xt0, xt1]) {                                       // trim markers + draggable grips
+      for (const xx of [xt0, gxe]) {                                       // trim markers + draggable grips
         tctx.strokeStyle = "#ffd24a"; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#ffd24a"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -1714,9 +1715,10 @@ function drawTimelineOverlay(W, H, rh) {
     const si = laneList().findIndex(b => b.id === selectedSeg.bid);
     if (si >= 0) {
       const y = LANES_Y() + si * rh, xt0 = xOf(segTrim.s, W), xt1 = xOf(segTrim.e, W);
+      const gxe = xOf(Math.max(segTrim.s, segTrim.e - 1), W);   // end grip sits on the last included frame
       const c = selectedSeg.val === 1 ? hexRgb(HAPPENING_COLOR) : selectedSeg.val === 2 ? hexRgb(NOTHAPPENING_COLOR) : { r: 150, g: 150, b: 150 };
       tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.28)`; tctx.fillRect(xt0, y + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);  // edited extent
-      for (const xx of [xt0, xt1]) {                           // grips (white, matching the selection outline)
+      for (const xx of [xt0, gxe]) {                           // grips (white, matching the selection outline)
         tctx.strokeStyle = "#fff"; tctx.lineWidth = 1.5; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#fff"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -3669,7 +3671,7 @@ function trimHandleAt(x, y, W) {   // is (x,y) near a draggable trim-edge grip? 
   if (ri < 0) return null;
   const rh = ROWH(), ry = LANES_Y() + ri * rh;
   if (y < ry - 2 || y > ry + MANUAL_H + LANE_GAP) return null;
-  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(at.trim.e, W)), tol = 9;
+  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(Math.max(at.trim.s, at.trim.e - 1), W)), tol = 9;
   if (ds <= tol && ds <= de) return "s";
   if (de <= tol) return "e";
   return null;
