@@ -1030,7 +1030,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             ppc, _ = _effective_ppc(proj, entry)
             if ppc is None:
                 raise RuntimeError(_no_scale_message(entry, vid))
-            stem = Path(str(entry.get("video_path") or vid)).stem or vid
+            stem = hidra.staged_stem(vid, entry.get("video_path"))   # must match export_bouts's `file` column
             hidra.export_tracking(poses, header.node_names, fps, ppc, stem, tracking)
             meta_rows.append((f"{stem}.parquet", fps, ppc))
 
@@ -1507,7 +1507,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             rate = float(body.get("rate", 0.15))
             if not 0 < rate < 1:
                 raise HTTPException(400, "rate must be between 0 and 1")
-            beh["hidra"] = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+            beh["hidra"] = hidra.rebind(beh.get("hidra"), lab, action, collapse, rate)
         proj.save()
         return beh.get("hidra", {})
 
