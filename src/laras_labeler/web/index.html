@@ -3424,8 +3424,32 @@ function populateReclassifySelect() {   // every OTHER behavior, so you can mark
   const sel = el("rvReclassify"); if (!sel || !reviewCurrent) return;
   const others = behaviors.filter(b => b.id !== reviewCurrent.bid);
   sel.innerHTML = '<option value="">↷ mark as other behavior…</option>'
-    + others.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("");
+    + others.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("")
+    + '<option value="__new__">＋ new behavior…</option>';
   sel.value = "";
+}
+// "＋ new behavior…" in the reclassify menu: create the behavior and reclassify this candidate as it,
+// without leaving the review. Deliberately NOT addBehavior()/reloadBehaviors(): those re-select a
+// behavior and reload every label, which would throw away the review queue mid-session.
+async function reclassifyAsNewBehavior() {
+  if (!reviewCurrent) return;
+  const name = (prompt("New behavior name — this candidate will be labeled as it:") || "").trim(); if (!name) return;
+  const same = behaviors.find(b => b.name.trim().toLowerCase() === name.toLowerCase());
+  if (same) {                                       // already exists: use it rather than making a duplicate
+    if (same.id === reviewCurrent.bid) { busy(`"${same.name}" is the behavior under review — use y to accept instead`); return; }
+    busy(`"${same.name}" already exists — marked as it`); return reclassifyCandidate(same.id);
+  }
+  const key = (prompt("Hotkey (single char, optional):") || "").trim().slice(0, 1) || null;
+  const r = await api(`/behaviors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, key }) });
+  if (!r.ok) { alert("Could not add: " + (await r.json()).detail); return; }
+  const b = await r.json();
+  behaviors.push(b);
+  labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames));   // same per-frame state loadLabels builds
+  targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); recomputeBouts(b.id);
+  renderBehaviorBar();
+  logEvent("behavior_add", { behavior_id: b.id, name: b.name, from: "reclassify" });
+  await reclassifyCandidate(b.id);                  // advances the queue, like picking an existing behavior
+  busy(`added "${b.name}" and marked this candidate as it`);
 }
 async function reclassifyCandidate(otherBid) {
   if (!reviewCurrent) return;
@@ -3977,9 +4001,10 @@ el("rvNo").onclick = rejectCandidate;
 el("rvSkip").onclick = nextCandidate;
 el("rvStop").onclick = endReview;
 el("rvReclassify").onchange = e => {
-  const otherBid = parseInt(e.target.value, 10);
-  e.target.value = "";                              // reset immediately so it never looks "stuck" on a choice
-  if (Number.isFinite(otherBid)) reclassifyCandidate(otherBid);
+  const v = e.target.value, otherBid = parseInt(v, 10);
+  e.target.value = ""; e.target.blur();             // reset immediately so it never looks "stuck" on a choice; give keys back (y/n/r)
+  if (v === "__new__") reclassifyAsNewBehavior();
+  else if (Number.isFinite(otherBid)) reclassifyCandidate(otherBid);
 };
 el("rvTrimS").onclick = setTrimStart;
 el("rvTrimE").onclick = setTrimEnd;
