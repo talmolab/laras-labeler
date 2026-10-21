@@ -279,7 +279,7 @@
   <div id="reviewPanel" class="panel review-rail">
     <div id="reviewQ" class="rvq"></div>
     <div class="row" style="margin-top:10px">
-      <button id="rvReplay" title="Replay this bout from the start (r)">↺ Replay (r)</button>
+      <button id="rvReplay" title="Replay this bout as trimmed — from its current start to its current end, i.e. what y would accept (r)">↺ Replay (r)</button>
       <button id="rvTrimS" title="Set the accept-range START to the playhead ([)">◂ Start</button>
       <button id="rvTrimE" title="Set the accept-range END to the playhead (])">End ▸</button>
       <button id="rvSplit" title="This candidate spans more than one bout: split at the playhead — the part up to the playhead is saved as a confirmed bout, and the remainder becomes the next candidate to review (s)">✂ Split at playhead (s)</button>
@@ -3962,11 +3962,13 @@ el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
-function replayCandidate() {   // re-watch the bout under review from its start
+function replayCandidate() {   // re-watch the bout under review — the range as you've trimmed/extended it, i.e. what y would accept
   if (!reviewCurrent) return;
+  const t = reviewTrim || reviewCurrent;
   evCandReplays++;                                  // replays ride along on the decision event
-  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e, n: evCandReplays });
-  playBout(reviewCurrent.s, reviewCurrent.e);
+  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e,
+                                 play_start: t.s, play_end: t.e, n: evCandReplays });
+  playBout(t.s, t.e);
 }
 el("rvReplay").onclick = replayCandidate;
 el("rvYes").onclick = acceptCandidate;
