@@ -154,6 +154,38 @@ def weights_mtime(template: str | None) -> float | None:
     return max((f.stat().st_mtime for f in pat.parent.glob(pat.name)), default=None)
 
 
+def ft_model_key(run_id: str | None) -> str:
+    """Comparison-store key for a fine-tune: its run id (already "ft-<timestamp>"), or "ft-legacy"
+    for one made before fine-tunes were versioned."""
+    if not run_id:
+        return "ft-legacy"
+    return run_id if run_id.startswith("ft-") else f"ft-{run_id}"
+
+
+def model_pred_dir(proj_path: Path, vid: str, bid: int) -> Path:
+    """predictions/<vid>/<bid>.models/ — one RAW per-frame score array per model that has ever
+    predicted this behavior on this clip (zero-shot head, each fine-tune, each native version), kept
+    for the model comparison. Separate from <bid>.npy, the lane the timeline shows, which only ever
+    holds the active model."""
+    return Path(proj_path) / "predictions" / vid / f"{bid}.models"
+
+
+def store_model_pred(proj_path: Path, vid: str, bid: int, model_key: str, raw: np.ndarray, info: dict) -> None:
+    """Save one model's raw (un-rescaled) (F, T) scores + a JSON record next to it. Best effort."""
+    import json, os
+    from datetime import datetime, timezone
+    d = model_pred_dir(proj_path, vid, bid)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f"{model_key}.tmp.npy"
+        np.save(tmp, np.asarray(raw, dtype="float32"))
+        os.replace(tmp, d / f"{model_key}.npy")
+        rec = {**info, "model_key": model_key, "predicted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        (d / f"{model_key}.json").write_text(json.dumps(rec))
+    except OSError:
+        pass
+
+
 def write_pred_meta(npy_path: Path, info: dict) -> None:
     """Sidecar <bid>.meta.json next to a predictions <bid>.npy: which model wrote it. Best effort —
     a missing record only means provenance falls back to file times."""
@@ -225,7 +257,13 @@ class Predictor:
         p = self._path(pid, vid, bid)
         p.parent.mkdir(parents=True, exist_ok=True)
         np.save(p, proba)                                          # (F, T)
-        write_pred_meta(p, {"engine": "project", "version": (self.trainer.model_meta(pid, bid) or {}).get("version")})
+        mm = self.trainer.model_meta(pid, bid) or {}
+        ver = mm.get("version")
+        write_pred_meta(p, {"engine": "project", "version": ver})
+        if ver:                                                    # keep it for the model comparison too
+            store_model_pred(self.store.get(pid).path, vid, bid, f"native-{ver}", proba,
+                             {"engine": "project", "kind": "native", "version": ver,
+                              "trained_videos": list(mm.get("videos_used") or [])})
         return "ok"
 
     def provenance(self, pid: str, vid: str, bid: int) -> dict | None:

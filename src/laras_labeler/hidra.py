@@ -988,6 +988,8 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
     ambiguous = 0
     for v in proj.videos:
         vid = v["video_id"]
+        if v.get("role") == "test":                   # held-out test clip: never trains a model
+            continue
         try:
             df = labels.rows_for_behavior(pid, vid, bid)
         except (KeyError, FileNotFoundError):

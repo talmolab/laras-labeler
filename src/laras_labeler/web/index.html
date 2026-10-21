@@ -50,6 +50,21 @@
   #imgAdj #imgAuto.on { border-color: #ffd24a; color: #ffd24a; }   /* auto levels in effect */
   #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center;
                         font-variant-numeric: tabular-nums; }
+  #modelCompare h4 { margin: 0 0 6px; font-size: 11px; color: #7b8494; text-transform: uppercase; letter-spacing: .5px; }
+  #modelCompare table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #modelCompare th, #modelCompare td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border, #262b33); white-space: nowrap; }
+  #modelCompare th { color: #8b93a2; font-weight: 600; }
+  #modelCompare td.m, #modelCompare th.m { text-align: left; white-space: normal; }
+  #modelCompare .ins { color: #6b7382; font-style: italic; }
+  #modelCompare .cur { color: #9cc3ff; font-weight: 700; }
+  #modelCompare .note { color: #8b93a2; font-size: 11.5px; line-height: 1.45; margin-top: 6px; }
+  #modelCompare .warn { color: #ffb347; }
+  #modelCompare .callout { border-left: 3px solid #6ea8fe; background: rgba(110,168,254,0.08); padding: 7px 10px; border-radius: 4px; font-size: 12px; line-height: 1.45; margin: 6px 0; }
+  #modelCompare .bars { margin: 8px 0 2px; }
+  #modelCompare .bar { display: grid; grid-template-columns: minmax(120px, 34%) 1fr 48px; gap: 8px; align-items: center; font-size: 12px; margin: 3px 0; }
+  #modelCompare .bar .fill { height: 12px; border-radius: 3px; background: #6ea8fe; }
+  #modelCompare .bar .track { background: rgba(255,255,255,0.06); border-radius: 3px; }
+  .chip .testtag { margin-left: 6px; font-size: 10.5px; color: #ffd24a; }
   #trackBadge { position: absolute; left: 10px; bottom: 10px; z-index: 5; display: flex; align-items: center; gap: 7px;
                 background: rgba(14,17,23,0.78); border: 1px solid var(--border-strong); border-radius: 9px;
                 padding: 4px 10px; font: 600 13px system-ui; color: #e6edf5; line-height: 1.3; pointer-events: none; }
@@ -533,6 +548,7 @@
         <button id="statsClose">✕ Close</button>
       </span>
     </div>
+    <div id="modelCompare" style="margin:12px 0 4px"></div>
     <div id="statsBreakdown" style="margin:12px 0 4px"></div>
     <div class="row" style="margin:10px 0 4px; justify-content:space-between; align-items:center">
       <span class="status" style="color:#7b8494; font-size:11px; text-transform:uppercase; letter-spacing:.5px; font-weight:700" title="Observational: each point is a real past training. Lines are split by feature set (a line never joins points from different configs). For a controlled sample-efficiency curve, subsample training size with everything else fixed.">Learning curve — metric vs. labeled (by feature set)</span>
@@ -2527,6 +2543,7 @@ function renderClipBar() {
     chip.title = v.video_id;
     chip.onclick = () => { if (v.video_id !== vid) openVideo(v.video_id); };
     const name = document.createElement("span"); name.textContent = clipShortName(v.video_id); chip.appendChild(name);
+    if (v.role === "test") { const t = document.createElement("span"); t.className = "testtag"; t.textContent = "🧪 test"; t.title = "Held-out test clip: never used to train any model; scored in Stats → Model comparison"; chip.appendChild(t); }
     const x = document.createElement("span"); x.textContent = "✕";
     x.title = "Remove this clip from the project"; x.style.cssText = "margin-left:7px; opacity:.5; font-size:11px";
     x.onmouseenter = () => x.style.opacity = "1"; x.onmouseleave = () => x.style.opacity = ".5";
@@ -2534,6 +2551,26 @@ function renderClipBar() {
     chip.appendChild(x);
     bar.appendChild(chip);
   }
+  const cv = vids.find(v => v.video_id === vid);
+  if (cv) {                                             // hold the open clip out of training, for fair model scores
+    const tb = document.createElement("button");
+    const isTest = cv.role === "test";
+    tb.textContent = isTest ? "🧪 test clip ✓" : "🧪 use as test clip";
+    tb.title = isTest ? "This clip is held out of all training and used to score models fairly. Click to use it for training again."
+      : "Hold this clip out of ALL training (HiDRA fine-tunes and the project model) and use it to score models fairly in Stats → Model comparison. Review it as completely as you can.";
+    tb.onclick = () => setClipRole(cv.video_id, isTest ? null : "test");
+    bar.appendChild(tb);
+  }
+}
+async function setClipRole(vidId, role) {
+  if (role === "test" && !confirm("Use this clip as the TEST clip?\n\nIts labels will no longer be used to train any model (HiDRA fine-tunes or the project model) — "
+      + "they are only used to score models fairly. A model that already trained on this clip will be marked in-sample here until you train it again.")) return;
+  const r = await api(`/videos/${vidId}/role`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+  if (!r.ok) { alert("Could not change the clip: " + ((await r.json()).detail || r.status)); return; }
+  projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
+  renderClipBar();
+  busy(role ? "test clip set — it is held out of training; score models in 📊 Stats" : "clip will be used for training again");
+  if (el("statsPanel").classList.contains("on")) refreshStats();
 }
 async function removeClip(vidId) {
   const label = clipShortName(vidId);
@@ -2649,6 +2686,67 @@ async function refreshStats() {
     if (cd && cb) statsCompare = { history: cd.history || [], meta: cd.meta, name: cb.name, color: cb.color || "#c9a227" };
   }
   renderStats(d.history || [], d.meta);
+  await refreshModelCompare();
+}
+// ---- Model comparison: every model that has predicted this behavior, scored on reviewed frames ----
+const fmt3 = x => x == null ? "—" : Number(x).toFixed(3);
+async function refreshModelCompare() {
+  const box = el("modelCompare"); if (!box || activeBid == null) return;
+  const r = await api(`/behaviors/${activeBid}/compare`);
+  if (!r.ok) { box.innerHTML = ""; return; }
+  renderModelCompare(await r.json());
+}
+function renderModelCompare(d) {
+  const box = el("modelCompare");
+  const bound = !!(behaviors.find(b => b.id === activeBid) || {}).hidra;
+  const models = (d.models || []).filter(m => m.comparable !== false);
+  if (!models.length && !bound) { box.innerHTML = ""; return; }   // nothing to compare for a plain native behavior with no predictions yet
+  const testNames = (d.test_videos || []).map(clipShortName);
+  const cell = (s, inSample) => {
+    if (!s) return `<td>—</td><td>—</td><td>—</td>`;
+    const c = inSample ? ' class="ins"' : "", thin = s.thin ? ` <span class="warn" title="fewer than ${d.min_per_class} positive or negative frames — too few to trust">⚠</span>` : "";
+    return `<td${c}>${fmt3(s.ap)}${thin}</td><td${c}>${fmt3(s.auroc)}</td>`
+      + `<td${c} title="precision ${fmt3(s.precision)} · recall ${fmt3(s.recall)} · ${s.n_pos}+ / ${s.n_neg}− frames">${fmt3(s.best_f1)}</td>`;
+  };
+  const rows = models.map(m => {
+    const sc = m.scores || {}, train = sc.train_out || sc.train_in, inS = !sc.train_out && !!sc.train_in && m.kind !== "zeroshot";
+    const tag = m.kind === "zeroshot" ? "" : (inS ? ' <span class="ins">(in-sample)</span>' : (sc.train_out ? ' <span>(not trained on these)</span>' : ""));
+    const kept = m.kind === "finetune" && m.models_kept === false ? ' <span class="ins" title="checkpoints pruned (only the last 3 fine-tunes are kept); its stored scores remain">· pruned</span>' : "";
+    return `<tr><td class="m">${m.current ? '<span class="cur" title="the model Predict uses now">● </span>' : ""}${esc(m.label)}${kept}</td>`
+      + (sc.test ? cell(sc.test, false).replace(/<\/td>$/, m.test_partial ? ` <span class="warn" title="scored on ${(m.test_clips || []).length} of ${(d.test_videos || []).length} test clips — compute it on the rest for a like-for-like number">◐</span></td>` : "</td>")
+         : (m.test_in_sample || []).length ? `<td colspan="3" class="ins" title="this model trained on the test clip (before it was marked test), so its score there is in-sample — retrain to get a fair score">trained on it</td>` : cell(null, false))
+      + cell(train, inS) + `<td class="m" style="font-size:11px">${tag}</td></tr>`;
+  }).join("");
+  const testScored = models.filter(m => m.scores && m.scores.test && m.scores.test.ap != null);
+  const maxAp = Math.max(0.0001, ...testScored.map(m => m.scores.test.ap));
+  const bars = testScored.length >= 1 ? `<div class="bars">${testScored.map(m =>
+      `<div class="bar"><span>${esc(m.kind === "native" ? m.label.replace("project model · ", "project ") : m.label.split(" · ")[0])}${m.test_partial ? " ◐" : ""}</span><span class="track"><div class="fill" style="width:${(100 * m.scores.test.ap / maxAp).toFixed(1)}%"></div></span><b>${fmt3(m.scores.test.ap)}</b></div>`).join("")}</div>` : "";
+  const cov = Object.entries(d.test_coverage || {}).map(([v, c]) =>
+      `${esc(clipShortName(v))}: ${c.n_pos}+ / ${c.n_neg}− reviewed frames (${(100 * c.labeled_frac).toFixed(1)}% of frame×animal)`).join(" · ");
+  const testInfo = testNames.length
+    ? `<div class="note">Test clip: <b>${testNames.map(esc).join(", ")}</b> — held out of all training. ${cov}</div>`
+    : `<div class="callout"><b>No test clip yet, so there's no fair score.</b> A fine-tune trains on every frame of the clips it used, so scoring it on those clips is in-sample (shown in grey). `
+      + `To compare fairly: open a clip that hasn't been used to train this behavior, click <b>🧪 use as test clip</b> in the clip bar, review it, then come back here.</div>`;
+  const buttons = (d.can_compute || []).map(c => `<button data-model="${esc(c.model)}" class="mcRun">▶ score ${esc(c.label)} on the test clip</button>`).join(" ");
+  box.innerHTML = `<h4>Model comparison — ${esc(bname(activeBid))}</h4>${testInfo}`
+    + (models.length ? `<table><thead><tr><th class="m">model</th><th colspan="3">test clip (fair) — AP · AUROC · best F1</th><th colspan="3">training clips — AP · AUROC · best F1</th><th class="m"></th></tr></thead><tbody>${rows}</tbody></table>`
+       : `<div class="note">No predictions stored for this behavior yet — press ▶ Predict.</div>`)
+    + (bars ? `<div class="note" style="margin-top:10px"><b>AP on the test clip</b>, per model:</div>${bars}` : "")
+    + (buttons ? `<div class="row" style="margin-top:8px; gap:6px; flex-wrap:wrap">${buttons}</div><div class="note">Each runs that model over the test clip only (≈1–2 min); your timeline and review queue are not changed.</div>` : "")
+    + `<div class="note">Scored on reviewed frames only (Happening vs Not-happening; unlabeled and Unknown excluded). AP and AUROC don't depend on a threshold; best F1 uses each model's own best threshold (hover for precision/recall). `
+    + `Reviewed frames aren't a random sample — review visits what a model proposed — so treat small differences with caution, and review the test clip as completely as you can.</div>`;
+  box.querySelectorAll(".mcRun").forEach(b => b.onclick = () => runCompareModel(b.dataset.model, b));
+}
+async function runCompareModel(model, btn) {
+  if (btn) btn.disabled = true;
+  const r = await api(`/behaviors/${activeBid}/compare/run?model=${encodeURIComponent(model)}`, { method: "POST" });
+  if (!r.ok) { busy("could not start: " + ((await r.json()).detail || r.status)); if (btn) btn.disabled = false; return; }
+  const { job_id } = await r.json();
+  pollJob(job_id, async s => {
+    if (s.status === "error") { busy("scoring failed: " + String(s.error || "").slice(0, 300)); if (btn) btn.disabled = false; return; }
+    busy("scored on the test clip — see 📊 Stats → Model comparison");
+    if (el("statsPanel").classList.contains("on")) await refreshModelCompare();
+  });
 }
 function sbar(label, pos, neg) {
   const tot = Math.max(1, pos + neg);
