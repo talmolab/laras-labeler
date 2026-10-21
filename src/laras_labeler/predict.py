@@ -146,6 +146,27 @@ def _order_candidates(cands: list[dict], order: str, n: int, seed_key: tuple) ->
     return sorted(cands, key=by_uncertainty)[:n]
 
 
+def weights_mtime(template: str | None) -> float | None:
+    """Newest modification time across a fine-tune's per-config checkpoints ('...{config}...pkl')."""
+    if not template:
+        return None
+    pat = Path(template.replace("{config}", "*"))
+    return max((f.stat().st_mtime for f in pat.parent.glob(pat.name)), default=None)
+
+
+def write_pred_meta(npy_path: Path, info: dict) -> None:
+    """Sidecar <bid>.meta.json next to a predictions <bid>.npy: which model wrote it. Best effort —
+    a missing record only means provenance falls back to file times."""
+    import json, os
+    dest = npy_path.with_suffix(".meta.json")
+    try:                                   # tmp + replace: a reader never sees a half-written record
+        tmp = dest.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(info))
+        os.replace(tmp, dest)
+    except OSError:
+        pass
+
+
 class Predictor:
     def __init__(self, store, features, trainer, labels) -> None:
         self.store = store
@@ -204,7 +225,90 @@ class Predictor:
         p = self._path(pid, vid, bid)
         p.parent.mkdir(parents=True, exist_ok=True)
         np.save(p, proba)                                          # (F, T)
+        write_pred_meta(p, {"engine": "project", "version": (self.trainer.model_meta(pid, bid) or {}).get("version")})
         return "ok"
+
+    def provenance(self, pid: str, vid: str, bid: int) -> dict | None:
+        """Which model produced the predictions on disk for (vid, bid), and whether they are current.
+
+        {engine, label, predicted_at, stale, why[, finetuned_at, no_model]}. `stale` = what a Predict
+        would give now differs from the trace on disk: a newer fine-tune/retrain that was not applied to
+        this clip, a different HiDRA head or scoring setting, or missing fine-tuned checkpoints. The
+        sidecar <bid>.meta.json says which model wrote the file; files from before it existed (or with
+        an unreadable sidecar) are judged by file time against the current model's time."""
+        import json
+        from datetime import datetime
+        p = self._path(pid, vid, bid)
+        if not p.exists():
+            return None
+        pred_t = p.stat().st_mtime
+        side, rec = p.with_suffix(".meta.json"), None
+        if side.exists():
+            try:
+                rec = json.loads(side.read_text())
+            except (OSError, ValueError):
+                rec = None                                         # half-written/corrupt: fall back to file times
+            if not isinstance(rec, dict):
+                rec = None
+        beh = next((b for b in self.store.get(pid).behaviors if b["id"] == bid), {})
+        h = beh.get("hidra") or {}
+        iso = lambda t: datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        out = {"predicted_at": iso(pred_t), "stale": False, "why": ""}
+
+        def stale(why):
+            out["stale"], out["why"] = True, why
+
+        if h.get("action"):                                        # bound to a HiDRA head
+            weights = h.get("weights")
+            tuned_t = weights_mtime(weights)
+            if tuned_t:
+                out["finetuned_at"] = iso(tuned_t)
+            missing = bool(weights) and not tuned_t               # bound to checkpoints that are gone
+            if rec is not None and rec.get("engine") == "hidra":
+                used = rec.get("weights")                          # what infer actually loaded (None = zero-shot)
+                out["engine"] = "hidra"
+                out["label"] = f"HiDRA {rec.get('action') or h['action']} · {'fine-tuned' if used else 'zero-shot'}"
+                collapse, rate = h.get("collapse", "scene"), float(h.get("rate", 0.15))
+                if (rec.get("lab"), rec.get("action")) != (h.get("lab"), h.get("action")):
+                    stale(f"made by a different HiDRA head ({rec.get('lab')} · {rec.get('action')}) than the one now bound")
+                elif rec.get("collapse", collapse) != collapse or abs(float(rec.get("rate", rate)) - rate) > 1e-9:
+                    stale("made with different scores/review-rate settings than the current ones")
+                elif missing:
+                    stale("your fine-tuned checkpoints are missing, so a Predict would use the zero-shot head — run ⚙ HiDRA fine-tune again")
+                elif weights and (used != weights or (rec.get("weights_mtime") or 0) < tuned_t - 1):
+                    stale("made before your latest fine-tune" if used else "made by the zero-shot head, before your fine-tune")
+                elif not weights and used:
+                    stale("made with fine-tuned weights that are no longer bound")
+            elif rec is not None:                                  # written by the project's own model
+                out["engine"], out["label"] = "project", "your project model"
+                stale("made by this project's own model, before the HiDRA head was bound")
+            else:                                                  # legacy file: judge by time
+                out["engine"] = "hidra"
+                if missing:
+                    out["label"] = f"HiDRA {h['action']}"
+                    stale("your fine-tuned checkpoints are missing, so a Predict would use the zero-shot head — run ⚙ HiDRA fine-tune again")
+                elif weights and pred_t < tuned_t:
+                    out["label"] = f"HiDRA {h['action']}"
+                    stale("made before your fine-tune (most likely by the zero-shot head)")
+                else:
+                    out["label"] = f"HiDRA {h['action']} · {'fine-tuned' if weights else 'zero-shot'}"
+            return out
+
+        meta = self.trainer.model_meta(pid, bid) or {}             # this project's own model
+        out["engine"] = "project"
+        out["label"] = "your project model" + (f" · {meta['version']}" if meta.get("version") else "")
+        if not meta.get("trained_at"):
+            out["no_model"] = True                                 # nothing a Predict could replace this lane with
+        if rec is not None and rec.get("engine") == "hidra":
+            out["label"] = "HiDRA head (no longer bound)"
+            stale("made by a HiDRA head this behavior is no longer bound to")
+        elif meta.get("trained_at"):
+            trained_t = datetime.fromisoformat(meta["trained_at"]).timestamp()
+            if (rec is not None and rec.get("version") and rec["version"] != meta.get("version")) or \
+               (rec is None and pred_t < trained_t - 1):
+                stale("made by an earlier version of the model — the latest Train did not re-predict this clip")
+        return out
+
 
     def predict_behavior(self, pid: str, bid: int, progress=lambda p, m: None,
                          videos: list[str] | None = None) -> dict:

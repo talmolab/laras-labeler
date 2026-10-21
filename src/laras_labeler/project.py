@@ -45,6 +45,33 @@ DEFAULT_FEATURE_CONFIG = {
 # non-blue/red so behavior chips don't collide with Happening (blue) / Not-happening (red) label colors
 _PALETTE = ["#e8a33d", "#7fb069", "#b07cc6", "#5fb0a8", "#d4c256",
             "#c98a5e", "#8fd0c4", "#a0d468", "#c9a0dc", "#b8a88a"]
+# hue bands (degrees) kept free for the Happening blue / Not-happening red when generating past the palette
+_RESERVED_HUES = [(195, 235), (340, 360), (0, 15)]
+
+
+def _generated_colors():
+    """Endless sequence of distinct colors after the palette runs out: golden-angle hue steps at the
+    palette's muted saturation/lightness, skipping the reserved hue bands. Deterministic."""
+    import colorsys
+    i = 0
+    while True:
+        hue = (20 + i * 137.508) % 360
+        # alternate lightness so neighbors in the sequence differ in more than hue
+        light = (0.62, 0.52, 0.72)[(i // 3) % 3]
+        i += 1
+        if any(lo <= hue < hi for lo, hi in _RESERVED_HUES):
+            continue
+        r, g, b = colorsys.hls_to_rgb(hue / 360, light, 0.45)
+        yield "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
+
+
+def pick_color(used) -> str:
+    """First palette color not in `used`, else the first unused generated one. Case-insensitive."""
+    used = {c.lower() for c in used if c}
+    for c in _PALETTE:
+        if c not in used:
+            return c
+    return next(c for c in _generated_colors() if c not in used)
 
 
 def slugify(s: str) -> str:
@@ -60,6 +87,8 @@ class Project:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.manifest: dict = json.loads((path / "project.json").read_text())
+        if self._dedupe_colors():   # projects from before colors were kept unique
+            self.save()
 
     # --- identity ---
     @property
@@ -270,13 +299,30 @@ class Project:
     def _next_behavior_id(self) -> int:
         return max((b["id"] for b in self.behaviors), default=-1) + 1
 
+    def _colors_in_use(self, except_bid: int | None = None) -> set[str]:
+        return {b["color"].lower() for b in self.behaviors if b.get("color") and b["id"] != except_bid}
+
+    def _dedupe_colors(self) -> bool:
+        """Give every behavior after the first holder of a color a fresh one. True if anything changed."""
+        seen: set[str] = set()
+        changed = False
+        for b in self.behaviors:
+            c = (b.get("color") or "").lower()
+            if not c or c in seen:
+                b["color"] = pick_color(seen | self._colors_in_use())
+                changed = True
+            seen.add(b["color"].lower())
+        return changed
+
     def add_behavior(self, name: str, color: str | None = None, key: str | None = None) -> dict:
         if key and any(b.get("key") == key for b in self.behaviors):
             raise ValueError("duplicate hotkey")
+        used = self._colors_in_use()
         b = {
             "id": self._next_behavior_id(),
             "name": name,
-            "color": color or _PALETTE[len(self.behaviors) % len(_PALETTE)],
+            # colors never repeat within a project: a requested color that is taken (e.g. an import) is replaced
+            "color": color if color and color.lower() not in used else pick_color(used),
             "key": key,
         }
         self.behaviors.append(b)
@@ -290,6 +336,9 @@ class Project:
         key = fields.get("key")
         if key and any(x.get("key") == key and x["id"] != bid for x in self.behaviors):
             raise ValueError("duplicate hotkey")
+        color = fields.get("color")
+        if color and color.lower() in self._colors_in_use(except_bid=bid):
+            raise ValueError("color already used by another behavior")
         for k, v in fields.items():
             if v is not None:
                 b[k] = v

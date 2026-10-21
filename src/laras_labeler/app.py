@@ -730,8 +730,31 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
-                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                    steps=steps, mode=ft_mode)
+                # Like the native path: fit, then apply the fresh weights to the clips `predict_videos`
+                # names — otherwise the timeline keeps showing the previous (often zero-shot) head's
+                # lane right after a fine-tune and nothing on screen reflects it. Smoke runs write no
+                # checkpoint, and a subset of configs cannot predict (Predict needs all five).
+                apply = not ft_smoke and not cfgs and scope != []
+                r = _hidra_train(pid, bid, beh, (lambda p, m: progress(int(p * 0.8), m)) if apply else progress,
+                                 smoke=ft_smoke, configs=cfgs, steps=steps, mode=ft_mode)
+                if not apply or not r.get("weights"):
+                    return r
+                proj = store.get(pid)
+                live = next((b for b in proj.behaviors if b["id"] == bid), None)
+                if live is None:                             # deleted while it was fine-tuning
+                    r["predict"] = {"videos": [], "skipped": [], "note": "behavior deleted during fine-tune"}
+                    return r
+                targets = scope if scope is not None else [v["video_id"] for v in proj.videos if v.get("slp_path")]
+                done, skipped = [], []
+                for i, v in enumerate(targets):
+                    lo, span = 80 + int(20 * i / len(targets)), max(1, int(20 / len(targets)))
+                    try:
+                        _hidra_predict(pid, v, [live], lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), f"applying fine-tune: {m}"))
+                        done.append(v)
+                    except Exception as e:                   # never fail a finished fine-tune over the apply step
+                        skipped.append({"video_id": v, "error": str(e)[:300]})
+                r["predict"] = {"videos": done, "skipped": skipped}
+                return r
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -857,6 +880,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             dest = proj.path / "predictions" / vid / f"{b['id']}.npy"
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.save(dest, lanes)
+            # record WHICH weights made this lane, so the GUI can say zero-shot vs fine-tuned and flag it
+            # stale after a later fine-tune (see Predictor.provenance)
+            # Record what infer actually LOADED: with the checkpoints gone it falls back to the zero-shot
+            # head, so a bound template with no files is recorded as None, not as "fine-tuned".
+            from .predict import weights_mtime, write_pred_meta
+            wm = weights_mtime(h.get("weights"))
+            write_pred_meta(dest, {"engine": "hidra", "lab": h["lab"], "action": h["action"],
+                                   "collapse": h.get("collapse", "scene"), "rate": h.get("rate", 0.15),
+                                   "weights": h.get("weights") if wm else None, "weights_mtime": wm})
             # DIRECTED head: also save WHO each subject was pointed at, parallel to the lanes, so the
             # review queue can propose an actor->target pair (Stage 2). The lane collapses over targets;
             # this keeps the argmax recipient. Non-directed heads write no target file (candidates plain).
@@ -1048,8 +1080,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if proba is None:
             raise HTTPException(404, "no predictions")
         blob = proba.astype("<f4").tobytes()
+        try:
+            prov = predictor.provenance(pid, vid, behavior) or {}
+        except Exception:                                   # a label about the lane must never block the lane
+            prov = {}
         return Response(content=blob, media_type="application/octet-stream",
-                        headers={"X-Shape": str(len(proba)), "Cache-Control": "no-cache"})
+                        headers={"X-Shape": str(len(proba)), "Cache-Control": "no-cache",
+                                 "X-Pred-Model": json.dumps(prov)})   # ASCII-safe: json.dumps escapes non-ASCII
 
     @app.get("/api/projects/{pid}/behaviors/{bid}/candidates/{vid}")
     def get_candidates(pid: str, vid: str, bid: int, track: int = 0, n: int = 12, mode: str = "new",
