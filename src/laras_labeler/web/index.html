@@ -49,6 +49,12 @@
   #imgAdj #imgAuto.on { border-color: #ffd24a; color: #ffd24a; }   /* auto levels in effect */
   #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center;
                         font-variant-numeric: tabular-nums; }
+  #trackBadge { position: absolute; left: 10px; bottom: 10px; z-index: 5; display: flex; align-items: center; gap: 7px;
+                background: rgba(14,17,23,0.78); border: 1px solid var(--border-strong); border-radius: 9px;
+                padding: 4px 10px; font: 600 13px system-ui; color: #e6edf5; line-height: 1.3; pointer-events: none; }
+  #trackBadge[hidden] { display: none; }
+  #trackBadge .sw { width: 11px; height: 11px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0,0,0,0.6); }
+  #trackBadge .nt { color: #ffb347; font-weight: 500; }
   #poseCtl { position: absolute; top: 10px; left: 10px; z-index: 5; background: rgba(14,17,23,0.72);
              backdrop-filter: blur(8px); border: 1px solid var(--border-strong); border-radius: 10px; padding: 5px 10px; }
   #poseCtl label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #c2c9d4;
@@ -227,6 +233,7 @@
   </aside>
   <div id="stage">
     <div id="stageInner"><canvas id="frame"></canvas><canvas id="overlay"></canvas></div>
+    <div id="trackBadge" hidden title="The animal you are labeling / reviewing. Switch with the track chips or number keys."></div>
     <div id="poseCtl"><label><input type="checkbox" id="showPoses" checked> Poses</label>
       <span id="spoutCtl">
         <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features. Right-click the video to clear.">◎ Set spout</button>
@@ -1243,6 +1250,7 @@ function drawPose() {
   drawSpoutRoi();                                       // spout ROI polygon (committed + in-progress)
   drawCageRoi();                                        // cage-boundary ROI polygon (committed + in-progress)
   drawApproaches();                                     // confirmed-positive nose approach paths (toggle)
+  updateTrackBadge();                                   // "track N" badge on the video, both pose modes
   if (!poses) return;
   if (!showPoses) { drawIdentityMarkers(); return; }    // poses hidden -> keep a minimal per-mouse identity marker so the mice stay distinguishable
   const [F, T, N, C] = poseShape;
@@ -1286,26 +1294,75 @@ function drawIdentityMarkers() {
   const [F, T, N, C] = poseShape;
   if (cur >= F) return;
   const base = cur * T * N * C;
-  octx.globalAlpha = 1; octx.textAlign = "center"; octx.textBaseline = "middle";
-  for (let t = 0; t < T; t++) {
+  octx.save();
+  octx.textAlign = "center"; octx.textBaseline = "middle";
+  // others first (small, faded numbered dot), the active track last so it's never covered
+  const order = [...Array(T).keys()].sort((a, b) => (a === activeTrack ? 1 : 0) - (b === activeTrack ? 1 : 0));
+  for (const t of order) {
     const o = base + t * N * C;
-    let sx = 0, sy = 0, n = 0;
+    let sx = 0, sy = 0, n = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (let k = 0; k < N; k++) {
       const x = poses[o + k * C], y = poses[o + k * C + 1];
       if (Number.isNaN(x)) continue;
       sx += x; sy += y; n++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
     if (!n) continue;                                   // this mouse isn't tracked on this frame
-    const cx = sx / n, cy = sy / n, color = TRACK_COLORS[t % TRACK_COLORS.length];
-    const active = (t === activeTrack), r = active ? 13 : 10;
-    octx.beginPath(); octx.arc(cx, cy, r, 0, Math.PI * 2);
-    octx.fillStyle = color; octx.fill();
-    octx.lineWidth = active ? 3 : 2; octx.strokeStyle = "rgba(0,0,0,0.65)"; octx.stroke();
-    octx.font = `bold ${active ? 15 : 12}px system-ui`;   // 1-based track number (matches the chips and number keys), white with dark outline (legible on any disc color)
-    octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t + 1), cx, cy + 0.5);
-    octx.fillStyle = "#fff"; octx.fillText(String(t + 1), cx, cy + 0.5);
+    const color = TRACK_COLORS[t % TRACK_COLORS.length];
+    if (t !== activeTrack) {                            // small, faded, numbered dot — identifiable, not attention-grabbing
+      const cx = sx / n, cy = sy / n;
+      octx.globalAlpha = 0.6;
+      octx.beginPath(); octx.arc(cx, cy, 8, 0, Math.PI * 2); octx.fillStyle = color; octx.fill();
+      octx.lineWidth = 1.5; octx.strokeStyle = "rgba(0,0,0,0.6)"; octx.stroke();
+      octx.globalAlpha = 0.85; octx.font = "bold 11px system-ui";
+      octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t + 1), cx, cy + 0.5);
+      octx.fillStyle = "#fff"; octx.fillText(String(t + 1), cx, cy + 0.5);
+      continue;
+    }
+    // ACTIVE track: corner brackets around the animal (nothing over its body, so posture stays visible)
+    const pad = 14, minHalf = 22;
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const hw = Math.max((x1 - x0) / 2 + pad, minHalf), hh = Math.max((y1 - y0) / 2 + pad, minHalf);
+    const L = mx - hw, R = mx + hw, Tp = my - hh, Bt = my + hh, arm = Math.min(16, hw * 0.6, hh * 0.6);
+    const brackets = () => {
+      octx.beginPath();
+      octx.moveTo(L, Tp + arm); octx.lineTo(L, Tp); octx.lineTo(L + arm, Tp);
+      octx.moveTo(R - arm, Tp); octx.lineTo(R, Tp); octx.lineTo(R, Tp + arm);
+      octx.moveTo(R, Bt - arm); octx.lineTo(R, Bt); octx.lineTo(R - arm, Bt);
+      octx.moveTo(L + arm, Bt); octx.lineTo(L, Bt); octx.lineTo(L, Bt - arm);
+      octx.stroke();
+    };
+    octx.globalAlpha = 1; octx.lineCap = "round";
+    octx.lineWidth = 6; octx.strokeStyle = "rgba(0,0,0,0.55)"; brackets();   // dark under-stroke: legible on light or dark cages
+    octx.lineWidth = 3; octx.strokeStyle = color; brackets();
+    octx.font = "bold 18px system-ui"; octx.textBaseline = "bottom";
+    const ly = Math.max(20, Tp - 6);
+    octx.lineWidth = 4; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(`track ${t + 1}`, mx, ly);
+    octx.fillStyle = color; octx.fillText(`track ${t + 1}`, mx, ly);
+    octx.textBaseline = "middle";
   }
-  octx.textAlign = "left"; octx.textBaseline = "alphabetic";
+  octx.restore();
+}
+// Fixed badge on the video: which track you're labeling/reviewing, and whether it is tracked on this
+// frame — so the answer never depends on spotting a marker. Only touches the DOM when the text changes.
+let trackBadgeKey = "";
+function updateTrackBadge() {
+  const b = el("trackBadge"); if (!b) return;
+  let tracked = null;
+  if (poses && poseShape) {
+    const [F, T, N, C] = poseShape;
+    if (cur < F && activeTrack < T) {
+      const o = cur * T * N * C + activeTrack * N * C;
+      tracked = false; for (let k = 0; k < N; k++) if (!Number.isNaN(poses[o + k * C])) { tracked = true; break; }
+    }
+  }
+  const key = `${activeTrack}|${tracked}`;
+  if (key === trackBadgeKey) return;
+  trackBadgeKey = key;
+  b.hidden = !poses;
+  const color = TRACK_COLORS[activeTrack % TRACK_COLORS.length];
+  b.innerHTML = `<span class="sw" style="background:${color}"></span>track ${activeTrack + 1}`
+    + (tracked === false ? ` <span class="nt">· not tracked on this frame</span>` : "");
 }
 
 // WORKAROUND for sleap-io.js@0.4.1: its MediaBunny backend converts each VideoSample via
