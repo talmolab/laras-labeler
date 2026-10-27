@@ -127,19 +127,20 @@
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
   main.reviewing #stageRow { gap: 16px; align-items: stretch; order: -5; margin-top: 12px; }
   main.reviewing #stage { flex: 1 1 auto; margin: 0; align-self: flex-start; }
-  main.reviewing #reviewPanel.review-rail {
+  main.reviewing #reviewPanel.review-rail, main.reviewing #browsePanel.review-rail {
     flex: 0 0 clamp(300px, 30%, 380px); margin: 0; max-height: 58vh; overflow: auto;
     border-color: #3a4a66; box-shadow: 0 0 0 1px rgba(110,168,254,.14), var(--shadow); }
   main.reviewing #playbar { order: -4; }
   main.reviewing #overviewWrap { order: -3; }
   main.reviewing #timeline { order: -2; }               /* pull the lanes up directly under the video */
-  main.reviewing #reviewPanel .rvq { font-size: 14px; }
+  main.reviewing #reviewPanel .rvq, main.reviewing #browsePanel .rvq { font-size: 14px; }
+  main.browsing [data-browse-lock] { opacity: .4; }      /* controls locked while browsing detections */
   @media (max-width: 900px) {                            /* narrow: stack rails above/below the video */
     #stageRow { flex-wrap: wrap; }
     #trackRail, #behaviorRail { flex-basis: 100%; }
     .railcard .row { flex-direction: row; flex-wrap: wrap; }
     main.reviewing #stageRow { flex-direction: column; }
-    main.reviewing #reviewPanel.review-rail { flex-basis: auto; max-height: none; }
+    main.reviewing #reviewPanel.review-rail, main.reviewing #browsePanel.review-rail { flex-basis: auto; max-height: none; }
   }
   /* collapsible help / "direction" boxes */
   .help-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -265,6 +266,19 @@
       </select>
     </div>
   </div>
+  <!-- Browse detections: watch the model's bouts on this clip one by one. Read only. There is no
+       accept, reject or trim here, so nothing in this panel writes labels or feeds training. -->
+  <div id="browsePanel" class="panel review-rail">
+    <div id="browseQ" class="rvq"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="brPrev" title="Previous bout (Shift+⏎)">◀ Prev</button>
+      <button id="brReplay" title="Replay this bout from the start (r)">↺ Replay (r)</button>
+      <button id="brNext" title="Next bout (⏎)">Next ▶ (⏎)</button>
+      <div class="sep"></div>
+      <button id="brStop" title="Stop browsing (Esc)">Done</button>
+    </div>
+    <div class="status" id="brProgress" style="margin-top:8px"></div>
+  </div>
   </div><!-- /stageRow -->
 
   <div class="row" id="playbar">
@@ -310,6 +324,10 @@
     <!-- ③ Train -->
     <span class="stg">③ Train</span>
     <button id="train" class="primary">⚙ Train</button>
+    <label class="status" style="display:inline-flex; align-items:center; gap:4px"
+           title="Keep THIS clip out of every training run, for example a test video. Its labels stay. You can still Predict and review it. HiDRA fine-tune and the project's own Train both skip it. Each fine-tune's manifest.json lists it under held_out_clips.">
+      <input type="checkbox" id="holdOutClip"> hold this clip out of training
+    </label>
     <select id="featSet" title="Which features this behavior's model is trained on. A lean set can beat the full one (e.g. drinking does better on spout-only — pose/social features overfit). Retrain to apply.">
       <option value="all">All features</option>
       <option value="spout">Spout only</option>
@@ -345,11 +363,17 @@
       <label class="status" for="hidraRate">review rate:</label>
       <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
              title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
+      <label class="status" for="hidraTrainOn">train on:</label>
+      <select id="hidraTrainOn" title="Which frames the next ⚙ HiDRA fine-tune learns from.&#10;Every frame: anything you did not mark yes counts as NO, including time outside the social window and real approaches you never saw.&#10;Inside the social window: the same, but frames outside each clip's social window are left out.&#10;Reviewed frames only: only the yes and no answers you gave. Every other frame counts as neither.&#10;The last two need the HiDRA reviewed-frames patch (see lab_scripts/README.md).">
+        <option value="all">every frame</option>
+        <option value="window">inside social window</option>
+        <option value="reviewed">reviewed frames only</option>
+      </select>
       <label class="status" for="hidraFps">fps:</label>
       <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
              title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
       <label class="status" for="hidraPpc">px/cm:</label>
-      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
+      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:88px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
     </span>
@@ -384,6 +408,24 @@
     <button id="review" disabled>Review candidates</button>
     <span class="status" id="candLeft" style="color:#8b93a2; font-variant-numeric:tabular-nums"
           title="New detections still unlabeled on this clip for the selected behavior, per animal, at the current thresholds — what each animal's Review queue still holds however many batches it takes. An animal is done when it reads 0."></span>
+    <!-- Browse detections: look through what the model found on this clip and track without changing
+         anything. Uses the detect slider and min bout above. Meant for held-out test clips. -->
+    <select id="browseWhich" title="Which bouts to step through. 'Hit' means the detection overlaps a frame you labeled Happening. 'No label' means it overlaps none (a false alarm if this clip is fully labeled). 'Missed' steps through YOUR Happening bouts that no detection touches.">
+      <option value="all">all detections</option>
+      <option value="hit">detections on your labels</option>
+      <option value="nolabel">detections with no label</option>
+      <option value="missed">your bouts it missed</option>
+    </select>
+    <select id="browseOrder" title="Order to step through them. Random gives a fair sample if you only watch a few.">
+      <option value="time">order: time</option>
+      <option value="high">order: highest score</option>
+      <option value="low">order: lowest score</option>
+      <option value="random">order: random</option>
+    </select>
+    <select id="browseLabels" title="Labels to compare the detections with. Another project is listed only if it holds the same clip (same name, length, frame size, fps and social window). Its labels are only read, never changed. Use this for a held-out clip whose hand labels live in a separate project.">
+      <option value="">labels: this project</option>
+    </select>
+    <button id="browseBtn" title="Step through the model's detected bouts on this clip and track (inside the social window), read only. No accept, reject or trim, so your labels and the training data are never touched. Esc closes it.">👁 Browse detections</button>
     <div class="sep"></div>
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
@@ -676,7 +718,23 @@ let showApproaches = false, approachBouts = null;                       // overl
 const modeName = (m = mode) => m === "pos" ? "Happening" : m === "neg" ? "Not-happening" : "Unknown";
 const modeVal = (m = mode) => m === "pos" ? 1 : m === "neg" ? 2 : 3;   // labelState: 1=Happening 2=Not-happening 3=Unknown (0=none)
 
-const api = (path, opts) => fetch(`/api/projects/${PID}${path}`, opts);
+let browse = null;   // read-only detection browser state {bid, track, which, order, thr, minBout, items, idx, srcName, anyLabels, refRuns} (see browseStart)
+// While browsing, refuse every write except the event log and the detect slider. postproc only shapes
+// detected bouts and never reaches training. The per-action guards catch these first. This is the backstop.
+const BROWSE_WRITES_OK = /^\/(events|behaviors\/\d+\/postproc)(\?|$)/;
+let writesInFlight = 0;   // label saves and other writes still on the wire. Browse waits for them (see browseCanStart).
+const api = (path, opts) => {
+  const method = ((opts && opts.method) || "GET").toUpperCase();
+  if (method === "GET" || BROWSE_WRITES_OK.test(path)) return fetch(`/api/projects/${PID}${path}`, opts);
+  if (browse) {
+    console.warn("blocked while browsing detections:", method, path);
+    return Promise.resolve(new Response(JSON.stringify({ detail: "read only while browsing detections" }),
+                                        { status: 423, headers: { "Content-Type": "application/json" } }));
+  }
+  if (/\/autoload-roi$/.test(path)) return fetch(`/api/projects/${PID}${path}`, opts);   // one background call on clip open, nothing to wait for
+  writesInFlight++;
+  return fetch(`/api/projects/${PID}${path}`, opts).finally(() => { writesInFlight--; });
+};
 const APP_VERSION = "0.1.0", EVENT_SCHEMA = 1;   // stamped into session_start; bump EVENT_SCHEMA when event shapes change
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 }; }
 // "Not-happening" = diagonal hatch in the behavior color over a dark base (clearly visible + distinct from solid = Happening)
@@ -846,7 +904,7 @@ async function selectProject(pid) {
 // kept activeBid silently lands on a DIFFERENT behavior, and a kept undo entry would replay the old
 // project's labels into the new one.
 function resetWorkspaceState() {
-  closeReview();
+  closeReview(); closeBrowse();
   activeBid = null; selectedSeg = null; segTrim = null; tlView = null;
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
@@ -855,6 +913,7 @@ function resetWorkspaceState() {
 // Return the viewer to the "no clip loaded" state, for a project that has no clips yet. Deliberately
 // avoids renderTimeline()/loadLabels(), which need meta.n_frames.
 function clearStage() {
+  closeBrowse();
   stop();
   if (videoBackend) { try { videoBackend.close(); } catch (e) {} videoBackend = null; }
   frameOrder = null; pfStart = 0; pfEnd = -1;
@@ -873,6 +932,7 @@ function clearStage() {
 }
 
 async function openVideo(vidId) {
+  closeBrowse();                // the list belongs to the clip being left
   renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
   stop();                       // don't carry playback (or its stale wall-clock anchor) across a clip switch
   vid = vidId;
@@ -919,6 +979,7 @@ async function openVideo(vidId) {
                            has_poses: !!poses, n_tracks: nTracks(),
                            features: (meta.features || {}).status });
   autoloadCageRoi();                                   // best-effort: fill a missing cage ROI from the HCM DB
+  browseRefreshSources();                              // best-effort: other projects with this clip, for Browse labels
 }
 async function autoloadCageRoi() {   // when a clip has no cage ROI, pull this recording's polygon from the HCM DB (no-op off-VPN)
   if (cageRoi) return;                                 // already set — don't clobber or re-hit the DB
@@ -943,6 +1004,7 @@ async function autoloadCageRoi() {   // when a clip has no cage ROI, pull this r
 
 let pendingVideo = null, pendingSlp = null;
 async function maybeUpload() {
+  if (browseBlocked()) return;
   const parts = [];
   if (pendingVideo) parts.push("▸ " + pendingVideo.name);
   if (pendingSlp) parts.push("▸ " + pendingSlp.name);
@@ -1638,6 +1700,16 @@ function renderTimeline() {
     // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
     tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
   });
+  // Social window (entry/exit of a second animal): dim everything outside it so it's obvious at a
+  // glance where labeling/review even applies. Drawn into the base (before captureTimelineBase) so
+  // it survives the playback fast-path repaint, not just a full render. No-op for a clip with no
+  // window set (e.g. an alone-condition control clip).
+  if (meta.social_start != null && meta.social_end != null) {
+    tctx.fillStyle = "rgba(0,0,0,0.45)";
+    const wx0 = xOf(meta.social_start, W), wx1 = xOf(meta.social_end, W);
+    if (wx0 > TL_GUT) tctx.fillRect(TL_GUT, RULER, wx0 - TL_GUT, H - RULER);
+    if (wx1 < W) tctx.fillRect(wx1, RULER, W - wx1, H - RULER);
+  }
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
   drawFeatures(W, dpr);
@@ -1684,6 +1756,7 @@ function drawTimelineOverlay(W, H, rh) {
       const y = LANES_Y() + ri * rh, ym = y, t = reviewTrim || reviewCurrent;
       const xc0 = xOf(reviewCurrent.s, W), xc1 = xOf(reviewCurrent.e, W);
       const xt0 = xOf(t.s, W), xt1 = xOf(t.e, W), cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
+      const gxe = xOf(Math.max(t.s, t.e - 1), W);   // end grip sits on the last included frame so it lines up with the playhead
       const isDis = reviewCurrent.mode === "disagree";
       const cAcc = (isDis && reviewCurrent.suggestVal === 0) ? cN : cH;   // disagree fills the range with the model's verdict color
       tctx.fillStyle = `rgba(${cAcc.r},${cAcc.g},${cAcc.b},0.30)`; tctx.fillRect(xt0, ym + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);
@@ -1691,7 +1764,7 @@ function drawTimelineOverlay(W, H, rh) {
       if (!isDis && t.e < reviewCurrent.e) { tctx.fillStyle = `rgba(${cN.r},${cN.g},${cN.b},0.30)`; tctx.fillRect(xt1, ym + 3, xc1 - xt1, MANUAL_H - 6); }
       tctx.strokeStyle = "#ffd24a"; tctx.lineWidth = 1.5;
       tctx.strokeRect(xc0, y + 1, Math.max(2, xc1 - xc0), rh - ROW_GAP - 2);                                    // candidate bracket
-      for (const xx of [xt0, xt1]) {                                       // trim markers + draggable grips
+      for (const xx of [xt0, gxe]) {                                       // trim markers + draggable grips
         tctx.strokeStyle = "#ffd24a"; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#ffd24a"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -1700,13 +1773,31 @@ function drawTimelineOverlay(W, H, rh) {
       }
     }
   }
+  if (browse) {                                              // bout being browsed: dashed bracket, no grips (read only)
+    const it = browse.items[browse.idx], bi = laneList().findIndex(b => b.id === browse.bid);
+    if (it && bi >= 0) {
+      const y = LANES_Y() + bi * rh, x0 = xOf(it.s, W), x1 = xOf(it.e, W);
+      tctx.save(); tctx.strokeStyle = "#4ad0ff"; tctx.lineWidth = 1.5; tctx.setLineDash([5, 3]);
+      tctx.strokeRect(x0, y + 1, Math.max(2, x1 - x0), rh - ROW_GAP - 2); tctx.restore();
+    }
+    if (browse.refRuns && bi >= 0) {                         // labels from another project: thin strip along the lane bottom
+      const y = LANES_Y() + bi * rh + MANUAL_H - 6, vs = viewS(), ve = viewE();
+      const cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
+      for (const [s, e, v] of browse.refRuns) {
+        if (e <= vs || s >= ve) continue;
+        const c = v === 1 ? cH : cN, x0 = xOf(Math.max(s, vs), W);
+        tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.95)`; tctx.fillRect(x0, y, Math.max(1, xOf(Math.min(e, ve), W) - x0), 4);
+      }
+    }
+  }
   if (selectedSeg && segTrim && !reviewCurrent) {              // selected labeled bout: draggable edit handles
     const si = laneList().findIndex(b => b.id === selectedSeg.bid);
     if (si >= 0) {
       const y = LANES_Y() + si * rh, xt0 = xOf(segTrim.s, W), xt1 = xOf(segTrim.e, W);
+      const gxe = xOf(Math.max(segTrim.s, segTrim.e - 1), W);   // end grip sits on the last included frame
       const c = selectedSeg.val === 1 ? hexRgb(HAPPENING_COLOR) : selectedSeg.val === 2 ? hexRgb(NOTHAPPENING_COLOR) : { r: 150, g: 150, b: 150 };
       tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.28)`; tctx.fillRect(xt0, y + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);  // edited extent
-      for (const xx of [xt0, xt1]) {                           // grips (white, matching the selection outline)
+      for (const xx of [xt0, gxe]) {                           // grips (white, matching the selection outline)
         tctx.strokeStyle = "#fff"; tctx.lineWidth = 1.5; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#fff"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -1871,6 +1962,16 @@ async function syncRange(bid, s, e) {   // reads per-frame value+source+target s
   scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
 async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
+  if (browseBlocked()) return;                       // browsing detections is read only
+  // Social window: every paint path (manual, drag, erase, candidate accept/trim/merge/split) funnels
+  // through here, so clamping once here covers all of them rather than patching each call site. The
+  // server clips again on write regardless (the authoritative guarantee — see put_labels); this just
+  // keeps the client's own label arrays/undo stack from ever showing something the server would
+  // reject. No-op for a clip with no window set.
+  if (meta && meta.social_start != null && meta.social_end != null) {
+    s = Math.max(s, meta.social_start); e = Math.min(e, meta.social_end);
+    if (e <= s) { busy("outside the social window — nothing to label there"); return; }
+  }
   clearSel();                                        // any label edit invalidates a highlighted selection
   const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
   const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
@@ -1885,8 +1986,8 @@ async function applyOp(op, vSlice, sSlice, tSlice) {
   if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
-async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
+async function undo() { if (browseBlocked()) return; const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
+async function redo() { if (browseBlocked()) return; const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
 
 // ---------- directed (actor -> target) helpers ----------
 function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
@@ -1963,7 +2064,7 @@ function updateSelStatus() {
   } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
 }
 async function deleteSelectedSeg() {
-  if (!selectedSeg) return;
+  if (!selectedSeg || browseBlocked()) return;
   const { bid, s, e } = selectedSeg;
   logEvent("label_delete", { behavior_id: bid, name: bname(bid), start: s, end: e, n_frames: e - s,
                              value: selectedSeg.val });
@@ -2045,6 +2146,7 @@ async function cloneBehavior(withLabels) {
     : `created "${nb.name}" (0 labels) — label it from scratch; compare vs "${src.name}" in Stats`);
 }
 async function selectBehavior(bid) {
+  if (browse && bid !== browse.bid) closeBrowse();   // the list belongs to one behavior
   if (bid !== activeBid) logEvent("behavior_select", { behavior_id: bid, name: bname(bid) });
   activeBid = bid; renderBehaviorBar();
   invalidateTlCache();                 // don't let playback blit the previous behavior's cached base during the awaits
@@ -2079,23 +2181,82 @@ function hidraSyncBehavior() {
     el("hidraCollapse").value = h.collapse || "scene";
     el("hidraRate").value = h.rate ?? 0.15;
   }
+  el("hidraTrainOn").value = !h ? "all" : h.train_on || (h.reviewed_only ? "reviewed" : "all");
   hidraReflect();
+}
+
+const TRAIN_ON = { all: "every frame", window: "inside the social window", reviewed: "reviewed frames only" };
+
+async function hidraSaveTrainOn() {
+  if (!HIDRA || activeBid == null) return;
+  const b = (behaviors || []).find(x => x.id === activeBid);
+  const before = (b && b.hidra && b.hidra.train_on) || "all", on = el("hidraTrainOn").value;
+  const r = await api(`/behaviors/${activeBid}/hidra/options`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ train_on: on }) });
+  if (!r.ok) {
+    el("hidraTrainOn").value = before;
+    busy("could not save: " + ((await r.json().catch(() => ({}))).detail || r.status));
+    return;
+  }
+  if (b) b.hidra = await r.json();
+  logEvent("hidra_train_on_set", { behavior_id: activeBid, train_on: on });
+  busy(`next fine-tune trains on ${TRAIN_ON[on]}`);
+  hidraReflect();
+}
+
+async function saveHoldOut() {
+  if (!vid) return;
+  const on = el("holdOutClip").checked, clip = vid;
+  const r = await api(`/videos/${clip}/training`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exclude: on }) });
+  if (!r.ok) {
+    el("holdOutClip").checked = !on;
+    busy("could not save: " + ((await r.json().catch(() => ({}))).detail || r.status));
+    return;
+  }
+  for (const v of (projMeta && projMeta.videos) || []) if (v.video_id === clip) v.exclude_from_training = on;
+  if (meta && meta.video_id === clip) meta.exclude_from_training = on;
+  logEvent("clip_training_set", { video_id: clip, exclude: on });
+  busy(on ? `${clipShortName(clip)} is held out: no training run will use its labels`
+          : `${clipShortName(clip)} is back in training`);
+  renderClipBar();
 }
 
 // One place decides what the controls and the two buttons say, so the GUI can never claim it will
 // run HiDRA when the behavior is unbound, or offer inference the runtime cannot do.
 function hidraReflect() {
   const pick = hidraPick(), bound = !!pick;
-  for (const id of ["hidraCollapse", "hidraRate"]) el(id).disabled = !bound;
+  for (const id of ["hidraCollapse", "hidraRate", "hidraTrainOn"]) el(id).disabled = !bound;
 
   // Once this behavior's head has been fine-tuned on reviewed labels it stops being the shipped
   // zero-shot head — a Predict now loads the adapted weights — so the label must say so.
   const beh = behaviors.find(x => x.id === activeBid);
-  const ftMode = beh && beh.hidra && beh.hidra.weights ? (beh.hidra.finetune_mode || "fine-tuned") : null;
+  const ftMode = beh && beh.hidra && beh.hidra.weights
+    ? (beh.hidra.finetune_mode || "fine-tuned")
+      + (TRAIN_ON[beh.hidra.weights_train_on || (beh.hidra.weights_reviewed_only ? "reviewed" : "")]
+         ? ", " + TRAIN_ON[beh.hidra.weights_train_on || "reviewed"] : "")
+    : null;
 
   const predict = el("predict"), train = el("train");
   const ppc = parseFloat(el("hidraPpc").value);
-  const needScale = bound && !(ppc > 0);
+  // A scale MEASURED from the camera calibration (server-side scale.py) satisfies the requirement; a typed
+  // value always wins over it. If a measured scale exists but must not be used for this clip (different
+  // shape, broken file) the server says why and we show that instead of a generic warning.
+  const auto = meta && meta.pix_per_cm_auto;
+  const autoOk = !!(auto && auto.usable);
+  const needScale = bound && !(ppc > 0) && !autoOk;
+  {
+    const pin = el("hidraPpc");
+    pin.placeholder = autoOk ? `${auto.pix_per_cm.toFixed(1)} auto` : "px/cm";
+    pin.dataset.autoTip = autoOk
+      ? `Automatic: ${auto.pix_per_cm.toFixed(2)} px/cm, ${auto.note}` +
+        (auto.iqr ? ` (the middle half of the measurements span ${auto.iqr[0].toFixed(1)}–${auto.iqr[1].toFixed(1)})` : "") +
+        ". Type a number to override it; clear the box to use this again."
+      : "";
+    if (!pin.dataset.baseTip) pin.dataset.baseTip = pin.title;
+    pin.title = pin.dataset.autoTip ? pin.dataset.autoTip + "\n\n" + pin.dataset.baseTip : pin.dataset.baseTip;
+  }
   if (bound) {
     predict.textContent = ftMode ? `▶ Predict — ${pick.action} (fine-tuned)` : `▶ Predict — ${pick.action}`;
     train.textContent = ftMode ? "⚙ HiDRA re-tune" : "⚙ HiDRA fine-tune";
@@ -2111,9 +2272,11 @@ function hidraReflect() {
   el("hidraNote").textContent =
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
-    : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
+    : needScale ? (auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres")
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
     : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  if (bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer)
+    el("hidraNote").textContent += ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)`;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
@@ -2148,7 +2311,7 @@ function hidraSyncVideo() {
 }
 
 async function hidraSaveFps() {
-  if (!vid) return;
+  if (!vid || browseBlocked()) return;
   const v = parseFloat(el("hidraFps").value);
   if (!isFinite(v)) return;
   const r = await fetch(`/api/projects/${PID}/videos/${vid}/fps`, {
@@ -2161,7 +2324,7 @@ async function hidraSaveFps() {
 }
 
 async function hidraSave() {
-  if (!HIDRA || activeBid == null) return;
+  if (!HIDRA || activeBid == null || browseBlocked()) return;
   const [lab, action] = (el("hidraHead").value || "|").split("|");
   const r = await fetch(`/api/projects/${PID}/behaviors/${activeBid}/hidra`, {
     method: "PUT", headers: { "Content-Type": "application/json" },
@@ -2244,6 +2407,7 @@ async function mediaRelink() {
 }
 
 async function hidraSaveSetup() {
+  if (browseBlocked()) return;
   const note = el("hidraSetupNote");
   note.textContent = "probing…";
   try {
@@ -2324,6 +2488,7 @@ async function hidraInit() {
     hidraSave();
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
+  el("hidraTrainOn").onchange = hidraSaveTrainOn;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
   el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
@@ -2362,15 +2527,21 @@ function clipShortName(vidId) {
 function renderClipBar() {
   const bar = el("clipBar"); if (!bar) return; bar.innerHTML = "";
   const vids = (projMeta && projMeta.videos) || [];
+  if (el("holdOutClip")) el("holdOutClip").checked = !!(meta && meta.exclude_from_training);
   if (vids.length < 1) { bar.style.display = "none"; return; }
   bar.style.display = "";
   const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Clip:"; bar.appendChild(lab);
   for (const v of vids) {
     const chip = document.createElement("button");
     chip.className = "chip" + (v.video_id === vid ? " active" : "");
-    chip.title = v.video_id;
+    chip.title = v.video_id + (v.exclude_from_training ? " · held out of training" : "");
     chip.onclick = () => { if (v.video_id !== vid) openVideo(v.video_id); };
     const name = document.createElement("span"); name.textContent = clipShortName(v.video_id); chip.appendChild(name);
+    if (v.exclude_from_training) {
+      const tag = document.createElement("span"); tag.textContent = "held out";
+      tag.style.cssText = "margin-left:6px; font-size:10px; opacity:.75; border:1px solid currentColor; border-radius:3px; padding:0 3px";
+      chip.appendChild(tag);
+    }
     const x = document.createElement("span"); x.textContent = "✕";
     x.title = "Remove this clip from the project"; x.style.cssText = "margin-left:7px; opacity:.5; font-size:11px";
     x.onmouseenter = () => x.style.opacity = "1"; x.onmouseleave = () => x.style.opacity = ".5";
@@ -2380,6 +2551,7 @@ function renderClipBar() {
   }
 }
 async function removeClip(vidId) {
+  if (browseBlocked()) return;
   const label = clipShortName(vidId);
   if (!confirm(`Remove clip "${label}" from this project?\n\nThis deletes its labels, cached features, and predictions for this project. `
     + `The source video/SLP file on disk is NOT deleted.`)) return;
@@ -2422,6 +2594,7 @@ async function onTrackChange() {
   drawPose(); renderTimeline();
 }
 async function setActiveTrack(t) {
+  if (browse && t !== activeTrack) { busy("browse is tied to one track. Press Done (Esc) to switch tracks."); return; }
   if (t !== activeTrack) logEvent("track_select", { from_track: activeTrack, to_track: t });
   activeTrack = Math.max(0, Math.min(nTracks() - 1, t));
   renderTrackBar();
@@ -2433,7 +2606,11 @@ async function addBehavior() {
   const key = prompt("Hotkey (single char, optional):") || null;
   const r = await api(`/behaviors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, key }) });
   if (!r.ok) { alert("Could not add: " + (await r.json()).detail); return; }
+  const created = await r.json().catch(() => null);
   await reloadBehaviors();
+  // Make the new behavior the active one. Otherwise the previously active behavior stays selected, and the
+  // next thing you do -- typically choosing its HiDRA classifier -- silently rebinds THAT one instead.
+  if (created && created.id != null) await selectBehavior(created.id);
 }
 async function reloadBehaviors() {
   behaviors = await (await api(`/behaviors`)).json();
@@ -2749,6 +2926,7 @@ function renderTrainset(ts) {
 async function jumpToTrainBout(vidId, x) {
   const bid = lastTrainsetBid;                     // the behavior this panel belongs to — NOT the live activeBid
   closeReview();                                   // moving clip/track would strand an open review on stale state
+  closeBrowse();
   if (vidId !== vid) {
     if (!projMeta.videos.some(v => v.video_id === vidId)) { busy(`clip "${vidId}" is no longer in this project`); return; }
     await openVideo(vidId);                         // resets activeBid to the first behavior…
@@ -2986,6 +3164,7 @@ async function onThreshCommit() {
   await savePostproc(activeBid, { hi, lo });
   await loadCandidates(activeBid);       // the Review queue now uses this cut
   busy(`detection ≥ ${(+hi).toFixed(2)} — ${(predictedBouts.get(activeBid) || []).length} bouts on this clip; Review queue updated`);
+  if (browse) browseStart();             // and the browse list too
 }
 // Minimum bout length (frames): a floor on both the detected lane and the review candidates. Sets
 // min_bout (detection) and min_cand (review floor) together so "shorter than this" never appears.
@@ -2998,6 +3177,7 @@ async function onMinBoutChange() {
   await savePostproc(activeBid, { min_bout: n, min_cand: n });
   await loadCandidates(activeBid);
   busy(`min bout ${n} frames (${(n / (meta?.fps || 30)).toFixed(2)}s) — lane + Review queue updated`);
+  if (browse) browseStart();             // rebuild the browse list with the new floor
 }
 
 // Remaining 'new' proposals per animal on this clip x behavior (GET .../remaining/<vid>). The Review
@@ -3089,15 +3269,19 @@ function timerMark(ap, bid, name, trainMs, nCand) {   // called on each Train: l
         + `${m.nCand != null ? ` · ${m.nCand} cand bouts` : ""} → AP ${m.ap.toFixed(3)}  @ ${m.t}`).join("\n");
 }
 if (el("timerToggle")) { el("timerToggle").onclick = toggleTimer; el("timerReset").onclick = resetTimer; }
-async function train() {
-  if (activeBid == null) return;
+let jobsRunning = 0;   // Train or Predict still going. Browse waits so their later writes are not refused.
+async function train() { jobsRunning++; try { await trainJob(); } finally { jobsRunning--; } }
+async function trainJob() {
+  if (activeBid == null || browseBlocked()) return;
   const bid = activeBid, bname = (behaviors.find(x => x.id === bid) || {}).name;   // capture the model being trained (activeBid may change during the async job)
   const t0 = Date.now();                                                          // wall-clock of the train job (feature compute + CV + fit)
   busy("starting…");
   // Scope the post-fit prediction sweep (the fit itself always pools every labeled clip). Sweeping a
   // 17-clip project costs minutes; re-predicting just the clip under review costs seconds.
   const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid)}`;
-  logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips" });
+  const bh = (behaviors.find(x => x.id === bid) || {}).hidra;
+  logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips",
+                            train_on: bh && bh.action ? (bh.train_on || (bh.reviewed_only ? "reviewed" : "all")) : null });
   const r = await api(`/behaviors/${bid}/train${scope}`, { method: "POST" });
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
   const { job_id } = await r.json();
@@ -3128,7 +3312,9 @@ async function train() {
       // Detect it by its own fields (lab+action) rather than the mode name — the PyTorch rewrite
       // renamed the LABTAIL modes to tail/head/embedding, so `mode === "labtail"` no longer matched.
       // A smoke run writes no checkpoint; a real run records weights and only applies on the next Predict.
-      const from = r.videos ? ` from ${r.videos} clip${r.videos === 1 ? "" : "s"}` : "";
+      const held = (r.held_out || []).length ? ` · held out: ${r.held_out.map(clipShortName).join(", ")}` : "";
+      const from = (r.videos ? ` from ${r.videos} clip${r.videos === 1 ? "" : "s"}` : "")
+        + (r.train_on && r.train_on !== "all" ? ` · ${TRAIN_ON[r.train_on]}` : "") + held;
       if (r.smoke) {
         busy(`Smoke test OK — prepare + train ran for ${r.action} (${r.lab}) on ${r.bouts} `
           + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
@@ -3150,7 +3336,9 @@ async function train() {
   });
 }
 function awaitJob(jid) { return new Promise(resolve => pollJob(jid, resolve)); }   // pollJob calls back once at terminal state
-async function predictVideo() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
+async function predictVideo() { jobsRunning++; try { await predictJob(); } finally { jobsRunning--; } }
+async function predictJob() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
+  if (browseBlocked()) return;
   const all = (el("trainScope") || {}).value === "all";
   const targets = all ? (projMeta.videos || []).map(v => v.video_id) : [vid];
   const pT0 = Date.now();
@@ -3189,6 +3377,7 @@ async function predictVideo() {   // apply existing model(s), NO retrain — cur
   else busy(all ? `prediction done — all ${ok} clip${ok !== 1 ? "s" : ""}` : (ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first"));
 }
 async function importFile() {
+  if (browseBlocked()) return;
   const path = prompt("Path to annotations on the server:\n • event-annotator export (.json), or\n • interval CSV (.csv: behavior,start,end in frames)");
   if (!path) return;
   const isJson = path.toLowerCase().endsWith(".json");
@@ -3292,8 +3481,10 @@ function logDecision(kind, extra) {
   evCandShownT = 0; evCandReplays = 0;
 }
 async function startReview() {
+  if (browseBlocked()) return;
   if (candidateMode === "mislabel") busy("cross-validating to find likely mislabels — first run for a behavior takes a moment…");
   if (activeBid != null) await loadCandidates(activeBid);   // refresh against CURRENT labels (queue is otherwise only reloaded on train/predict/switch)
+  if (browse) return;                                       // browse opened while the queue loaded
   if (!reviewQueue.length) {
     busy(candidateMode === "mislabel" ? "no likely mislabels on this clip/track — the cross-validated model agrees with your labels (or too few bouts to cross-validate)"
          : candidateMode === "dropped" ? "no bouts were filtered out (no 2-mouse-overlap drops for this behavior/track)"
@@ -3312,6 +3503,7 @@ function setReviewLayout(on) {
   requestAnimationFrame(() => { if (meta) renderTimeline(); });   // widths reflowed → redraw the lanes
 }
 function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lane
+  if (browseBlocked()) return;
   activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new", target: (bt.target != null ? bt.target : NO_TARGET) }; reviewTrim = { s: bt.s, e: bt.e };
   reviewQueue = []; setReviewView(bt.s, bt.e);
   el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)";
@@ -3350,7 +3542,7 @@ function populateReclassifySelect() {   // every OTHER behavior, so you can mark
   sel.value = "";
 }
 async function reclassifyCandidate(otherBid) {
-  if (!reviewCurrent) return;
+  if (!reviewCurrent || browseBlocked()) return;
   logDecision("reclassify", { to_behavior_id: otherBid, to_name: bname(otherBid) });
   snapReview();
   const { bid, s, e, mode } = reviewCurrent, t = reviewTrim || { s, e };
@@ -3384,7 +3576,7 @@ async function markReviewedCurrent() {
   });
 }
 async function acceptCandidate() {   // "y": accept the model. new: label inner as Happening, trimmed edges Not-happening. disagree: flip inner to the model's verdict.
-  if (!reviewCurrent) return;
+  if (!reviewCurrent || browseBlocked()) return;
   logDecision("accept");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
@@ -3401,7 +3593,7 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
-  if (!reviewCurrent || reviewCurrent.mode !== "new") return;   // new detections only (disagree/reviewed must not be silently relabeled by merge)
+  if (!reviewCurrent || reviewCurrent.mode !== "new" || browseBlocked()) return;   // new detections only (disagree/reviewed must not be silently relabeled by merge)
   logDecision("merge");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
@@ -3420,7 +3612,7 @@ async function mergeCandidate() {   // "m": accept, but bridge the gap to an adj
 // to the remainder [playhead, end] and keep reviewing it — so you can carve out several bouts in a row,
 // and the gaps between them become Not-happening when you trim+accept the next piece. New detections only.
 async function splitCandidate() {
-  if (!reviewCurrent || reviewCurrent.mode !== "new") return;
+  if (!reviewCurrent || reviewCurrent.mode !== "new" || browseBlocked()) return;
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const cut = cur;                                            // split at the playhead
   if (cut <= t.s + 1 || cut >= t.e - 1) { busy("move the playhead inside the bout, then Split"); return; }
@@ -3439,7 +3631,7 @@ async function splitCandidate() {
   busy(`✂ Split at frame ${cut}: piece ${piece} (${t.s}–${cut}) saved as a bout · now reviewing piece ${piece + 1} (${cut}–${e}) — accept, split again, or reject`);
 }
 async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: keep your label. reviewed: un-review.
-  if (!reviewCurrent) return;
+  if (!reviewCurrent || browseBlocked()) return;
   logDecision("reject");
   snapReview();
   const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
@@ -3451,7 +3643,7 @@ async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: 
   advanceReview();
 }
 function nextCandidate() {   // advance without writing (e.g. after painting inside); it stays in the queue
-  if (!reviewCurrent) return;
+  if (!reviewCurrent || browseBlocked()) return;
   logDecision("skip");
   reviewSkipped.add(skipKey(reviewCurrent.bid, reviewCurrent.s, reviewCurrent.e));
   advanceReview();
@@ -3511,9 +3703,13 @@ function snapReview() {
   const u = el("rvUndo"); if (u) u.disabled = false;
 }
 async function undoReview() {
+  if (browseBlocked()) return;
   const s = reviewUndo.pop();
   if (!s) { const u = el("rvUndo"); if (u) u.disabled = true; return; }
-  while (undoStack.length > s.mark) await undo();     // revert every label write this action made
+  while (undoStack.length > s.mark) {                 // revert every label write this action made
+    const n = undoStack.length; await undo();
+    if (undoStack.length === n) break;               // undo refused (browse opened), so stop instead of spinning
+  }
   reviewIdx = s.idx; reviewCurrent = s.cur; reviewTrim = s.trim;
   logDecision("undo");
   evCandShownT = Date.now();                        // back on this candidate — its dwell restarts
@@ -3523,6 +3719,173 @@ async function undoReview() {
     setReviewView(reviewCurrent.s, reviewCurrent.e); updateReviewText(); populateReclassifySelect(); renderTimeline(); playBout(reviewCurrent.s, reviewCurrent.e);
     busy("undid last review action");
   } else { closeReview(); }
+}
+
+// ---- browse detections: a read-only walk through the model's bouts on this clip and track ----
+// Built from the cached scores with the detect slider and min bout, inside the social window. Unlike
+// predictedBouts it keeps bouts that sit on labeled frames, because comparing with your labels is the
+// point. Nothing here writes. Paint, undo, train and predict refuse while it is open, and api() turns
+// away any other write as a last line of defense.
+function browseBlocked() {
+  if (!browse) return false;
+  busy("browsing detections is read only. Press Done (Esc) first.");
+  return true;
+}
+function browseItems(bid, which, order, labels) {
+  const p = predsByBeh.get(bid), arr = labels || new Int8Array(p.length);
+  const thr = behThresh(bid), win = meta.social_start != null && meta.social_end != null;
+  const w0 = win ? Math.max(0, meta.social_start) : 0, w1 = Math.min(p.length, win ? meta.social_end : p.length);
+  if (w1 <= w0) return [];
+  const dets = boutsFromProba(p.subarray(w0, w1), thr, thr, 5, behMinBout(bid)).map(d => ({ s: d.s + w0, e: d.e + w0, p: d.p }));
+  let items;
+  if (which === "missed") {                        // your Happening bouts that no detection touches
+    items = runsOf(arr, w0, w1).filter(r => r[2] === 1 && !dets.some(d => d.s < r[1] && d.e > r[0])).map(([s, e]) => {
+      let sum = 0, peak = 0;
+      for (let k = s; k < e; k++) { const v = Number.isNaN(p[k]) ? 0 : p[k]; sum += v; peak = Math.max(peak, v); }
+      return { s, e, p: sum / (e - s), peak, missed: true };
+    });
+  } else {
+    items = dets.map(d => {
+      let yes = 0, no = 0;
+      for (let k = d.s; k < d.e; k++) { if (arr[k] === 1) yes++; else if (arr[k] === 2) no++; }
+      return { ...d, yes, no };
+    });
+    if (which === "hit") items = items.filter(it => it.yes > 0);
+    if (which === "nolabel") items = items.filter(it => it.yes === 0);
+  }
+  if (order === "high") items.sort((a, b) => b.p - a.p);
+  else if (order === "low") items.sort((a, b) => a.p - b.p);
+  else if (order === "random") {
+    for (let i = items.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [items[i], items[j]] = [items[j], items[i]]; }
+  } else items.sort((a, b) => a.s - b.s);
+  return items;
+}
+// Other projects that hold this same clip, offered as label sources. A clip id like "0" repeats across
+// sessions, so length, frame size, fps and the social window must match too.
+async function browseRefreshSources() {
+  const sel = el("browseLabels"); if (!sel || !meta) return;
+  const forPid = PID, forVid = vid, clip = meta, keep = sel.value;
+  const same = v => v && v.n_frames === clip.n_frames && v.fps === clip.fps && v.width === clip.width && v.height === clip.height
+    && clip.social_start != null && v.social_start === clip.social_start && v.social_end === clip.social_end;
+  const opts = ['<option value="">labels: this project</option>'];
+  try {
+    for (const p of await (await fetch("/api/projects")).json()) {
+      if (p.pid === PID || !(p.videos || []).includes(forVid)) continue;
+      const pm = await (await fetch(`/api/projects/${encodeURIComponent(p.pid)}`)).json();
+      if (!same((pm.videos || []).find(v => v.video_id === forVid))) continue;
+      for (const b of pm.behaviors || []) opts.push(`<option value="${esc(p.pid)}|${b.id}">labels: ${esc(p.name)} · ${esc(b.name)}</option>`);
+    }
+  } catch (e) { console.warn("could not list other projects for browse labels", e); }
+  if (PID !== forPid || vid !== forVid) return;   // another project or clip opened meanwhile
+  sel.innerHTML = opts.join("");
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : "";
+}
+async function browseLoadRef(src, track) {        // another project's labels for this clip, GET only, kept apart from labelState
+  const [pid, rbid] = src.split("|");
+  const r = await fetch(`/api/projects/${encodeURIComponent(pid)}/labels/${encodeURIComponent(vid)}?track=${track}&behavior=${rbid}`);
+  if (!r.ok) throw new Error(`${pid}: http ${r.status}`);
+  const ref = new Int8Array(meta.n_frames);
+  for (const [s, e, val] of (await r.json())[rbid] || []) ref.fill(val === 1 ? 1 : val === 0 ? 2 : 3, s, e);   // stored 1/0/2 -> state 1/2/3
+  return ref;
+}
+function browseCanStart() {                       // checked before and after any await in browseStart
+  if (!meta || activeBid == null) { busy("open a clip and pick a behavior first"); return false; }
+  if (el("reviewPanel").classList.contains("on")) { busy("finish the candidate review first (Done)"); return false; }
+  if (jobsRunning || writesInFlight) { busy("still saving or running Train/Predict. Try Browse again when it finishes."); return false; }
+  if (!predsByBeh.has(activeBid)) { busy(`no predictions for ${bname(activeBid)} on this clip and track ${activeTrack + 1}. Run Predict first.`); return false; }
+  return true;
+}
+// While browsing, every control that could change something is made inert (no clicks, no focus), so no
+// write can start and no control can show a value the server never got. Browse's own controls, the detect
+// slider and min bout stay live. Clip and project switching stay live too and simply close browse.
+const BROWSE_LIVE = new Set(["browseWhich", "browseOrder", "browseLabels", "browseBtn", "predThresh", "predThreshVal",
+                             "predThreshCount", "predMinBout", "metrics"]);
+function setBrowseLock(on) {
+  document.querySelector("main").classList.toggle("browsing", on);
+  if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
+  const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
+  for (const id of ["loadbar", "toolsCard", "spoutCtl", "cageCtl", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
+  for (const n of el("actionRow").children) {
+    const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
+    if (!live) lock(n);
+  }
+}
+let browseSeq = 0;
+async function browseStart() {                    // the Browse button, and a rebuild when a browse setting changes
+  if (!browse && !browseCanStart()) return;
+  const which = el("browseWhich").value, order = el("browseOrder").value, srcSel = el("browseLabels");
+  const src = srcSel.value, srcName = src ? srcSel.selectedOptions[0].textContent.replace(/^labels: /, "") : "this project";
+  const seq = ++browseSeq, forPid = PID, forVid = vid, bid = activeBid, track = activeTrack;
+  let ref = null;
+  if (src) {
+    try { ref = await browseLoadRef(src, track); }
+    catch (e) { busy(`could not read labels from ${srcName} (${e.message})`); return; }
+    if (seq !== browseSeq || PID !== forPid || vid !== forVid || activeBid !== bid || activeTrack !== track) return;   // something changed while loading
+    if (!browse && !browseCanStart()) return;
+  }
+  const labels = ref || labelState.get(bid), anyLabels = !!labels && labels.some(v => v !== 0);
+  const items = browseItems(bid, which, order, labels);
+  const hint = !anyLabels && srcSel.options.length > 1 ? ` No labels for this clip in ${srcName}. Try another "labels:" source.` : "";
+  if (!items.length) {
+    closeBrowse();
+    busy((which === "missed" ? (anyLabels ? "the model touches every Happening bout labeled on this clip and track" : "no labeled bouts to check")
+          : `no ${which === "all" ? "" : "matching "}detections on track ${track + 1} at detect ≥ ${behThresh(bid).toFixed(2)}`) + "." + hint);
+    return;
+  }
+  const fresh = !browse;
+  if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); }
+  browse = { bid, track, which, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
+             srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
+  logEvent("browse_start", { behavior_id: bid, name: bname(bid), which, order, threshold: browse.thr, labels_from: src || "this project",
+                             min_bout: browse.minBout, n: items.length, held_out: !!meta.exclude_from_training });
+  if (fresh) { el("browsePanel").classList.add("on"); setBrowseLock(true); setReviewLayout(true); }
+  browseShow(0);
+  if (hint) busy(hint.trim());
+}
+function browseShow(i) {
+  if (!browse) return;
+  browse.idx = i;
+  const it = browse.items[i];
+  setReviewView(it.s, it.e);
+  logEvent("browse_show", { behavior_id: browse.bid, idx: i, n: browse.items.length, start: it.s, end: it.e,
+                            n_frames: it.e - it.s, proba: it.p, which: browse.which, order: browse.order });
+  browseText(); playBout(it.s, it.e);
+}
+function browseText() {
+  const it = browse.items[browse.idx], b = behOf(browse.bid) || {}, n = it.e - it.s;
+  const pct = k => Math.round(100 * k / n);
+  let match;
+  if (!browse.anyLabels) match = `<b>No labels to compare</b> (none for this clip in ${esc(browse.srcName)})`;
+  else if (it.missed) match = `<b>Your Happening bout, not detected.</b> Mean score ${it.p.toFixed(2)}, peak ${it.peak.toFixed(2)}`;
+  else if (it.yes) match = `<b style="color:${HAPPENING_COLOR}">✓ On your Happening label</b> (${pct(it.yes)}% of its frames)`;
+  else if (it.no) match = `<b style="color:${NOTHAPPENING_COLOR}">✗ No Happening label here</b> (${pct(it.no)}% labeled Not-happening)`;
+  else match = `<b>✗ No label here</b> (unlabeled frames)`;
+  const held = meta.exclude_from_training ? ` · <span style="color:#4ad0ff">held-out clip</span>` : "";
+  el("browseQ").innerHTML = `${it.missed ? "Missed bout" : "Detection"} <b>${browse.idx + 1}/${browse.items.length}</b> · track ${browse.track + 1}`
+    + ` · <b style="color:${b.color}">${esc(b.name)}</b>${held} · frames <b>${it.s}–${it.e}</b> (${n}f, ${(n / (meta.fps || 30)).toFixed(1)} s)`
+    + (it.missed ? "" : ` · mean score ${it.p.toFixed(2)}`) + `<br>${match}<br><span style="color:#8b93a2">📍 ${locStr(it.s)}</span>`;
+  el("brProgress").textContent = `Read only. Detect ≥ ${browse.thr.toFixed(2)}, min bout ${browse.minBout}f, labels from ${browse.srcName}. `
+    + "r replay · ⏎ next · Shift+⏎ back · ← → scrub · space play · Esc done";
+}
+function browseStep(d) {
+  if (!browse) return;
+  const i = browse.idx + d;
+  if (i < 0) { busy("this is the first one"); return; }
+  if (i >= browse.items.length) { busy("that was the last one. Done (Esc) closes browse."); return; }
+  browseShow(i);
+}
+function browseReplay() {
+  if (!browse) return;
+  const it = browse.items[browse.idx];
+  logEvent("browse_replay", { behavior_id: browse.bid, idx: browse.idx, start: it.s, end: it.e });
+  playBout(it.s, it.e);
+}
+function closeBrowse() {
+  if (!browse) return;
+  logEvent("browse_end", { behavior_id: browse.bid, idx: browse.idx, n: browse.items.length });
+  browse = null; tlView = null;
+  el("browsePanel").classList.remove("on"); el("browseQ").textContent = ""; el("brProgress").textContent = "";
+  setBrowseLock(false); setReviewLayout(false); if (meta) renderTimeline();
 }
 
 // ---------- playback (rAF clock; frames from the prefetched MediaBunny cache — event-annotator style) ----------
@@ -3581,6 +3944,7 @@ function setMode(m) {
 }
 const bname = bid => (behaviors.find(b => b.id === bid) || {}).name || "";
 function startPaint(bid, m) {
+  if (browseBlocked()) return;
   activeBid = bid; renderBehaviorBar();
   painting = { bid, anchor: cur, mode: m, t0: Date.now() };
   logEvent("paint_start", { behavior_id: bid, name: bname(bid), mode: m, anchor: cur });
@@ -3606,6 +3970,7 @@ function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   renderTimeline();
 }
 function clickState(m) {   // Happening/Not-happening/Unknown -> annotate the SELECTED (highlighted) behavior, shown in the track
+  if (browseBlocked()) return;
   setTool("paint");
   setMode(m);
   if (activeBid == null) { busy("select a behavior first (click its chip)"); return; }
@@ -3628,13 +3993,13 @@ function trimHandleAt(x, y, W) {   // is (x,y) near a draggable trim-edge grip? 
   if (ri < 0) return null;
   const rh = ROWH(), ry = LANES_Y() + ri * rh;
   if (y < ry - 2 || y > ry + MANUAL_H + LANE_GAP) return null;
-  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(at.trim.e, W)), tol = 9;
+  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(Math.max(at.trim.s, at.trim.e - 1), W)), tol = 9;
   if (ds <= tol && ds <= de) return "s";
   if (de <= tol) return "e";
   return null;
 }
 async function commitSegTrim() {   // apply the edited bounds of the selected labeled bout back to the labels
-  if (!selectedSeg || !segTrim) return;
+  if (!selectedSeg || !segTrim || browseBlocked()) return;
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
   const tg = targetState.get(bid), keepTgt = (val === 1 && tg) ? tg[s] : NO_TARGET;   // preserve a directed bout's recipient across the trim
@@ -3688,6 +4053,10 @@ function threshFromY(i, y) {                        // invert the trace's y->P m
 tl.addEventListener("pointerdown", ev => {
   const W = tlWidth(), rect = tl.getBoundingClientRect(), x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   tl.setPointerCapture(ev.pointerId);
+  if (browse) {                                                                // read only: a click or drag just moves the playhead
+    if (x >= TL_GUT) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); }
+    return;
+  }
   const trimEdge = trimHandleAt(x, y, W);
   if (trimEdge) { stop(); drag = { kind: "trim", edge: trimEdge }; return; }   // grab an accept-boundary to drag it (pause playback so the base can't go stale under it)
   const thBid = threshLineAt(x, y, W);                                         // grab the dashed line to set the detection threshold by dragging
@@ -3741,6 +4110,7 @@ tl.addEventListener("pointermove", ev => {
   }                                                         // kind === "select": swallow, selection already made
 });
 function updateHoverCursor(x, y, f) {
+  if (browse) { tl.style.cursor = x >= TL_GUT ? "ew-resize" : "default"; return; }   // browse only scrubs
   if (trimHandleAt(x, y, tlWidth())) { tl.style.cursor = "ew-resize"; return; }   // over a trim handle
   if (threshLineAt(x, y, tlWidth()) != null) { tl.style.cursor = "ns-resize"; return; }   // over the draggable threshold line
   if (y < LANES_Y()) { tl.style.cursor = "ew-resize"; return; }
@@ -3830,6 +4200,7 @@ el("toolPaint").onclick = () => setTool("paint");
 el("toolSelect").onclick = () => setTool("select");
 el("delSeg").onclick = deleteSelectedSeg;
 el("train").onclick = train; el("predict").onclick = predictVideo; el("importBtn").onclick = importFile; el("review").onclick = startReview;
+el("holdOutClip").onchange = saveHoldOut;
 el("predThresh").oninput = onThreshInput;
 el("predThresh").onchange = onThreshCommit;
 el("predMinBout").onchange = onMinBoutChange;
@@ -3884,11 +4255,12 @@ el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
-function replayCandidate() {   // re-watch the bout under review from its start
+function replayCandidate() {   // re-watch the bout under review, honoring any start/end trim
   if (!reviewCurrent) return;
+  const t = reviewTrim || reviewCurrent;
   evCandReplays++;                                  // replays ride along on the decision event
-  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e, n: evCandReplays });
-  playBout(reviewCurrent.s, reviewCurrent.e);
+  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: t.s, end: t.e, n: evCandReplays });
+  playBout(t.s, t.e);
 }
 el("rvReplay").onclick = replayCandidate;
 el("rvYes").onclick = acceptCandidate;
@@ -3896,6 +4268,12 @@ el("rvMerge").onclick = mergeCandidate;
 el("rvNo").onclick = rejectCandidate;
 el("rvSkip").onclick = nextCandidate;
 el("rvStop").onclick = endReview;
+el("browseBtn").onclick = () => browseStart();
+el("brPrev").onclick = () => browseStep(-1);
+el("brNext").onclick = () => browseStep(1);
+el("brReplay").onclick = browseReplay;
+el("brStop").onclick = closeBrowse;
+for (const id of ["browseWhich", "browseOrder", "browseLabels"]) el(id).onchange = e => { e.target.blur(); if (browse) browseStart(); };   // blur so arrow keys go back to scrubbing
 el("rvReclassify").onchange = e => {
   const otherBid = parseInt(e.target.value, 10);
   e.target.value = "";                              // reset immediately so it never looks "stuck" on a choice
@@ -3963,6 +4341,12 @@ stageInner.addEventListener("dblclick", ev => {   // double-click to zoom in on 
 
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  if (browse) {                                    // read only: browse keys, then only scrub, play and zoom fall through
+    if (e.key === "Escape") { e.preventDefault(); return closeBrowse(); }
+    if (e.key === "Enter") { e.preventDefault(); return browseStep(e.shiftKey ? -1 : 1); }
+    if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); return browseReplay(); }
+    if (!["ArrowLeft", "ArrowRight", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
+  }
   const reviewing = el("reviewPanel").classList.contains("on");
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI

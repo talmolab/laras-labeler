@@ -787,6 +787,13 @@ def _subproc_env(extra: dict | None = None) -> dict:
     return env
 
 
+def _gpu_flag() -> list[str]:
+    """`--gpu N` from the HIDRA_GPU env var. HiDRA resets CUDA_VISIBLE_DEVICES from --gpu, so the flag is the only way."""
+    import os
+    gpu = os.environ.get("HIDRA_GPU")
+    return ["--gpu", gpu] if gpu else []
+
+
 def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: float,
           weights: str | None = None, progress=lambda p, m: None) -> Path:
     """Run one (lab, action) head over the exported folder. Returns the frames parquet.
@@ -821,7 +828,7 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     out.mkdir(parents=True, exist_ok=True)
     cmd = _hidra_cmd(rt, "hidra.cli", "predict.py") + [str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
-           "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
+           "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"] + _gpu_flag()
     # Fine-tuned weights are a {config}-templated path; use them only if the checkpoints actually
     # exist. A fine-tune that recorded a weights path but produced no checkpoint (a failed/empty
     # train) would otherwise make every later Predict crash inside HiDRA with FileNotFoundError —
@@ -949,9 +956,51 @@ def directed_targets(frames_parquet: Path, lab: str, action: str,
     return tgt
 
 
+def rebind(prev: dict | None, lab: str, action: str, collapse: str, rate: float) -> dict:
+    """New hidra settings for a behavior. Keeps the fine-tuned checkpoint if the head is unchanged.
+
+    Which frames to train on is a training preference, so it survives a head change too."""
+    out = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+    prev = prev or {}
+    if (prev.get("lab"), prev.get("action")) == (lab, action):
+        for k in ("weights", "finetune_mode", "weights_reviewed_only", "weights_train_on",
+                  "weights_manifest"):
+            if k in prev:
+                out[k] = prev[k]
+    for k in ("reviewed_only", "train_on"):
+        if k in prev:
+            out[k] = prev[k]
+    return out
+
+
+TRAIN_ON = {"all": "every frame", "window": "inside the social window",
+            "reviewed": "reviewed frames only"}
+
+
+def train_on(h: dict) -> str:
+    """Which frames a fine-tune learns from. Older projects only have the reviewed_only switch."""
+    t = h.get("train_on")
+    if t in TRAIN_ON:
+        return t
+    return "reviewed" if h.get("reviewed_only") else "all"
+
+
+def staged_stem(vid: str, video_path: str | None) -> str:
+    """Staged file name for a clip. Keyed on video_id because many clips share the file name 0.mp4.
+
+    Must match between export_bouts and _hidra_train in app.py."""
+    import re
+    raw = Path(str(video_path or vid)).stem or str(vid)
+    base = re.sub(r"[^A-Za-z0-9_-]", "_", str(vid))
+    return base if raw == str(vid) else f"{base}_{raw}"
+
+
 def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
-                 n_animals_by_video: dict | None = None) -> dict:
+                 n_animals_by_video: dict | None = None, only: set | None = None) -> dict:
     """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.
+
+    `only` limits the export to those video_ids (the clips the caller staged). Without it a
+    clip held out of training would still send its positives.
 
     HiDRA's PyTorch fine-tuner takes a bout CSV with one row per positive span --
     ``file,agent,target,action,start_frame,stop_frame`` with stop EXCLUSIVE -- and treats every
@@ -979,6 +1028,33 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
     Returns counts plus `video_ids`, the videos carrying at least one positive -- exactly the set of
     tracking parquets the caller must stage alongside this CSV."""
+    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {1}, only)
+
+
+def export_reviewed(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
+                    n_animals_by_video: dict | None = None, only: set | None = None) -> dict:
+    """Every span you answered for one behavior, yes (1) or no (0) -> `finetune.py prepare --reviewed`.
+
+    Same CSV format and the same target rules as `export_bouts`. With it HiDRA trains on these
+    frames only and leaves every other frame out, instead of counting it as a negative. Frames
+    marked Unknown (2) are not exported, so they are left out too. Needs the HiDRA change that
+    adds `prepare --reviewed` (lab_scripts/hidra_patches/)."""
+    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {0, 1}, only)
+
+
+def export_window(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
+                  n_animals_by_video: dict | None = None, only: set | None = None) -> dict:
+    """Each clip's social window -> `finetune.py prepare --reviewed`, for "inside the social window".
+
+    Every frame inside the window is trained on, unlabeled frames as negatives as in a normal run.
+    Every frame outside it is left out. A clip with no window counts as all window. One span per
+    labeled track, with the same target rules as `export_bouts`."""
+    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {0}, only,
+                         window=True)
+
+
+def _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, values, only,
+                  window=False):
     proj = store.get(pid)
     n_by = n_animals_by_video or {}
     self_directed = head.get("collapse") == "self"
@@ -988,13 +1064,15 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
     ambiguous = 0
     for v in proj.videos:
         vid = v["video_id"]
+        if only is not None and vid not in only:
+            continue
         try:
             df = labels.rows_for_behavior(pid, vid, bid)
         except (KeyError, FileNotFoundError):
             continue
         if df is None or df.empty:
             continue
-        stem = Path(str(v.get("video_path") or vid)).stem or vid
+        stem = staged_stem(vid, v.get("video_path"))
         n_animals = int(n_by.get(vid) or v.get("n_animals") or 0)
         tracks = sorted({int(x) for x in df["track"].unique()})
         for t in tracks:
@@ -1002,10 +1080,16 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
             # get_runs_src runs are [start, stop, value, source, target]; target is the GUI-picked
             # recipient track for a directed bout (-1 = none/self). Compute the target PER SPAN so a
             # single actor can direct different bouts at different partners.
-            for run in labels.get_runs_src(pid, vid, t, bid).get(bid, []):
+            runs = labels.get_runs_src(pid, vid, t, bid).get(bid, [])
+            if window:
+                ws, we = v.get("social_start"), v.get("social_end")
+                if ws is None or we is None:
+                    ws, we = 0, int(v.get("n_frames") or 0)
+                runs = [[ws, we, 0, "window", -1]]
+            for run in runs:
                 a, b, val = int(run[0]), int(run[1]), int(run[2])
                 tgt = int(run[4]) if len(run) > 4 else -1
-                if val != 1 or b <= a:                     # positives only; negatives are implicit
+                if val not in values or b <= a:
                     continue
                 if self_directed:
                     target = "self"                        # the acting animal itself
@@ -1035,19 +1119,19 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
             "directed_ambiguous": ambiguous}
 
 
-_TRAIN_HELP: dict[tuple, str] = {}   # cache of `finetune train --help` text, keyed by command prefix
+_TRAIN_HELP: dict[tuple, str] = {}   # cache of `finetune <cmd> --help` text, keyed by command prefix
 
 
-def _train_has_flag(entry: list[str], flag: str) -> bool:
-    """Does this HiDRA checkout's ``finetune train`` accept ``flag``? Probed once per command prefix
+def _train_has_flag(entry: list[str], flag: str, cmd: str = "train") -> bool:
+    """Does this HiDRA checkout's ``finetune <cmd>`` accept ``flag``? Probed once per command prefix
     (``--help`` is cheap and side-effect-free) and cached, so a flag added by a newer HiDRA can be
     used when present without breaking an older checkout that predates it. Any probe failure is treated
     as 'unsupported' — the fine-tune then runs exactly as before."""
     import subprocess
-    key = tuple(entry)
+    key = tuple(entry) + (cmd,)
     if key not in _TRAIN_HELP:
         try:
-            r = subprocess.run(entry + ["train", "--help"], capture_output=True, text=True,
+            r = subprocess.run(entry + [cmd, "--help"], capture_output=True, text=True,
                                timeout=60, env=_subproc_env())
             _TRAIN_HELP[key] = (r.stdout or "") + (r.stderr or "")
         except (subprocess.SubprocessError, OSError):
@@ -1063,7 +1147,8 @@ FINETUNE_MODES = ("head", "tail", "embedding")
 
 def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, data_root: Path,
              tag: str, counts: dict, mode: str = "head", configs: list[str] | None = None,
-             smoke: bool = False, steps: int | None = None, progress=lambda p, m: None) -> dict:
+             smoke: bool = False, steps: int | None = None, progress=lambda p, m: None,
+             reviewed_csv: Path | None = None) -> dict:
     """Adapt the adopted (lab, action) head to this project's reviewed labels, via HiDRA's
     ``finetune.py prepare`` then ``train`` (the PyTorch rewrite; the old single-shot
     ``train_perlab_heads.py --mode labtail`` CLI is gone).
@@ -1114,18 +1199,24 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     models = data_root / "models"
     workdir = data_root / "_work"          # MUST be set on Windows: train defaults it to /dev/shm
     cwd = str(home) if home.exists() else None
+    # HiDRA's whole output, kept so a run can be checked afterwards (which clips each config
+    # trained on, how many frames were reviewed). The progress bar only ever shows one line.
+    full_log = data_root / "hidra_log.txt"
 
     def _stream(cmd, label, lo, hi):
         progress(lo, f"{label} …")
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1, env=_subproc_env())
         seen: list[str] = []
-        for line in proc.stdout or []:
-            line = line.rstrip()
-            if not line:
-                continue
-            seen = (seen + [line])[-40:]
-            progress(min(hi - 1, lo + len(seen)), line[:120])
+        with full_log.open("a", buffering=1) as out:          # line-buffered: readable while it runs
+            out.write("$ " + " ".join(cmd) + "\n")
+            for line in proc.stdout or []:
+                out.write(line)
+                line = line.rstrip()
+                if not line:
+                    continue
+                seen = (seen + [line])[-40:]
+                progress(min(hi - 1, lo + len(seen)), line[:120])
         if proc.wait() != 0:
             raise RuntimeError(f"HiDRA {label} failed:\n" + "\n".join(seen[-15:]))
         return seen
@@ -1134,13 +1225,21 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     prepare = entry + ["prepare",
                "--tracking", str(tracking_dir), "--annotations", str(annotations_csv),
                "--lab", head["lab"], "--out", str(staged), "--drop-unsupported"]
+    if reviewed_csv is not None:
+        if not _train_has_flag(entry, "--reviewed", cmd="prepare"):
+            raise RuntimeError(
+                "Training on reviewed frames or the social window needs a HiDRA with "
+                "`finetune.py prepare --reviewed`. "
+                f"The one at {home} does not have it. Apply lab_scripts/hidra_patches/"
+                "reviewed-frames-only.patch to that checkout, or set 'train on' back to every frame.")
+        prepare += ["--reviewed", str(reviewed_csv)]
     log = _stream(prepare, "prepare", 2, 20)
 
     # 2. train -------------------------------------------------------------------------------------
     train = entry + ["train",
              "--data", str(staged), "--lab", head["lab"], "--actions", head["action"],
              "--out", str(models), "--tag", tag, "--mode", mode,
-             "--backend", "torch", "--workdir", str(workdir)]
+             "--backend", "torch", "--workdir", str(workdir)] + _gpu_flag()
     if configs:
         train += ["--configs", ",".join(configs)]
     if steps:
@@ -1173,7 +1272,8 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     return {"mode": mode, "lab": head["lab"], "action": head["action"], "smoke": smoke,
             "checkpoint": weights, "weights": weights, "backend": rt["backend"],
             "bouts": counts.get("bouts"), "spans": counts.get("spans"),
-            "videos": counts.get("videos"), "log": log[-15:]}
+            "videos": counts.get("videos"), "log": log[-15:],
+            "reviewed_only": reviewed_csv is not None, "full_log": str(full_log)}
 
 
 # Behaviour categories, for grouping the classifier picker the way the ethogram is organised rather

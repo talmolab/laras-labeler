@@ -200,7 +200,15 @@ class Trainer:
             vid = v["video_id"]
             if not v.get("has_poses"):
                 continue
+            if v.get("exclude_from_training"):                      # held out (app.py set_clip_training)
+                skipped.append({"video_id": vid, "reason": "held out of training"})
+                continue
             rdf = self.labels.rows_for_behavior(pid, vid, bid)      # track, frame, value
+            if len(rdf) == 0:
+                continue
+            ws, we = v.get("social_start"), v.get("social_end")
+            if ws is not None and we is not None:                   # social window: never train outside it
+                rdf = rdf[(rdf["frame"] >= ws) & (rdf["frame"] < we)]
             if len(rdf) == 0:
                 continue
             if self.features.status(pid, vid)["status"] != "ready":
@@ -314,7 +322,7 @@ class Trainer:
         with what gather()/status() expect."""
         proj = self.store.get(pid)
         todo = [v["video_id"] for v in proj.videos
-                if v.get("has_poses")
+                if v.get("has_poses") and not v.get("exclude_from_training")
                 and len(self.labels.rows_for_behavior(pid, v["video_id"], bid)) > 0
                 and self.features.status(pid, v["video_id"])["status"] != "ready"]
         for i, vid in enumerate(todo):

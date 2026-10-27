@@ -17,3 +17,6 @@ scratch/
 
 # OS
 .DS_Store
+
+# Local tool settings (never commit)
+.vscode/

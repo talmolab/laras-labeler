@@ -1,0 +1,544 @@
+diff --git a/src/hidra/data.py b/src/hidra/data.py
+index 9a80c20..9c830a1 100644
+--- a/src/hidra/data.py
++++ b/src/hidra/data.py
+@@ -163,7 +163,7 @@ def create_tracking_data(row):
+ 
+ 
+ class Labels:
+-    def __init__(self, path, dtype, labeled_behaviors, label_index, label_masks):
++    def __init__(self, path, dtype, labeled_behaviors, label_index, label_masks, reviewed=None):
+         self.path = path
+         self.dtype = dtype
+         self.labeled_behaviors = labeled_behaviors
+@@ -174,6 +174,9 @@ class Labels:
+         self.frame_stride = self.num_labels * self.itemsize
+         self.label_to_idx = {self.label_index[i]: i for i in range(self.num_labels)}
+         self.label_masks = label_masks
++        # (pairs, frames) bool or None. Set when `finetune.py prepare --reviewed` staged the frames
++        # someone actually looked at. Training then leaves every other frame out of the loss.
++        self.reviewed = reviewed
+ 
+     def __getitem__(self, slices):
+         assert isinstance(slices, tuple)
+@@ -283,6 +286,17 @@ def create_labels(row):
+                 end_idx = behavior_df.iloc[i]["stop_frame"]
+                 labels[mouse_pair_encoding, start_idx:end_idx] = action_id
+ 
++    reviewed = None
++    reviewed_path = f"{dataset_dir}/{mode}_reviewed/{lab_name}/{video_id}.parquet"
++    if os.path.isfile(reviewed_path):
++        reviewed = labels != 0                     # a positive frame was reviewed by definition
++        for r in pd.read_parquet(reviewed_path).itertuples():
++            agent_raw = parse_mouse_id(r.agent_id)
++            target_raw = agent_raw if r.target_id == "self" else parse_mouse_id(r.target_id)
++            pair = (MOUSE_IDS.encode(agent_raw), MOUSE_IDS.encode(target_raw))
++            if pair in mouse_pair_encodings:
++                reviewed[mouse_pair_encodings[pair], int(r.start_frame):int(r.stop_frame)] = True
++
+     processed_labels_dir = f"{working_dir}/{mode}/labels"
+     os.makedirs(processed_labels_dir, exist_ok=True)
+     labels_path = f"{processed_labels_dir}/{video_id}.bin"
+@@ -295,6 +309,7 @@ def create_labels(row):
+         labeled_behaviors=labeled_behaviors,
+         label_index=mouse_pairs,
+         label_masks=label_masks,
++        reviewed=reviewed,
+     )
+ 
+ 
+@@ -901,6 +916,20 @@ class Dataset(BaseDataset):
+             rpad = pad - lpad
+             labels = labels_flat_resampled[lpad : labels_flat_resampled.shape[0] - rpad]
+ 
++            # Reviewed-frames-only training: a frame nobody reviewed gets label -1, which the
++            # PyTorch loss leaves out instead of counting it as a negative. Resampled onto the
++            # model's time grid exactly like the labels, so the two stay aligned.
++            reviewed = getattr(video.labels, "reviewed", None)
++            if reviewed is not None:
++                seen = reviewed[:, input_start_frame:input_end_frame]
++                rv = np.zeros([input_num_frames, 2], dtype="float32")
++                for k, idx in enumerate((self_label, cross_label)):
++                    if idx != -1:
++                        rv[: seen.shape[1], k] = seen[idx]
++                rv = np.stack([np.interp(input_ts, input_crop_ts, rv[:, k]) for k in range(2)], axis=1)
++                rv = rv[lpad : rv.shape[0] - rpad] >= 0.5
++                labels = np.where(rv, labels, -1).astype("int16")
++
+             self_labels, cross_labels = labels[:, 0], labels[:, 1]
+ 
+         output_seq_duration = self.output_seq_len / self.sample_rate
+diff --git a/src/hidra/finetune.py b/src/hidra/finetune.py
+index 47dc396..fdf45d5 100644
+--- a/src/hidra/finetune.py
++++ b/src/hidra/finetune.py
+@@ -374,14 +374,23 @@ def cmd_prepare(args):
+                           extra_actions=new_actions)
+     also_scored = parse_also_scored(args.also_scored,
+                                     annotatable_actions(args.lab, hb) | set(new_actions))
+-
+-    unknown = sorted(set(annot["stem"]) - set(by_stem))
++    # --reviewed: the spans someone actually looked at, in the --annotations format. Every
++    # other frame is left out of training instead of becoming a negative.
++    reviewed = None
++    if args.reviewed:
++        reviewed = check_actions(read_annotations(args.reviewed, args.stop_inclusive, by_stem),
++                                 args.lab, args.thresholds, args.drop_unsupported,
++                                 extra_actions=new_actions)
++
++    named = set(annot["stem"]) | (set(reviewed["stem"]) if reviewed is not None else set())
++    unknown = sorted(named - set(by_stem))
+     if unknown:
+         sys.exit(f"ERROR: annotated file(s) not found in {args.tracking}: {unknown}\n"
+                  f"  tracking files present: {sorted(by_stem)}")
+-    annotated_stems = set(annot["stem"])
+-    # A video with no bouts is worth staging only when --also-scored says it was watched:
+-    # then its frames are negatives. Otherwise it teaches the model nothing.
++    # A video with no bouts is worth staging only when --also-scored says it was watched, or
++    # --reviewed lists frames of it: then those frames are negatives. Otherwise it teaches the
++    # model nothing.
++    annotated_stems = named
+     staged_stems = set(by_stem) if also_scored else annotated_stems
+     used = [by_stem[s] for s in sorted(staged_stems)]
+     skipped = sorted(set(by_stem) - staged_stems)
+@@ -404,8 +413,14 @@ def cmd_prepare(args):
+ 
+     tdir = os.path.join(args.out, "train_tracking", args.lab)
+     adir = os.path.join(args.out, "train_annotation", args.lab)
++    rdir = os.path.join(args.out, "train_reviewed", args.lab)
+     os.makedirs(tdir, exist_ok=True)
+     os.makedirs(adir, exist_ok=True)
++    # The trainer applies whatever reviewed masks it finds here, so a re-prepare without
++    # --reviewed must not leave an earlier run's masks behind.
++    shutil.rmtree(rdir, ignore_errors=True)
++    if reviewed is not None:
++        os.makedirs(rdir, exist_ok=True)
+ 
+     rows = []
+     for pq in used:
+@@ -452,6 +467,21 @@ def cmd_prepare(args):
+             else:
+                 print(f"  note: {stem}: --also-scored {agent},{target},{action} skipped "
+                       f"(mouse not tracked; tracked: {sorted(mice)})")
++        n_reviewed = None
++        if reviewed is not None:
++            r = reviewed[(reviewed["stem"] == stem) & (reviewed["start_frame"] < n_frames)].copy()
++            missing = {m for col in ("agent", "target") for m in r[col] if m not in mice and m != "self"}
++            if missing:
++                sys.exit(f"ERROR: {stem}: reviewed spans name {sorted(missing)}, not tracked in the "
++                         f"parquet (tracked: {sorted(mice)})")
++            r["stop_frame"] = r["stop_frame"].clip(upper=n_frames)
++            out_r = pd.DataFrame(dict(agent_id=r["agent"].to_numpy(), target_id=r["target"].to_numpy(),
++                                      action=r["action"].to_numpy(),
++                                      start_frame=r["start_frame"].to_numpy(np.int64),
++                                      stop_frame=r["stop_frame"].to_numpy(np.int64)))
++            out_r.to_parquet(os.path.join(rdir, f"{vid}.parquet"))
++            labeled |= {f"{q.agent_id},{q.target_id},{q.action}" for q in out_r.itertuples()}
++            n_reviewed = int(sum(q.stop_frame - q.start_frame for q in out_r.itertuples()))
+         labeled = sorted(labeled)
+         pix, fps = meta[pq]
+         rows.append(dict(lab_id=args.lab, video_id=vid, frames_per_second=fps,
+@@ -459,7 +489,9 @@ def cmd_prepare(args):
+                          behaviors_labeled=json.dumps(labeled)))
+         pos = int(sum(r.stop_frame - r.start_frame for r in out_a.itertuples()))
+         print(f"  {stem} -> video_id {vid}: {n_frames} frames, {len(out_a)} bouts, "
+-              f"{pos} positive frames ({100 * pos / max(n_frames, 1):.1f}%), {len(labeled)} labelled combos")
++              f"{pos} positive frames ({100 * pos / max(n_frames, 1):.1f}%), {len(labeled)} labelled combos"
++              + ("" if n_reviewed is None else
++                 f", {n_reviewed} reviewed frames (only these are trained on)"))
+ 
+     man = pd.DataFrame(rows)
+     man.to_csv(os.path.join(args.out, "TRAIN.csv"), index=False)
+@@ -467,6 +499,8 @@ def cmd_prepare(args):
+     # but writing both keeps a re-prepared dataset from being shadowed by a stale train.csv.
+     man.to_csv(os.path.join(args.out, "train.csv"), index=False)
+     staged = set(annot["action"]) | {a for _, _, a in also_scored}
++    if reviewed is not None:
++        staged |= set(reviewed["action"])
+     # One place decides what `prepare` suggests; --new-head adds its column to that list
+     # rather than deriving a second one. Unioning before the `heads + opt_in` concatenation
+     # keeps the opt-in last, and makes the suggestion non-empty whenever --new-head is given.
+@@ -505,6 +539,13 @@ def cmd_train(args):
+         sys.exit(f"ERROR: {args.data} was staged for lab(s) {labs}, not {args.lab}")
+     hb = heads_by_lab(args.thresholds)
+     annotated = sorted({b.split(",")[-1] for bl in man["behaviors_labeled"] for b in json.loads(bl)})
++    rdir = os.path.join(args.data, "train_reviewed", args.lab)
++    if os.path.isdir(rdir) and os.listdir(rdir):
++        if getattr(args, "backend", "torch") != "torch":
++            sys.exit("ERROR: this data was prepared with --reviewed, which only the PyTorch "
++                     "backend honours. Drop --backend jax.")
++        print("  reviewed-frame masks found: frames outside the reviewed spans are left out of "
++              "the loss. The validation F1 printed below still counts them as negatives.")
+ 
+     from .download_models import require_weights
+     require_weights()                      # warm-starting needs the base checkpoints
+@@ -852,6 +893,10 @@ def main():
+                    help="(agent,target,action) combinations every staged video scored, even where "
+                         "it has no bout of them -- their frames become negatives. Staging then "
+                         "also includes tracking files with no annotations at all")
++    p.add_argument("--reviewed", metavar="CSV",
++                   help="spans someone actually reviewed, same columns as --annotations. Only those "
++                        "frames are trained on: the rest count as neither positive nor negative "
++                        "(PyTorch backend). Positive bouts always count as reviewed")
+     p.add_argument("--lab", required=True, help="lab slot to adopt (see: python predict.py --list-heads)")
+     p.add_argument("--out", default="ft_data", help="staging dir (default: ft_data)")
+     p.add_argument("--pix-per-cm", type=float, help="pixels-per-cm for all files (metadata.csv rows override)")
+diff --git a/src/hidra/torch/train.py b/src/hidra/torch/train.py
+index 75b54aa..d4f8fd0 100644
+--- a/src/hidra/torch/train.py
++++ b/src/hidra/torch/train.py
+@@ -214,22 +214,52 @@ class CheckpointManager:
+ 
+ # ------------------------------------------------------------------ losses
+ 
+-def masked_bce(logits, labels, mask):
++def masked_bce(logits, labels, mask, frame_mask=None):
+     """`MultiTaskPerLabModel._masked_bce`, term for term.
+ 
+     `mask` is per-(sample, action) -- an action a video did not annotate contributes
+     nothing -- and the normalizer is the total unmasked action count, not the element
+     count, so a batch with few annotated behaviours is not up-weighted.
++
++    `frame_mask` (sample, time, action) is only passed for data staged with reviewed-frame
++    masks (`finetune.py prepare --reviewed`). Each window then averages over its reviewed
++    frames. A window with none leaves the normalizer. When every frame is reviewed this is
++    the same loss as without it.
+     """
+     lp = torch.where(labels == 1,
+                      torch.nn.functional.logsigmoid(logits),
+                      torch.nn.functional.logsigmoid(-logits))
+-    lp = (lp * mask[:, None]).sum(dim=-1)
+-    w = mask.sum()
+-    nll = -lp.mean(dim=1).sum() / torch.clamp(w, min=1.0)
++    if frame_mask is None:
++        lp = (lp * mask[:, None]).sum(dim=-1)
++        w = mask.sum()
++        nll = -lp.mean(dim=1).sum() / torch.clamp(w, min=1.0)
++        return nll, w
++    n = frame_mask.sum(dim=1)
++    per_window = (lp * frame_mask).sum(dim=1) / torch.clamp(n, min=1.0)
++    used = mask * (n > 0).to(mask.dtype)
++    w = used.sum()
++    nll = -(per_window * used).sum() / torch.clamp(w, min=1.0)
+     return nll, w
+ 
+ 
++def frame_mask_in_action_space(batch, mask, sniffall_id=None, sniff_family_ids=()):
++    """Which frames supervise which action, or None when every frame does.
++
++    Data staged with `finetune.py prepare --reviewed` carries label -1 on frames nobody
++    reviewed (`data.Dataset.get_element`). Those frames get a 0 here so they count as
++    neither positive nor negative. Otherwise this returns None and nothing changes.
++    """
++    sl, cl = batch["self_labels"], batch["cross_labels"]
++    if not (bool((sl < 0).any()) or bool((cl < 0).any())):
++        return None
++    dt = mask.dtype
++    fm = ((sl >= 0).to(dt)[..., None] * batch["self_label_mask"].to(dt)[:, None]
++          + (cl >= 0).to(dt)[..., None] * batch["cross_label_mask"].to(dt)[:, None])
++    if sniffall_id is not None and len(sniff_family_ids):
++        fm[..., sniffall_id] = fm[..., list(sniff_family_ids)].amax(-1)
++    return fm.clamp(max=1.0) * mask[:, None]
++
++
+ def labels_in_action_space(batch, n_actions, sniffall_id=None, sniff_family_ids=(),
+                            dtype=torch.float32):
+     """`MultiTaskPerLabModel._labels37`: one-hot labels and the per-action supervision mask.
+@@ -242,8 +272,10 @@ def labels_in_action_space(batch, n_actions, sniffall_id=None, sniff_family_ids=
+     family. The subtypes are mutually exclusive under an argmax label so the sum is already
+     in {0, 1}; the clamp guards ties.
+     """
+-    self_labels = torch.nn.functional.one_hot(batch["self_labels"].long(), n_actions).to(dtype)
+-    cross_labels = torch.nn.functional.one_hot(batch["cross_labels"].long(), n_actions).to(dtype)
++    # clamp: an unreviewed frame (-1, see frame_mask_in_action_space) one-hots as "none"
++    # and is then masked out of the loss
++    self_labels = torch.nn.functional.one_hot(batch["self_labels"].long().clamp(min=0), n_actions).to(dtype)
++    cross_labels = torch.nn.functional.one_hot(batch["cross_labels"].long().clamp(min=0), n_actions).to(dtype)
+     labels = self_labels + cross_labels
+ 
+     lm = batch["self_label_mask"].to(dtype) + batch["cross_label_mask"].to(dtype)
+@@ -299,19 +331,23 @@ def perlab_loss_from_feats(head, x, batch, head_columns=None, include_shared=Fal
+            if a in schema.ACTIONS.value_to_idx] if sniffall_id is not None else ()
+     labels, mask = labels_in_action_space(batch, len(schema.ACTIONS), sniffall_id, fam,
+                                           dtype=logits_perlab.dtype)
++    frames = frame_mask_in_action_space(batch, mask, sniffall_id, fam)
+ 
+     Pb = head.P[jax_gather_index(batch["lab_id"], head.P.shape[0])].to(logits_perlab.dtype)
+     labels_perlab = torch.einsum("bta,baj->btj", labels, Pb)
+     mask_perlab = torch.einsum("ba,baj->bj", mask, Pb)
++    frames_perlab = None if frames is None else torch.einsum("bta,baj->btj", frames, Pb)
+     if head_columns is not None:
+         mask_perlab = mask_perlab * head_columns.to(mask_perlab.dtype)
++        if frames_perlab is not None:
++            frames_perlab = frames_perlab * head_columns.to(frames_perlab.dtype)
+ 
+-    nll, w = masked_bce(logits_perlab, labels_perlab, mask_perlab)
++    nll, w = masked_bce(logits_perlab, labels_perlab, mask_perlab, frames_perlab)
+     metrics = {"nll_perlab": (float(nll.detach()), float(w.detach()))}
+ 
+     if include_shared:
+         logits_shared = head.layers["out-proj"](x)
+-        nll_shared, w_shared = masked_bce(logits_shared, labels, mask)
++        nll_shared, w_shared = masked_bce(logits_shared, labels, mask, frames)
+         metrics["nll_shared"] = (float(nll_shared.detach()), float(w_shared.detach()))
+         nll = nll + nll_shared
+     metrics["nll"] = (float(nll.detach()), float(w.detach()))
+@@ -580,6 +616,17 @@ class FeatureCache:
+         self.n = 0
+         self.n_batches = 0
+ 
++    @staticmethod
++    def _has_reviewed_frames(batch):
++        """Per window: does it supervise anything? Always true unless the data was staged with
++        reviewed-frame masks, where a window with no reviewed frame adds nothing to the loss
++        and would only dilute the batches. Validation caches keep every window."""
++        sl, cl = np.asarray(batch["self_labels"]), np.asarray(batch["cross_labels"])
++        if not ((sl < 0).any() or (cl < 0).any()):
++            return np.ones(sl.shape[0], dtype=bool)
++        return (((sl >= 0).any(axis=1) & np.asarray(batch["self_label_mask"]).any(axis=1))
++                | ((cl >= 0).any(axis=1) & np.asarray(batch["cross_label_mask"]).any(axis=1)))
++
+     @torch.no_grad()
+     def build(self, head, batches, device, keep_elements=False):
+         """Run the frozen layers over `batches` -- raw numpy batch dicts from `data.batch`,
+@@ -591,6 +638,8 @@ class FeatureCache:
+         feats, labels, elements = [], {k: [] for k in self.LABEL_KEYS}, []
+         for batch in batches:
+             keep = np.asarray(batch["batch_mask"]) == 1
++            if not keep_elements:
++                keep &= self._has_reviewed_frames(batch)
+             self.n_batches += 1
+             if not keep.any():
+                 continue
+diff --git a/src/hidra/torch/train_perlab.py b/src/hidra/torch/train_perlab.py
+index 875226a..26bee8e 100644
+--- a/src/hidra/torch/train_perlab.py
++++ b/src/hidra/torch/train_perlab.py
+@@ -386,6 +386,12 @@ def finetune_config(settings, smoke=False, device=None):
+                                                     settings["video_ids"])
+     print(f"[LABTAIL {lab}] {len(train_videos)} train, {len(val_videos)} val video(s); "
+           f"mode={mode} steps={settings['steps']} lr={settings['lr']}", flush=True)
++    masked = [v for v in train_videos if getattr(v.labels, "reviewed", None) is not None]
++    if masked:
++        seen = sum(int(v.labels.reviewed.any(axis=0).sum()) for v in masked)
++        total = sum(int(v.num_frames) for v in masked)
++        print(f"[REVIEWED] training on reviewed frames only: {seen} of {total} frames in "
++              f"{len(masked)} video(s). The rest are left out of the loss.", flush=True)
+ 
+     # With --cache-features the training stream is finite: `cache_passes` augmentation draws
+     # of every window, computed once. Without it, it is the endless stream the original uses.
+diff --git a/tests/test_reviewed_frames.py b/tests/test_reviewed_frames.py
+new file mode 100644
+index 0000000..d0e9996
+--- /dev/null
++++ b/tests/test_reviewed_frames.py
+@@ -0,0 +1,209 @@
++"""Reviewed-frames-only fine-tuning (`finetune.py prepare --reviewed`).
++
++A frame nobody reviewed must count as neither positive nor negative. These tests pin the
++places that make that true. They cover what `prepare` stages, the per-frame mask
++`create_labels` builds, the -1 label a window carries for an unreviewed frame and the loss
++that leaves it out. With every frame reviewed, or no --reviewed at all, nothing may change.
++"""
++import os
++import subprocess
++import sys
++
++import numpy as np
++import pandas as pd
++import torch
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++LAB, ACTION = "LyricalHare", "approach"
++BOUT = (100, 160)                      # the one positive bout in each synthetic video
++REVIEWED = [(60, 100), (160, 260)]     # reviewed negatives around it (video 0 only)
++
++
++def _run(args, expect=0):
++    res = subprocess.run([sys.executable, os.path.join(REPO, "finetune.py"), *args],
++                         capture_output=True, text=True, cwd=REPO, timeout=900)
++    assert res.returncode == expect, f"{res.stdout[-3000:]}\n{res.stderr[-3000:]}"
++    return res.stdout + res.stderr
++
++
++def _prepare(track_dir, out, reviewed=True):
++    files = sorted(p.name for p in track_dir.glob("*.parquet"))
++    span = dict(agent="mouse2", target="mouse1", action=ACTION)
++    bouts = out / "bouts.csv"
++    pd.DataFrame([dict(file=f, start_frame=BOUT[0], stop_frame=BOUT[1], **span) for f in files]
++                 ).to_csv(bouts, index=False)
++    args = ["prepare", "--tracking", str(track_dir), "--annotations", str(bouts), "--lab", LAB,
++            "--out", str(out / "ft_data"), "--pix-per-cm", "16", "--fps", "30"]
++    if reviewed:
++        rv = out / "reviewed.csv"
++        pd.DataFrame([dict(file=files[0], start_frame=a, stop_frame=b, **span) for a, b in REVIEWED]
++                     ).to_csv(rv, index=False)
++        args += ["--reviewed", str(rv)]
++    return _run(args), out / "ft_data", files
++
++
++def _load(data_dir, work_dir, monkeypatch):
++    from hidra import data
++    from hidra.torch.train_perlab import load_finetune_videos
++
++    monkeypatch.setenv("HIDRA_DATA_DIR", str(data_dir))
++    monkeypatch.setenv("PERLAB_WORKDIR", str(work_dir))
++    # load_finetune_videos repoints these module globals. Restore them after the test.
++    monkeypatch.setattr(data, "dataset_dir", data.dataset_dir)
++    monkeypatch.setattr(data, "working_dir", data.working_dir)
++    return load_finetune_videos()
++
++
++# ------------------------------------------------------------------ prepare
++
++def test_prepare_stages_reviewed_spans_and_clears_them_on_a_plain_rerun(track_dir, tmp_path):
++    log, d, files = _prepare(track_dir, tmp_path)
++    rdir = d / "train_reviewed" / LAB
++    staged = sorted(os.listdir(rdir))
++    assert len(staged) == len(files)            # one mask file per staged video
++    man = pd.read_csv(d / "TRAIN.csv")
++    assert all(f'"mouse2,mouse1,{ACTION}"' in b for b in man["behaviors_labeled"])
++    assert "reviewed frames (only these are trained on)" in log
++
++    # The trainer applies whatever masks it finds, so a plain re-prepare must remove them.
++    _prepare(track_dir, tmp_path, reviewed=False)
++    assert not rdir.exists()
++
++
++# ------------------------------------------------------------------ labels and windows
++
++def test_reviewed_mask_covers_spans_and_positive_bouts_only(track_dir, tmp_path, monkeypatch):
++    _, d, files = _prepare(track_dir, tmp_path)
++    videos = _load(d, tmp_path / "work", monkeypatch)
++    man = pd.read_csv(d / "TRAIN.csv")
++    by_file = dict(zip(man["video_id"], man["file"]))
++    for v in videos:
++        seen = v.labels.reviewed
++        assert seen is not None and seen.shape == (1, v.num_frames)
++        expect = np.zeros(v.num_frames, dtype=bool)
++        expect[BOUT[0]:BOUT[1]] = True            # a positive frame is reviewed by definition
++        if by_file[v.video_id] == files[0]:
++            for a, b in REVIEWED:
++                expect[a:b] = True
++        assert np.array_equal(seen[0], expect)
++
++
++def test_no_reviewed_flag_means_no_mask(track_dir, tmp_path, monkeypatch):
++    _, d, _ = _prepare(track_dir, tmp_path, reviewed=False)
++    assert all(v.labels.reviewed is None for v in _load(d, tmp_path / "work", monkeypatch))
++
++
++def test_windows_mark_exactly_the_unreviewed_frames(track_dir, tmp_path, monkeypatch):
++    from hidra import data, schema
++
++    _, d, _ = _prepare(track_dir, tmp_path)
++    videos = _load(d, tmp_path / "work", monkeypatch)
++    cfg = schema.get_configs()["15fps_5bp"]
++    ds = data.Dataset(videos=videos, seq_len=64, sample_rate=cfg["sample_rate"], padding=32,
++                      num_bodyparts=cfg["num_bodyparts"], num_epochs=1, unsupervised=False,
++                      num_workers=1, seed=[0])
++    keys = next(ds.epoch_generator())
++    checked = 0
++    for n, key in enumerate(keys[:200]):
++        v = ds.videos[int(key[0])]
++        cross = int(key[4])
++        if cross == -1:
++            continue
++        el = ds.get_element(key, {"element_idx": n, "epoch_idx": 0})
++        t0, t1 = float(key[5]), float(key[6])
++        mid, half = (t0 + t1) / 2, (t1 - t0) * ds.input_seq_len / ds.output_seq_len / 2
++        ts = np.linspace(mid - half, mid + half, ds.input_seq_len)[32:32 + ds.output_seq_len]
++        frames = ts * v.fps
++        seen = v.labels.reviewed[cross]
++        edges = np.flatnonzero(np.diff(seen.astype(int))) + 0.5
++        for f, lab in zip(frames, el["cross_labels"]):
++            if f < 0 or f > v.num_frames - 1 or (len(edges) and np.abs(edges - f).min() < 2):
++                continue                          # off the video, or too close to a span edge to call
++            assert (lab == -1) == (not seen[int(round(f))])
++            checked += 1
++    assert checked > 100
++
++
++# ------------------------------------------------------------------ loss
++
++def _random(seed=0, b=4, t=16, a=5):
++    g = torch.Generator().manual_seed(seed)
++    logits = torch.randn(b, t, a, generator=g)
++    labels = (torch.rand(b, t, a, generator=g) > 0.7).float()
++    mask = (torch.rand(b, a, generator=g) > 0.3).float()
++    return logits, labels, mask
++
++
++def test_loss_is_unchanged_when_every_frame_is_reviewed():
++    from hidra.torch.train import masked_bce
++
++    logits, labels, mask = _random()
++    plain, w0 = masked_bce(logits, labels, mask)
++    full, w1 = masked_bce(logits, labels, mask, mask[:, None].expand_as(labels).clone())
++    assert torch.allclose(plain, full, atol=1e-6) and float(w0) == float(w1)
++
++
++def test_unreviewed_frames_do_not_move_the_loss():
++    from hidra.torch.train import masked_bce
++
++    logits, labels, mask = _random(1)
++    frames = mask[:, None].expand_as(labels).clone()
++    frames[:, 8:] = 0
++    a, _ = masked_bce(logits, labels, mask, frames)
++    flipped, noisy = labels.clone(), logits.clone()
++    flipped[:, 8:] = 1 - flipped[:, 8:]
++    noisy[:, 8:] += 5.0
++    b, _ = masked_bce(noisy, flipped, mask, frames)
++    assert torch.equal(a, b)
++    first_half, _ = masked_bce(logits[:, :8], labels[:, :8], mask)
++    assert torch.allclose(a, first_half, atol=1e-6)
++
++
++def test_a_window_with_no_reviewed_frame_leaves_the_normalizer():
++    from hidra.torch.train import masked_bce
++
++    logits, labels, mask = _random(2)
++    frames = mask[:, None].expand_as(labels).clone()
++    frames[0] = 0
++    _, w = masked_bce(logits, labels, mask, frames)
++    assert float(w) == float(mask[1:].sum())
++
++
++def test_frame_mask_is_none_without_unreviewed_frames_and_zero_on_them():
++    from hidra.torch.train import frame_mask_in_action_space, labels_in_action_space
++
++    b, t, a, act = 2, 6, 5, 3
++    cross = torch.zeros(b, t, dtype=torch.int16)
++    cross[0, 2] = act
++    batch = {"self_labels": torch.zeros(b, t, dtype=torch.int16), "cross_labels": cross,
++             "self_label_mask": torch.zeros(b, a, dtype=torch.int8),
++             "cross_label_mask": torch.zeros(b, a, dtype=torch.int8),
++             "batch_mask": torch.ones(b, dtype=torch.int8)}
++    batch["cross_label_mask"][:, act] = 1
++    _, mask = labels_in_action_space(batch, a)
++    assert frame_mask_in_action_space(batch, mask) is None
++
++    batch["self_labels"][:] = -1                  # the unsupervised track, all unreviewed
++    batch["cross_labels"][1, 4:] = -1
++    labels, mask = labels_in_action_space(batch, a)   # must not choke on -1
++    fm = frame_mask_in_action_space(batch, mask)
++    assert fm.shape == (b, t, a)
++    assert fm[:, :, [0, 1, 2, 4]].sum() == 0      # unsupervised actions stay out
++    assert fm[0, :, act].tolist() == [1.0] * t
++    assert fm[1, :, act].tolist() == [1.0] * 4 + [0.0] * 2
++    assert labels[0, 2, act] == 1
++
++
++def test_cache_keeps_only_windows_with_a_reviewed_frame():
++    from hidra.torch.train import FeatureCache
++
++    n_a = 5
++    batch = {"self_labels": np.zeros((3, 4), np.int16), "cross_labels": np.zeros((3, 4), np.int16),
++             "self_label_mask": np.zeros((3, n_a), np.int8),
++             "cross_label_mask": np.zeros((3, n_a), np.int8)}
++    batch["cross_label_mask"][:, 3] = 1
++    assert FeatureCache._has_reviewed_frames(batch).all()     # no masks: keep everything
++    batch["self_labels"][:] = -1
++    batch["cross_labels"][0] = -1                             # nothing reviewed
++    batch["cross_labels"][1, :2] = -1                         # half reviewed
++    assert FeatureCache._has_reviewed_frames(batch).tolist() == [False, True, True]
