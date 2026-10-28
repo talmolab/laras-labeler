@@ -150,6 +150,14 @@ A "mouse" is a (clip, track): tracks are not linked across clips. Add `--baselin
 bout's posture by the same mouse's median posture outside the behavior. That cancels differences in
 build (or in how one animal's keypoints are placed), leaving how the behavior itself changes each mouse.
 
+`plot_mouse_vs_cage.py` draws it: for each behavior, the bout-to-bout, mouse-to-mouse and
+cage-to-cage CV of every kinematic against what bout noise alone would give, plus the bouts
+themselves grouped cage → mouse.
+
+```bash
+uv run scripts/plot_mouse_vs_cage.py bouts_rel.csv --baseline --out variation.png
+```
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
