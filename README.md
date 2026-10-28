@@ -146,7 +146,9 @@ permutation p.
 uv run scripts/bout_kinematics_cv.py ~/laras-projects/hidralabel --out-bouts bouts.csv --csv cv.csv
 ```
 
-A "mouse" is a (clip, track): tracks are not linked across clips.
+A "mouse" is a (clip, track): tracks are not linked across clips. Add `--baseline` to divide each
+bout's posture by the same mouse's median posture outside the behavior. That cancels differences in
+build (or in how one animal's keypoints are placed), leaving how the behavior itself changes each mouse.
 
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 

@@ -34,6 +34,13 @@ animal in two clips counts as two mice. A cage is the camera in the clip id (cam
 itself with --cage clip. An identity swap inside a clip blends two mice into both tracks, which can
 only make them look MORE alike -- so a difference that shows up is not an artifact of swaps.
 
+--baseline divides each bout's posture (widths, lengths, bend, spread) by the same mouse's median
+posture over the rest of the clip: its tracked frames outside its bouts of that behavior. A mouse
+built differently from its cage-mates -- or one whose keypoints the pose model places in its own
+peculiar way -- looks different in every behavior; this cancels that, leaving how the behavior
+changes each mouse's posture. Speeds and duration are left as they are. Per-bout `<posture>_rel`
+columns carry the ratios in --out-bouts.
+
 Needs the feature cache (`features/<clip>.npy`), which the labeler builds when it opens a project
 or trains. CVs are unaffected by the 30-vs-50 fps registration of HCM clips: a constant frame-rate
 factor scales a kinematic's SD and mean alike. Standalone: `uv run` resolves its dependencies.
@@ -45,6 +52,7 @@ import json
 import re
 import sys
 import warnings
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +65,12 @@ DEFAULT_SIGNALS = ("centroid_speed", "nose_speed", "tail_speed", "abs_turn", "ac
                    "body_length", "body_bend", "ego_len", "ego_width", "elongation", "spread_area",
                    "spine_len", "haunch_width", "shoulder_width", "ear_width")
 CAM_RE = re.compile(r"cam[_-]?0*(\d+)", re.I)
+# Posture: the shape of a body, which a mouse carries into every behavior. With --baseline these are
+# divided by the mouse's own median outside the behavior, so its build -- and any keypoint placement
+# peculiar to that one animal -- cancels. Speeds are left alone: a mostly resting mouse's median speed
+# is ~0, and dividing by it would mostly measure how much it sleeps.
+POSTURE = {"body_length", "body_bend", "ego_len", "ego_width", "elongation", "spread_area",
+           "spine_len", "haunch_width", "shoulder_width", "ear_width"}
 
 
 def _norm(s: str) -> str:
@@ -110,8 +124,10 @@ def csv_bouts(path: Path, wanted: set[str] | None) -> pd.DataFrame:
 
 # ----------------------------------------------------------------------------- per-bout kinematics
 def bout_kinematics(proj: Path, manifest: dict, bouts: pd.DataFrame, signals: list[str],
-                    cage_by: str, min_tracked: float) -> pd.DataFrame:
-    """One row per bout: its clip, mouse, cage, duration and the mean of each kinematic over it."""
+                    cage_by: str, min_tracked: float, baseline: bool = False) -> pd.DataFrame:
+    """One row per bout: its clip, mouse, cage, duration and the mean of each kinematic over it.
+    With `baseline`, also `<posture>_rel`: that mean over the same mouse's median posture in the
+    rest of the clip (tracked frames outside its bouts of this behavior)."""
     fps = {v["video_id"]: float(v.get("fps") or 30.0) for v in manifest.get("videos", [])}
     out = []
     for vid, g in bouts.groupby("video_id"):
@@ -127,6 +143,23 @@ def bout_kinematics(proj: Path, manifest: dict, bouts: pd.DataFrame, signals: li
         present = col.get("centroid_speed__raw")
         m = CAM_RE.search(str(vid))
         cage = f"cam_{int(m.group(1)):02d}" if (cage_by == "camera" and m) else str(vid)
+        rel = [s for s in have if s in POSTURE] if baseline else []
+        rel_idx = [col[f"{s}__raw"] for s in rel]
+        own: dict[tuple, np.ndarray] = {}
+
+        def own_baseline(beh: str, t: int) -> np.ndarray:
+            """This mouse's median posture over the clip's tracked frames outside this behavior."""
+            if (beh, t) not in own:
+                keep = np.ones(X.shape[0], bool)
+                for o in g[(g["behavior"] == beh) & (g["track"] == t)].itertuples(index=False):
+                    keep[int(o.start_frame):int(o.end_frame)] = False
+                if present is not None:
+                    keep &= np.isfinite(np.asarray(X[:, t, present]))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    own[(beh, t)] = np.nanmedian(np.asarray(X[:, t, rel_idx])[keep], axis=0)
+            return own[(beh, t)]
+
         for b in g.itertuples(index=False):
             s, e, t = int(b.start_frame), int(b.end_frame), int(b.track)
             if t >= X.shape[1] or s >= X.shape[0] or e <= s:
@@ -140,6 +173,9 @@ def bout_kinematics(proj: Path, manifest: dict, bouts: pd.DataFrame, signals: li
                 warnings.simplefilter("ignore", RuntimeWarning)
                 means = np.nanmean(seg[:, idx], axis=0) if idx else []
             row.update({s_: float(v_) for s_, v_ in zip(have, means)})
+            if rel:
+                for s_, base in zip(rel, own_baseline(b.behavior, t)):
+                    row[f"{s_}_rel"] = row[s_] / base if base > 0 else float("nan")
             out.append(row)
     df = pd.DataFrame(out)
     if not df.empty:
@@ -184,13 +220,14 @@ def _between_share(cages: list[tuple[np.ndarray, np.ndarray]]) -> float:
     return ssb / sst if sst > 0 else float("nan")
 
 
-def summarize(df: pd.DataFrame, signal: str, min_bouts: int, n_perm: int, rng) -> dict:
+def summarize(df: pd.DataFrame, signal: str, min_bouts: int, n_perm: int, rng,
+              label: str | None = None) -> dict:
     d = df[["mouse", "cage", signal]].dropna()
     counts = d.groupby("mouse").size()
     d = d[d["mouse"].isin(counts[counts >= min_bouts].index)]
     mice_per_cage = d.groupby("cage")["mouse"].nunique()
     d = d[d["cage"].isin(mice_per_cage[mice_per_cage >= 2].index)]
-    out = {"signal": signal, "bouts": len(d), "mice": d["mouse"].nunique(), "cages": d["cage"].nunique(),
+    out = {"signal": label or signal, "bouts": len(d), "mice": d["mouse"].nunique(), "cages": d["cage"].nunique(),
            "cv_within_mouse": np.nan, "cv_within_cage": np.nan, "cage_over_mouse": np.nan,
            "mouse_share": np.nan, "p": np.nan, "note": ""}
     if d.empty:
@@ -257,6 +294,9 @@ def main(argv=None) -> None:
     ap.add_argument("--cage", choices=("camera", "clip"), default="camera",
                     help="what a cage is: the camera in the clip id (default) or each clip")
     ap.add_argument("--permutations", type=int, default=2000, help="for p; 0 to skip (default 2000)")
+    ap.add_argument("--baseline", action="store_true",
+                    help="divide each bout's posture by the same mouse's median posture outside the "
+                         "behavior, so differences in build cancel (speeds and duration unchanged)")
     ap.add_argument("--out-bouts", help="write the per-bout kinematics table here")
     ap.add_argument("--csv", help="write the summary table here")
     args = ap.parse_args(argv)
@@ -272,19 +312,30 @@ def main(argv=None) -> None:
     bouts = csv_bouts(Path(args.bouts), wanted) if args.bouts else labeled_bouts(proj, manifest, wanted)
     if bouts.empty:
         sys.exit("no bouts found for those behaviors")
-    df = bout_kinematics(proj, manifest, bouts, signals, args.cage, args.min_tracked)
+    df = bout_kinematics(proj, manifest, bouts, signals, args.cage, args.min_tracked, args.baseline)
     if df.empty:
         sys.exit("no bouts with kinematics — is the feature cache built for these clips?")
 
-    rng = np.random.default_rng(0)
     present = ["duration_s"] + [s for s in signals if s in df.columns and df[s].notna().any()]
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     print(f"# Bout kinematics: within mouse vs within cage\n\n`{proj}` · cage = {args.cage} · a mouse "
-          f"needs {args.min_bouts}+ bouts · only cages with 2+ such mice are compared\n")
+          f"needs {args.min_bouts}+ bouts · only cages with 2+ such mice are compared"
+          + (" · posture ÷ each mouse's own median outside the behavior (`÷ own`)" if args.baseline else "")
+          + "\n")
+
+    def one(beh: str, s: str) -> dict:
+        # A seed per (behavior, kinematic), so a p does not move with whichever others share the run.
+        rng = np.random.default_rng([0, zlib.crc32(f"{_norm(beh)}|{s}".encode())])
+        if args.baseline and s in POSTURE and f"{s}_rel" in df.columns:
+            r = summarize(df[df["behavior"] == beh], f"{s}_rel", args.min_bouts, args.permutations, rng, s)
+            r["note"] = "; ".join(x for x in ("÷ own", r["note"]) if x)
+            return r
+        return summarize(df[df["behavior"] == beh], s, args.min_bouts, args.permutations, rng)
+
     summary = []
     for beh in sorted(df["behavior"].unique(), key=_norm):
-        rows = [summarize(df[df["behavior"] == beh], s, args.min_bouts, args.permutations, rng) for s in present]
+        rows = [one(beh, s) for s in present]
         print(report(beh, rows, df, args.min_bouts))
         summary += [{"behavior": beh, **r} for r in rows]
     print("cage / mouse ~1 and mouse share ~0: cage-mates are as alike as one mouse is to itself. "
