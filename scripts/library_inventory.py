@@ -228,9 +228,17 @@ def project_rows(proj: Path) -> tuple[dict, list[dict]]:
     fps = {v["video_id"]: float(v.get("fps") or 30.0) for v in videos}
     tests = [v["video_id"] for v in videos if v.get("role") == "test"]
     labels = _read_labels(proj, vids)
+    fc = m.get("feature_config") or {}
+
+    def roi_coverage(field: str) -> str:
+        """A clip's own ROI (auto-filled from the HCM database) overrides the project-wide one, so
+        coverage is counted per clip."""
+        if fc.get(field):
+            return "all (project-wide)"
+        return f"{sum(1 for v in videos if v.get(field))}/{len(videos)} clips" if videos else "—"
+
     info = {"project": proj.name, "name": m.get("name", proj.name), "clips": len(vids), "test_clips": tests,
-            "spout_roi": bool((m.get("feature_config") or {}).get("spout_roi")),
-            "cage_roi": bool((m.get("feature_config") or {}).get("cage_roi"))}
+            "spout_roi": roi_coverage("spout_roi"), "cage_roi": roi_coverage("cage_roi")}
 
     rows = []
     for b in m.get("behaviors", []):
@@ -347,7 +355,7 @@ def markdown(root: Path, infos: list[dict], rows: list[dict]) -> str:
     for i in infos:
         out.append("| " + " | ".join(_cell(x) for x in (
             i["project"], i["name"], i["clips"], ", ".join(i["test_clips"]) or "none",
-            "yes" if i["spout_roi"] else "no", "yes" if i["cage_roi"] else "no")) + " |")
+            i["spout_roi"], i["cage_roi"])) + " |")
     out += ["", "## Reading this", "",
             "- **+ bouts** are contiguous Happening runs per clip and animal, credited to where most of "
             "their frames came from: painted by hand, accepted in review, or imported. **Clips · lanes** is "
