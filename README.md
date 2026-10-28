@@ -158,6 +158,16 @@ themselves grouped cage → mouse.
 uv run scripts/plot_mouse_vs_cage.py bouts_rel.csv --baseline --out variation.png
 ```
 
+`mouse_signature.py` asks whether each mouse has a behavioral signature, within each clip. It
+tests **what** a mouse does (bouts per mouse vs equal shares; fair only with equal labeling coverage)
+and **how** it does it: can a classifier tell which mouse made a bout from its kinematics, can it
+still do so when trained on earlier bouts and tested on later ones, and does a mouse's style in one
+behavior identify it in another?
+
+```bash
+uv run scripts/mouse_signature.py bouts_rel.csv --baseline
+```
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
