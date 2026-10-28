@@ -117,10 +117,10 @@ repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_S
 Across many projects it gets hard to say which behaviors run on a HiDRA head and which on the
 project's own model, how many bouts each has and where they came from, and how they score.
 `library_inventory.py` reads a projects folder (read-only) and writes one row per project ×
-behavior:
+behavior. It is a standalone `uv` script, so it needs no checkout or labeler install:
 
 ```bash
-python scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
+uv run https://raw.githubusercontent.com/talmolab/laras-labeler/main/scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
 ```
 
 - **Predicted by** — HiDRA lab/action/collapse, zero-shot or fine-tuned and how many fine-tune runs;

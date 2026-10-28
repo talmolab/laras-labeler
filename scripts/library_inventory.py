@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["numpy", "pandas", "pyarrow", "scikit-learn"]
+# ///
 """Inventory of every behavior classifier in a projects folder — what the library has so far.
 
 One row per (project, behavior):
@@ -14,13 +18,14 @@ One row per (project, behavior):
   * a suggested starting point from the behavior's name: a HiDRA head, a bake-off between a head
     and the native model, or the native model on landmark features. A first guess to argue with.
 
-    python scripts/library_inventory.py C:\\Users\\TalmoLab\\laras-projects
-    python scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
-    python scripts/library_inventory.py ~/laras-projects --projects doom,hcm
+    uv run scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
+    uv run scripts/library_inventory.py ~/laras-projects --projects doom,hcm
 
-Read-only: it opens project.json, labels/*.parquet, model/<bid>/meta.json and predictions/, and
-writes nothing into the projects. Needs the labeler env python (pandas + pyarrow; scikit-learn for
-the test-clip scores, which are skipped without it).
+Standalone: `uv run` installs its few dependencies from the header above, so it runs from any
+directory, without the labeler installed and without a checkout (pass the raw GitHub URL in place
+of the path). Read-only: it opens project.json, labels/*.parquet, model/<bid>/meta.json and
+predictions/, and writes nothing into the projects. Under a plain python it needs pandas + pyarrow,
+and scikit-learn for the test-clip scores (skipped without it).
 """
 from __future__ import annotations
 
@@ -33,11 +38,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-from laras_labeler.hidra import default_collapse  # noqa: E402  (numpy/pandas only: no JAX, no pose stack)
 
 try:
     from sklearn.metrics import average_precision_score, roc_auc_score
@@ -54,6 +54,11 @@ SOURCES = {"manual": "hand", "candidate": "review", "imported": "import"}
 # about a partner starts from a head, and a solo action HiDRA also has gets a bake-off on a test clip.
 _LOCATION = ("drink", "lick", "spout", "water", "eat", "feed", "hopper", "food", "forag", "nest")
 _SOLO_HEADS = ("groom", "rear", "climb", "dig", "rest", "sleep", "freez", "immobil", "jump", "run")
+# The partner keywords of hidra.default_collapse, copied rather than imported so this script runs
+# without the labeler (whose install pulls in the whole pose stack) -- keep the two in step.
+_DIRECTED = ("allo", "sniff", "attack", "mount", "chase", "approach", "follow", "dominan", "escape",
+             "avoid", "flee", "defend", "intromi", "ejacul", "anogenital", "partner", "social",
+             "huddle", "nose", "bite")
 TIERS = {
     "head first": "partner-directed: HiDRA's strength, and the native social features are crude",
     "bake-off": "a solo action HiDRA also has, but your definition may differ: compare on a test clip",
@@ -66,7 +71,8 @@ def suggest(name: str, action: str | None = None) -> str:
     text = f"{name} {action or ''}".lower()
     if any(k in text for k in _LOCATION):
         return "native + landmarks"
-    if default_collapse(text) == "directed":
+    toward_object = "object" in text or "cage" in text or "wall" in text   # an act on the cage is solo
+    if not toward_object and any(k in text for k in _DIRECTED):
         return "head first"
     if any(k in text for k in _SOLO_HEADS):
         return "bake-off"
