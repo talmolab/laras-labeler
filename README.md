@@ -112,6 +112,28 @@ video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos`
 lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
 repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
 
+## Taking stock of the classifier library
+
+Across many projects it gets hard to say which behaviors run on a HiDRA head and which on the
+project's own model, how many bouts each has and where they came from, and how they score.
+`library_inventory.py` reads a projects folder (read-only) and writes one row per project ×
+behavior:
+
+```bash
+python scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
+```
+
+- **Predicted by** — HiDRA lab/action/collapse, zero-shot or fine-tuned and how many fine-tune runs;
+  or the native random forest and its feature set.
+- **+ bouts** — split into painted by hand / accepted in review / imported; plus − bouts, and
+  coverage over clips and (clip, animal) lanes.
+- **Native CV AP** — the random forest's grouped-CV score on its own labels.
+- **Test clip** — every stored model's AP/AUROC on the project's held-out clip: zero-shot,
+  each fine-tune, each native version. A model that trained on the clip is marked in-sample.
+- **Suggested start** — a guess from the name: *head first* (partner-directed), *bake-off*
+  (a solo action HiDRA also has), *native + landmarks* (defined by a place in the cage), or
+  *native*.
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
