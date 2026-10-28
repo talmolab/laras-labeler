@@ -134,6 +134,20 @@ uv run https://raw.githubusercontent.com/talmolab/laras-labeler/main/scripts/lib
   (a solo action HiDRA also has), *native + landmarks* (defined by a place in the cage), or
   *native*.
 
+### Within-mouse vs within-cage variation
+
+`bout_kinematics_cv.py` averages the feature cache's per-frame kinematics over each bout (speed,
+turning, body length and bend, posture extents, plus duration). For each behavior and kinematic, it
+then compares the CV across one mouse's bouts with the CV across all bouts in its cage. It also
+reports the share of within-cage variance that is explained by which mouse did the bout, with a
+permutation p.
+
+```bash
+uv run scripts/bout_kinematics_cv.py ~/laras-projects/hidralabel --out-bouts bouts.csv --csv cv.csv
+```
+
+A "mouse" is a (clip, track): tracks are not linked across clips.
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
