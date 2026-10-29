@@ -12,7 +12,7 @@ On a throwaway project (one 3-mouse clip with poses, one clip without), with the
   directed   a bout with a picked partner is sent to that partner; one without, in a 3-mouse clip,
              is listed as skipped
   queue      unreviewed proposals left on a used mouse are counted
-  refactor   export_bouts writes byte-identical CSV to the pre-refactor version at git HEAD~
+  refactor   export_bouts writes byte-identical CSV to the pre-refactor version (main @ e1ffbe9)
   read-only  no event logged, no project file changed; unknown behavior -> 404
 
     PYTHONPATH=src python scripts/verify_training_data.py
@@ -118,14 +118,17 @@ def build(root: Path) -> Path:
     return d
 
 
+PRE_REFACTOR = "e1ffbe9"     # main just before export_bouts was split into finetune_bouts
+
+
 def old_export_bouts():
-    """export_bouts as it was before the finetune_bouts refactor (git HEAD~ of this change)."""
+    """export_bouts as it was before the finetune_bouts refactor, or None if that commit is not in
+    this checkout (a shallow clone) -- the check is then skipped, never silently compared to itself."""
     repo = Path(__file__).resolve().parent.parent
-    for rev in ("HEAD", "HEAD~1", "HEAD~2"):
-        src = subprocess.run(["git", "-C", str(repo), "show", f"{rev}:src/laras_labeler/hidra.py"],
-                             capture_output=True, text=True).stdout
-        if src and "def finetune_bouts" not in src:
-            break
+    src = subprocess.run(["git", "-C", str(repo), "show", f"{PRE_REFACTOR}:src/laras_labeler/hidra.py"],
+                         capture_output=True, text=True).stdout
+    if not src or "def finetune_bouts" in src:
+        return None
     tmp = Path(tempfile.mkdtemp()) / "old_hidra.py"
     tmp.write_text(src, encoding="utf-8")
     spec = importlib.util.spec_from_file_location("old_hidra", tmp)
@@ -208,7 +211,9 @@ def main() -> int:
 
         print("export_bouts refactor")
         old = old_export_bouts()
-        for bid in (EAT, SNIFF):
+        if old is None:
+            print(f"  SKIP  pre-refactor commit {PRE_REFACTOR} not in this checkout")
+        for bid in ((EAT, SNIFF) if old else ()):
             head = next(b for b in store.get(PID).behaviors if b["id"] == bid)["hidra"]
             o, n = Path(tmp) / f"old_{bid}.csv", Path(tmp) / f"new_{bid}.csv"
             ro = old(store, LabelStore(store), PID, bid, head, o, n_by)
