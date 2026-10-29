@@ -90,6 +90,15 @@ shipped) gained a **bouts↔frames x-axis toggle** (`statsXMode`). Verified with
 (exact bout provenance, Unknown excluded, frozen against relabel, stale fallback) and an adversarial
 multi-agent review whose 5 confirmed UI-integration findings were all fixed (frozen behavior id on
 jump; close-review-before-jump; out-of-range-track guard; stale-model message).
+**What the next Train uses — table shipped:** the 🗂 Training set panel opens on **Next Train**, a per clip × mouse
+table of exactly what the next Train of the selected behavior will learn from, beside the frozen **Current model**
+view. Native model: every labeled Happening / Not-happening bout (Unknown and unlabeled frames unused). HiDRA
+fine-tune: only Happening bouts are sent, and for each mouse with one, EVERY other frame of that clip trains as
+Not-happening — the table counts those frames, how many were never reviewed, and the review proposals still
+left on those mice, and flags a clip that will stop the Train (missing .slp). `GET …/behaviors/{bid}/training-data`
+(`trainpreview.py`, read-only) reuses each engine's own selection — `hidra.finetune_bouts`, now shared with
+`export_bouts` (byte-identical CSV), and `Trainer.gather`'s labeled-run rule — so it can't drift from training.
+`scripts/verify_training_data.py` checks it against both trainers.
 **Review + playback polish shipped:** (a) candidate accept-range can now be **extended** past the model's
 proposal, not just shortened (trim clamps to `[0, n_frames]`; keyboard `[`/`]` at the playhead extend
 beyond the zoom window). (b) A **whole-clip overview strip** (shown when zoomed/reviewing) draws the

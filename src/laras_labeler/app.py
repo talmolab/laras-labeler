@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import config, hidra, poseio
+from . import config, hidra, poseio, trainpreview
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series
@@ -772,6 +772,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         """Per-feature positive-vs-negative separation (AUC + histograms) for this behavior."""
         _behavior(pid, bid)
         return trainer.feature_diff(pid, bid, top_n=top_n)
+
+    @app.get("/api/projects/{pid}/behaviors/{bid}/training-data")
+    def get_training_data(pid: str, bid: int):
+        """What the NEXT Train of this behavior will learn from, per clip x track -- the bouts it
+        sends and, for a HiDRA fine-tune, how many frames will train as Not-happening without ever
+        having been reviewed (see trainpreview). Read-only and unlogged."""
+        _behavior(pid, bid)
+        return trainpreview.preview(store, labels, predictor, features, pid, bid)
 
     @app.get("/api/projects/{pid}/behaviors/{bid}/trainset")
     def get_trainset(pid: str, bid: int):

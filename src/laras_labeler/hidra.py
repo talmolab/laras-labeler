@@ -979,13 +979,32 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
     Returns counts plus `video_ids`, the videos carrying at least one positive -- exactly the set of
     tracking parquets the caller must stage alongside this CSV."""
+    rows, skipped = finetune_bouts(store, labels, pid, bid, head, n_animals_by_video)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    vids = sorted({r["video_id"] for r in rows})
+    return {"bouts": len(rows), "spans": len(rows), "path": str(out_csv),
+            "videos": len(vids), "video_ids": vids, "directed_ambiguous": len(skipped)}
+
+
+CSV_FIELDS = ["file", "agent", "target", "action", "start_frame", "stop_frame"]
+
+
+def finetune_bouts(store, labels, pid: str, bid: int, head: dict,
+                   n_animals_by_video: dict | None = None) -> tuple[list[dict], list[dict]]:
+    """The bouts a fine-tune sends, and the ones it has to skip -- the single definition both
+    `export_bouts` (which writes them) and the GUI's training-data table (which shows them) use, so
+    the table cannot drift from what training actually gets. Rows carry `video_id` and `track`
+    beside the CSV fields; skipped rows are directed bouts with no recoverable partner (see
+    `export_bouts`)."""
     proj = store.get(pid)
     n_by = n_animals_by_video or {}
     self_directed = head.get("collapse") == "self"
     rows: list[dict] = []
-    vids: set[str] = set()
-    n_bouts = 0
-    ambiguous = 0
+    skipped: list[dict] = []
     for v in proj.videos:
         vid = v["video_id"]
         try:
@@ -1017,22 +1036,11 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
                     # Directed, >2 animals, and no valid stored target (or target == self, which would
                     # crash HiDRA's epoch builder): unrecoverable. Skip and report — the annotator must
                     # pick a target for these bouts (directed labeling), else they are zero-shot only.
-                    ambiguous += 1
+                    skipped.append({"video_id": vid, "track": t, "start_frame": a, "stop_frame": b})
                     continue
-                n_bouts += 1
-                vids.add(vid)
-                rows.append({"file": f"{stem}.parquet", "agent": agent, "target": target,
-                             "action": head["action"], "start_frame": a, "stop_frame": b})
-
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "agent", "target", "action",
-                                          "start_frame", "stop_frame"])
-        w.writeheader()
-        w.writerows(rows)
-    return {"bouts": n_bouts, "spans": len(rows), "path": str(out_csv),
-            "videos": len(vids), "video_ids": sorted(vids),
-            "directed_ambiguous": ambiguous}
+                rows.append({"video_id": vid, "track": t, "file": f"{stem}.parquet", "agent": agent,
+                             "target": target, "action": head["action"], "start_frame": a, "stop_frame": b})
+    return rows, skipped
 
 
 _TRAIN_HELP: dict[tuple, str] = {}   # cache of `finetune train --help` text, keyed by command prefix
