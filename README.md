@@ -168,6 +168,15 @@ behavior identify it in another?
 uv run scripts/mouse_signature.py bouts_rel.csv --baseline
 ```
 
+`behavior_places.py` maps where in the cage each behavior happens: every bout's nose position
+and path on the clip's mouse-free background, one panel per clip × behavior, with nearby bouts
+circled as places (A, B, …) and their distance to the water and wall — a first count of how many
+location-defined sub-behaviors each behavior has.
+
+```bash
+uv run scripts/behavior_places.py ~/laras-projects/hidralabel --out places.png
+```
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
