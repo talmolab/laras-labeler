@@ -99,6 +99,20 @@ left on those mice, and flags a clip that will stop the Train (missing .slp). `G
 (`trainpreview.py`, read-only) reuses each engine's own selection — `hidra.finetune_bouts`, now shared with
 `export_bouts` (byte-identical CSV), and `Trainer.gather`'s labeled-run rule — so it can't drift from training.
 `scripts/verify_training_data.py` checks it against both trainers.
+**Feeder outlines + re-ID clips get ROIs (shipped; groundwork for object-directed labels):** the HCM ROI
+auto-fill (`hcm_roi.py`) now also pulls the feeder cage's two outlines (`feeder-cage-top` / `-side` →
+per-clip `feeder_top_roi` / `feeder_side_roi`), drawn dotted pink on the video. Display-only for now: no
+feature reads them, so they don't change the feature hash. The feeder comes from the clip's OWN recording
+only — never the camera medoid, which would draw a feeder into a recording that has none
+('valid-no-feeder-cage', pre-2025-02-12) or whose segmentation isn't usable ('change-detected'). The
+recording's rois status is saved per clip (`roi_recording_status`), so a clip already looked up isn't
+re-queried on every project open. Clips cut by the re-ID clip planner (`b21_20260613_h17.f37500-52500`)
+name no camera or timestamp, so they got no ROIs at all; they are now tied to their recording through the
+planner's `clips.summary.json` (next to the clip, or next to the video its .slp names — the GUI upload
+copies files into media/), saved on the clip as `source_video` / `source_frames`. Geometry is read whole
+(largest part of a MultiPolygon), and one class's failing query no longer costs the others.
+`scripts/verify_feeder_roi.py` checks it against a stand-in HCM DB. Next: an object picker for
+object-directed bouts (climbing → feeder, rearing → wall), pre-filled from these outlines.
 **Review + playback polish shipped:** (a) candidate accept-range can now be **extended** past the model's
 proposal, not just shortened (trim clamps to `[0, n_frames]`; keyboard `[`/`]` at the playhead extend
 beyond the zoom window). (b) A **whole-clip overview strip** (shown when zoomed/reviewing) draws the

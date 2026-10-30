@@ -926,24 +926,40 @@ async function openVideo(vidId) {
                            features: (meta.features || {}).status });
   autoloadCageRoi();                                   // best-effort: fill a missing cage ROI from the HCM DB
 }
-async function autoloadCageRoi() {   // when a clip has no cage ROI, pull this recording's polygon from the HCM DB (no-op off-VPN)
-  if (cageRoi) return;                                 // already set — don't clobber or re-hit the DB
-  const reqVid = vid;                                  // guard against a clip switch mid-request
+async function autoloadCageRoi() {   // fill a clip's missing cage / spout / feeder outlines from this recording in the HCM DB (no-op off-VPN)
+  // already set, or the feeder already looked for in this clip's recording — don't clobber or re-hit the DB
+  if (cageRoi && (meta.roi_checked || (meta.feeder_top_roi && meta.feeder_side_roi))) return;
+  const reqVid = vid, reqMeta = meta;                  // guard against a clip switch mid-request
   let d; try { const r = await api(`/videos/${vid}/autoload-roi`, { method: "POST" }); if (!r.ok) return; d = await r.json(); }
   catch (e) { return; }
-  if (vid !== reqVid || !d || !d.set) return;
+  if (!d || !d.set) return;
+  if (d.checked) { reqMeta.roi_checked = true; reqMeta.roi_recording_status = d.recording_status; }
+  // Keep this clip's meta current, so reopening it shows them. A newly set ROI is this clip's own and now
+  // overrides any project-wide default (it is what Train uses), so it replaces what's drawn. d.rois = the
+  // outlines as saved now: the background fetch on project open may have filled them first (d.set empty).
+  let fresh = false;
+  for (const k of ["cage_roi", "spout_roi", "feeder_top_roi", "feeder_side_roi"]) {
+    const v = d.set[k] || (!reqMeta[k] && (d.rois || {})[k]);
+    if (v) { reqMeta[k] = v; fresh = true; }
+  }
+  if (vid !== reqVid || !fresh) return;
+  cageRoi = reqMeta.cage_roi || null; spoutRoi = reqMeta.spout_roi || null;
+  updateCageCtl(); updateSpoutCtl(); drawPose();      // reflect the new ROI(s) on the overlay
   const src = d.source || {}, got = [];
-  if (d.set.cage_roi) { cageRoi = d.set.cage_roi; got.push(["cage", src.cage_roi]); }
-  if (d.set.spout_roi && !spoutRoi) { spoutRoi = d.set.spout_roi; got.push(["spout", src.spout_roi]); }
+  if (d.set.cage_roi) got.push(["cage", src.cage_roi]);
+  if (d.set.spout_roi) got.push(["spout", src.spout_roi]);
+  if (d.set.feeder_top_roi || d.set.feeder_side_roi)
+    got.push(["feeder", src.feeder_top_roi || src.feeder_side_roi]);
   if (got.length) {
-    updateCageCtl(); updateSpoutCtl(); drawPose();     // reflect the new ROI(s) on the overlay
     // Name where each polygon came from: this clip's own recording, or the camera-median fallback. The
     // spout in particular shifts between recordings, so which one you got changes spout-distance features.
     const pretty = s => s === "recording" ? "this recording" : s === "camera medoid" ? "camera median" : null;
     const uniq = [...new Set(got.map(([, s]) => pretty(s)).filter(Boolean))];
     const prov = uniq.length === 1 ? `, ${uniq[0]}`
                : uniq.length ? "; " + got.map(([n, s]) => `${n}: ${pretty(s) || "?"}`).join(", ") : "";
-    busy(`auto-loaded ${got.map(([n]) => n).join(" + ")} ROI from HCM DB (${d.camera || "?"}${prov}) — Train/Predict to use it`);
+    // the feeder outline is display-only for now: no feature reads it, so a retrain changes nothing
+    const use = got.some(([n]) => n !== "feeder") ? "Train/Predict to use it" : "shown on the video (not a classifier input yet)";
+    busy(`auto-loaded ${got.map(([n]) => n).join(" + ")} ROI from HCM DB (${d.camera || "?"}${prov}) — ${use}`);
   }
 }
 
@@ -1141,6 +1157,25 @@ function drawCageRoi() {
   octx.fillText("cage ROI", lbl[0], lbl[1] - 8); octx.textAlign = "left"; octx.textBaseline = "alphabetic";
   octx.restore();
 }
+// ---------- feeder outlines (from this clip's HCM recording; display-only: pink, dotted) ----------
+function drawFeederRoi() {
+  if (!meta) return;
+  const parts = [["feeder top", meta.feeder_top_roi], ["feeder side", meta.feeder_side_roi]]
+    .filter(([, pts]) => pts && pts.length >= 3);
+  if (!parts.length) return;
+  octx.save(); octx.lineWidth = 2; octx.setLineDash([3, 4]);
+  octx.font = "bold 13px system-ui"; octx.textAlign = "center"; octx.textBaseline = "middle";
+  for (const [name, pts] of parts) {
+    octx.strokeStyle = "#f28cd2"; octx.fillStyle = "rgba(242,140,210,0.10)";
+    octx.beginPath();
+    pts.forEach(([x, y], i) => i ? octx.lineTo(x, y) : octx.moveTo(x, y));
+    octx.closePath(); octx.fill(); octx.stroke();
+    // label at the outline's center: the feeder sits low in the frame, so a label below it can fall off
+    const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    octx.fillStyle = "#f28cd2"; octx.fillText(name, cx, cy);
+  }
+  octx.restore();
+}
 function noseIndex() {
   const nm = skeleton && skeleton.roles && skeleton.roles.nose;
   const nodes = (skeleton && skeleton.nodes) || [];
@@ -1208,6 +1243,7 @@ function drawPose() {
   drawSpoutMarker();                                    // always shown (independent of the pose toggle)
   drawSpoutRoi();                                       // spout ROI polygon (committed + in-progress)
   drawCageRoi();                                        // cage-boundary ROI polygon (committed + in-progress)
+  drawFeederRoi();                                      // feeder top / side outlines (from the HCM DB)
   drawApproaches();                                     // confirmed-positive nose approach paths (toggle)
   if (!poses) return;
   if (!showPoses) { drawIdentityMarkers(); return; }    // poses hidden -> keep a minimal per-mouse identity marker so the mice stay distinguishable
