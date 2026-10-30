@@ -1501,6 +1501,34 @@ function runsOf(arr, s = 0, e = arr.length) {
 }
 
 const ROWH = () => MANUAL_H + LANE_GAP + PRED_H + ROW_GAP;
+// Composite lane: every behavior in one strip under the ruler — your Happening labels on top, the
+// model's detected bouts below, one thin band per behavior in its own color so co-occurring behaviors
+// stay visible. Display-only (a press there scrubs, like the ruler). Hidden with fewer than 2 behaviors.
+const COMP_HALF = () => Math.max(20, Math.min(48, behaviors.length * 6));   // ≥ ~5px band per behavior, capped
+const COMP_H = () => behaviors.length >= 2 ? 2 * COMP_HALF() + LANE_GAP + ROW_GAP : 0;
+const LANES_Y = () => RULER + COMP_H();   // top of the first per-behavior lane
+function drawComposite(W) {
+  if (!COMP_H()) return;
+  const half = COMP_HALF(), bh = half / behaviors.length;
+  const rows = [["labels", RULER + 2], ["detected", RULER + 2 + half + LANE_GAP]];
+  for (const [name, y] of rows) {
+    tctx.fillStyle = "#141922"; rRect(tctx, TL_GUT, y, W - TL_GUT, half, 4); tctx.fill();
+    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = "#6b7c93"; tctx.textAlign = "left";
+    tctx.fillText(name === "labels" ? "all · labels" : "all · detected", 11, y + half / 2);
+  }
+  behaviors.forEach((b, k) => {   // stable behavior order (not laneList), so bands don't reshuffle on select
+    tctx.fillStyle = b.color;
+    const yl = rows[0][1] + k * bh, yd = rows[1][1] + k * bh, h = Math.max(1, bh - (bh > 3 ? 1 : 0));
+    const arr = labelState.get(b.id);
+    if (arr) for (const [s, e, v] of runsOf(arr)) {
+      if (v !== 1) continue;                                     // Happening only; negatives/unknown would drown it
+      const x0 = xOf(s, W); tctx.fillRect(x0, yl, Math.max(1, xOf(e, W) - x0), h);
+    }
+    for (const bt of (predictedBouts.get(b.id) || [])) {
+      const x0 = xOf(bt.s, W); tctx.fillRect(x0, yd, Math.max(1, xOf(bt.e, W) - x0), h);
+    }
+  });
+}
 function rRect(ctx, x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); ctx.beginPath(); ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); }
 // Timeline lane order: the ACTIVE behavior is floated to the top lane so it stays visible next to the
 // controls while you annotate (the rest keep their normal order). Used by BOTH the lane drawing and the
@@ -1514,14 +1542,15 @@ function laneList() {
 function renderTimeline() {
   if (!meta) return;   // no clip loaded (boot, or a project with no clips) — frame math has no extent yet
   const dpr = window.devicePixelRatio || 1, W = tlWidth(), rh = ROWH();
-  const H = RULER + behaviors.length * rh;
+  const H = LANES_Y() + behaviors.length * rh;
   fitCanvas(tl, W, H, dpr);
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0); tctx.clearRect(0, 0, W, H);
   tctx.fillStyle = "#1a1d23"; tctx.fillRect(0, 0, W, RULER);
   tctx.fillStyle = "#101319"; tctx.fillRect(0, RULER, TL_GUT, H - RULER);   // left label gutter backdrop
   tctx.textBaseline = "middle";
+  drawComposite(W);
   laneList().forEach((b, i) => {
-    const y = RULER + i * rh, ym = y, ya = y + MANUAL_H + LANE_GAP, active = b.id === activeBid;
+    const y = LANES_Y() + i * rh, ym = y, ya = y + MANUAL_H + LANE_GAP, active = b.id === activeBid;
     // manual (painting) lane — the active behavior's row is highlighted (starts after the label gutter)
     tctx.fillStyle = active ? "#242c39" : "#141922"; rRect(tctx, TL_GUT, ym, W - TL_GUT, MANUAL_H, 6); tctx.fill();
     const arr = labelState.get(b.id);
@@ -1625,7 +1654,7 @@ function repaintTimeline() {   // playback fast path: blit cached base + only th
   const dpr = window.devicePixelRatio || 1, W = tlBaseW, H = tlBaseH, rh = ROWH();
   // Fall back to a full render (which recaptures) if ANYTHING the cached base depends on moved —
   // width/height, the zoom window (tlView), or dpr. Otherwise the base would blit at a stale x-scale.
-  if (W !== tlWidth() || H !== RULER + behaviors.length * rh
+  if (W !== tlWidth() || H !== LANES_Y() + behaviors.length * rh
       || tlBaseVS !== viewS() || tlBaseVE !== viewE() || tlBaseDpr !== dpr) return renderTimeline();
   tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, tl.width, tl.height); tctx.drawImage(tlBase, 0, 0);
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1636,7 +1665,7 @@ function repaintTimeline() {   // playback fast path: blit cached base + only th
 function drawTimelineOverlay(W, H, rh) {
   const paintPreview = (i, s, e, pm) => {   // in-progress segment on the manual lane
     if (i < 0) return;
-    const y = RULER + i * rh, x0 = xOf(s, W), w = Math.max(1, xOf(e, W) - x0);
+    const y = LANES_Y() + i * rh, x0 = xOf(s, W), w = Math.max(1, xOf(e, W) - x0);
     if (pm === "pos") { const c = hexRgb(HAPPENING_COLOR); tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.6)`; rRect(tctx, x0, y + 3, w, MANUAL_H - 6, 3); tctx.fill(); }
     else if (pm === "neg") { const c = hexRgb(NOTHAPPENING_COLOR); tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.6)`; rRect(tctx, x0, y + 3, w, MANUAL_H - 6, 3); tctx.fill(); }
     else hatchRect(tctx, x0, y + 3, w, MANUAL_H - 6, UNKNOWN_HATCH);
@@ -1652,7 +1681,7 @@ function drawTimelineOverlay(W, H, rh) {
   if (reviewCurrent) {                                        // candidate under review: bracket + accept/trim preview
     const ri = laneList().findIndex(b => b.id === reviewCurrent.bid);
     if (ri >= 0) {
-      const y = RULER + ri * rh, ym = y, t = reviewTrim || reviewCurrent;
+      const y = LANES_Y() + ri * rh, ym = y, t = reviewTrim || reviewCurrent;
       const xc0 = xOf(reviewCurrent.s, W), xc1 = xOf(reviewCurrent.e, W);
       const xt0 = xOf(t.s, W), xt1 = xOf(t.e, W), cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
       const isDis = reviewCurrent.mode === "disagree";
@@ -1674,7 +1703,7 @@ function drawTimelineOverlay(W, H, rh) {
   if (selectedSeg && segTrim && !reviewCurrent) {              // selected labeled bout: draggable edit handles
     const si = laneList().findIndex(b => b.id === selectedSeg.bid);
     if (si >= 0) {
-      const y = RULER + si * rh, xt0 = xOf(segTrim.s, W), xt1 = xOf(segTrim.e, W);
+      const y = LANES_Y() + si * rh, xt0 = xOf(segTrim.s, W), xt1 = xOf(segTrim.e, W);
       const c = selectedSeg.val === 1 ? hexRgb(HAPPENING_COLOR) : selectedSeg.val === 2 ? hexRgb(NOTHAPPENING_COLOR) : { r: 150, g: 150, b: 150 };
       tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.28)`; tctx.fillRect(xt0, y + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);  // edited extent
       for (const xx of [xt0, xt1]) {                           // grips (white, matching the selection outline)
@@ -1695,7 +1724,7 @@ function drawTimelineOverlay(W, H, rh) {
   if (activeBid != null) {
     const ai = laneList().findIndex(b => b.id === activeBid), proba = predsByBeh.get(activeBid);
     if (ai >= 0 && proba && proba.length) {
-      const ya = RULER + ai * rh + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;
+      const ya = LANES_Y() + ai * rh + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP, baseY = ya + PRED_H - padP;
       const p = proba[Math.max(0, Math.min(proba.length - 1, cur))];
       if (!Number.isNaN(p)) {
         const yv = baseY - Math.max(0, Math.min(1, p)) * hhP, thr = behThresh(activeBid);
@@ -3597,7 +3626,7 @@ function trimHandleAt(x, y, W) {   // is (x,y) near a draggable trim-edge grip? 
   const at = activeTrim(); if (!at) return null;
   const ri = laneList().findIndex(b => b.id === at.bid);
   if (ri < 0) return null;
-  const rh = ROWH(), ry = RULER + ri * rh;
+  const rh = ROWH(), ry = LANES_Y() + ri * rh;
   if (y < ry - 2 || y > ry + MANUAL_H + LANE_GAP) return null;
   const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(at.trim.e, W)), tol = 9;
   if (ds <= tol && ds <= de) return "s";
@@ -3618,7 +3647,7 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   busy(`bout → frames ${ns}–${ne}`);
 }
 function rowArrowHit(x, y, i) {   // is (x,y) on the active row's prev/next label-nav arrow? -> -1 | +1 | 0
-  const ym = RULER + i * ROWH();
+  const ym = LANES_Y() + i * ROWH();
   if (y < ym + MANUAL_H / 2 - 9 || y > ym + MANUAL_H / 2 + 9) return 0;
   if (Math.abs(x - (TL_GUT - 30)) <= 9) return -1;
   if (Math.abs(x - (TL_GUT - 12)) <= 9) return 1;
@@ -3642,12 +3671,12 @@ function jumpToAdjacentLabel(bid, dir) {   // hop the playhead to the prev/next 
 }
 // ---- draggable detection threshold (the dashed line on the confidence trace) ----
 function predLaneGeom(i) {                          // geometry of behavior lane i's prediction (confidence) sub-lane
-  const ya = RULER + i * ROWH() + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP;
+  const ya = LANES_Y() + i * ROWH() + MANUAL_H + LANE_GAP, padP = 3, hhP = PRED_H - 2 * padP;
   return { hhP, baseY: ya + PRED_H - padP };        // baseY = P0 baseline; top = baseY - hhP = P1
 }
 function threshLineAt(x, y, W) {                    // the behavior whose dashed threshold line is under the cursor, or null
-  if (x < TL_GUT || y < RULER) return null;
-  const lanes = laneList(), i = Math.floor((y - RULER) / ROWH());
+  if (x < TL_GUT || y < LANES_Y()) return null;
+  const lanes = laneList(), i = Math.floor((y - LANES_Y()) / ROWH());
   if (i < 0 || i >= lanes.length) return null;
   const g = predLaneGeom(i), thrY = g.baseY - Math.max(0, Math.min(1, behThresh(lanes[i].id))) * g.hhP;
   return Math.abs(y - thrY) <= 5 ? lanes[i].id : null;   // grab within 5px of the line
@@ -3663,17 +3692,17 @@ tl.addEventListener("pointerdown", ev => {
   if (trimEdge) { stop(); drag = { kind: "trim", edge: trimEdge }; return; }   // grab an accept-boundary to drag it (pause playback so the base can't go stale under it)
   const thBid = threshLineAt(x, y, W);                                         // grab the dashed line to set the detection threshold by dragging
   if (thBid != null) { stop(); if (thBid !== activeBid) selectBehavior(thBid); drag = { kind: "thresh", bid: thBid }; return; }
-  if (y < RULER) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); return; }
+  if (y < LANES_Y()) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); return; }
   if (x < TL_GUT) {                                                            // label gutter: only the active row's ‹ › nav arrows are interactive
-    const gi = Math.floor((y - RULER) / ROWH());
+    const gi = Math.floor((y - LANES_Y()) / ROWH());
     if (gi >= 0 && gi < behaviors.length && laneList()[gi].id === activeBid) {
       const d = rowArrowHit(x, y, gi); if (d) jumpToAdjacentLabel(activeBid, d);
     }
     return;
   }
-  const rh = ROWH(), i = Math.floor((y - RULER) / rh);
+  const rh = ROWH(), i = Math.floor((y - LANES_Y()) / rh);
   if (i < 0 || i >= behaviors.length) return;
-  const bid = laneList()[i].id, yInRow = (y - RULER) - i * rh, f = frameAt(x, W);
+  const bid = laneList()[i].id, yInRow = (y - LANES_Y()) - i * rh, f = frameAt(x, W);
   if (bid !== activeBid) selectBehavior(bid);       // only reload when the behavior actually changes
   if (yInRow <= MANUAL_H + LANE_GAP) {              // manual lane
     if (painting) commitPaint();                     // commit a pending anchor-paint before this lane interaction
@@ -3714,13 +3743,13 @@ tl.addEventListener("pointermove", ev => {
 function updateHoverCursor(x, y, f) {
   if (trimHandleAt(x, y, tlWidth())) { tl.style.cursor = "ew-resize"; return; }   // over a trim handle
   if (threshLineAt(x, y, tlWidth()) != null) { tl.style.cursor = "ns-resize"; return; }   // over the draggable threshold line
-  if (y < RULER) { tl.style.cursor = "ew-resize"; return; }
+  if (y < LANES_Y()) { tl.style.cursor = "ew-resize"; return; }
   if (x < TL_GUT) {                                                               // the label gutter — pointer over the active row's nav arrows
-    const gi = Math.floor((y - RULER) / ROWH());
+    const gi = Math.floor((y - LANES_Y()) / ROWH());
     const onArrow = gi >= 0 && gi < behaviors.length && laneList()[gi].id === activeBid && rowArrowHit(x, y, gi);
     tl.style.cursor = onArrow ? "pointer" : "default"; return;
   }
-  const rh = ROWH(), i = Math.floor((y - RULER) / rh), yInRow = (y - RULER) - i * rh;
+  const rh = ROWH(), i = Math.floor((y - LANES_Y()) / rh), yInRow = (y - LANES_Y()) - i * rh;
   const inLane = i >= 0 && i < behaviors.length && yInRow <= MANUAL_H + LANE_GAP;
   if (toolMode === "select") { tl.style.cursor = inLane ? "pointer" : "default"; return; }
   const onRun = inLane && !!runAt(laneList()[i].id, f);
