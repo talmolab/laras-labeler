@@ -112,6 +112,71 @@ video + `.slp` or by giving server-side paths (`POST /api/projects/{pid}/videos`
 lives in [`slp-viewer/`](https://github.com/talmolab/vibes/tree/main/slp-viewer) in the vibes
 repo; `verify_pipeline.py` takes its path as the first argument (or via `LARAS_SAMPLE_SLP`).
 
+## Taking stock of the classifier library
+
+Across many projects it gets hard to say which behaviors run on a HiDRA head and which on the
+project's own model, how many bouts each has and where they came from, and how they score.
+`library_inventory.py` reads a projects folder (read-only) and writes one row per project ×
+behavior. It is a standalone `uv` script, so it needs no checkout or labeler install:
+
+```bash
+uv run https://raw.githubusercontent.com/talmolab/laras-labeler/main/scripts/library_inventory.py ~/laras-projects --md library.md --csv library.csv
+```
+
+- **Predicted by** — HiDRA lab/action/collapse, zero-shot or fine-tuned and how many fine-tune runs;
+  or the native random forest and its feature set.
+- **+ bouts** — split into painted by hand / accepted in review / imported; plus − bouts, and
+  coverage over clips and (clip, animal) lanes.
+- **Native CV AP** — the random forest's grouped-CV score on its own labels.
+- **Test clip** — every stored model's AP/AUROC on the project's held-out clip: zero-shot,
+  each fine-tune, each native version. A model that trained on the clip is marked in-sample.
+- **Suggested start** — a guess from the name: *head first* (partner-directed), *bake-off*
+  (a solo action HiDRA also has), *native + landmarks* (defined by a place in the cage), or
+  *native*.
+
+### Within-mouse vs within-cage variation
+
+`bout_kinematics_cv.py` averages the feature cache's per-frame kinematics over each bout (speed,
+turning, body length and bend, posture extents, plus duration). For each behavior and kinematic, it
+then compares the CV across one mouse's bouts with the CV across all bouts in its cage. It also
+reports the share of within-cage variance that is explained by which mouse did the bout, with a
+permutation p.
+
+```bash
+uv run scripts/bout_kinematics_cv.py ~/laras-projects/hidralabel --out-bouts bouts.csv --csv cv.csv
+```
+
+A "mouse" is a (clip, track): tracks are not linked across clips. Add `--baseline` to divide each
+bout's posture by the same mouse's median posture outside the behavior. That cancels differences in
+build (or in how one animal's keypoints are placed), leaving how the behavior itself changes each mouse.
+
+`plot_mouse_vs_cage.py` draws it: for each behavior, the bout-to-bout, mouse-to-mouse and
+cage-to-cage CV of every kinematic against what bout noise alone would give, plus the bouts
+themselves grouped cage → mouse.
+
+```bash
+uv run scripts/plot_mouse_vs_cage.py bouts_rel.csv --baseline --out variation.png
+```
+
+`mouse_signature.py` asks whether each mouse has a behavioral signature, within each clip. It
+tests **what** a mouse does (bouts per mouse vs equal shares; fair only with equal labeling coverage)
+and **how** it does it: can a classifier tell which mouse made a bout from its kinematics, can it
+still do so when trained on earlier bouts and tested on later ones, and does a mouse's style in one
+behavior identify it in another?
+
+```bash
+uv run scripts/mouse_signature.py bouts_rel.csv --baseline
+```
+
+`behavior_places.py` maps where in the cage each behavior happens: every bout's nose position
+and path on the clip's mouse-free background, one panel per clip × behavior, with nearby bouts
+circled as places (A, B, …) and their distance to the water and wall — a first count of how many
+location-defined sub-behaviors each behavior has.
+
+```bash
+uv run scripts/behavior_places.py ~/laras-projects/hidralabel --out places.png
+```
+
 ## Measuring annotation time (human-in-the-loop vs. by hand)
 
 Every labeling session writes an append-only event log to `<project>/events/*.jsonl`: each painted
