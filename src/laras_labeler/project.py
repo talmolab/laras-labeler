@@ -12,8 +12,11 @@ Videos and .slp files are referenced by path, never copied.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +59,29 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Requests and background jobs (ROI lookups, feature pre-warm) save the same project at the same time.
+# Two plain write_text calls on one file interleave into a torn file -- a shorter write over a longer
+# one leaves the longer one's tail -- and project.json stops parsing, so the project won't open. Each
+# save writes a temp file beside the target and renames it over (atomic on POSIX and Windows), and
+# the lock keeps saves in order so the last one written is the newest state.
+_SAVE_LOCK = threading.Lock()
+
+
+def write_json_atomic(path: Path, obj) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    with _SAVE_LOCK:
+        tmp.write_text(json.dumps(obj, indent=2))
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:   # Windows: a reader holds the target open for a moment
+                if attempt == 9:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.05)
+
+
 class Project:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -82,7 +108,7 @@ class Project:
         return next((v for v in self.videos if v["video_id"] == video_id), None)
 
     def save(self) -> None:
-        (self.path / "project.json").write_text(json.dumps(self.manifest, indent=2))
+        write_json_atomic(self.path / "project.json", self.manifest)
 
     # --- videos ---
     def add_video(self, video_path: str | Path, slp_path: str | Path | None = None) -> dict:
@@ -375,7 +401,7 @@ class ProjectStore:
             "behaviors": [],
             "videos": [],
         }
-        (path / "project.json").write_text(json.dumps(manifest, indent=2))
+        write_json_atomic(path / "project.json", manifest)
         proj = Project(path)
         self._cache[pid] = proj
         return proj

@@ -111,8 +111,14 @@ name no camera or timestamp, so they got no ROIs at all; they are now tied to th
 planner's `clips.summary.json` (next to the clip, or next to the video its .slp names — the GUI upload
 copies files into media/), saved on the clip as `source_video` / `source_frames`. Geometry is read whole
 (largest part of a MultiPolygon), and one class's failing query no longer costs the others.
-`scripts/verify_feeder_roi.py` checks it against a stand-in HCM DB. Next: an object picker for
-object-directed bouts (climbing → feeder, rearing → wall), pre-filled from these outlines.
+`scripts/verify_feeder_roi.py` checks it against a stand-in HCM DB. Two fixes found on the way:
+(1) `Project.save` is atomic and serialized (temp file + rename, one lock) — concurrent saves (the
+per-clip ROI jobs on project open + the open clip's own lookup) tore project.json into a file that no
+longer parsed; (2) a driverless `postgresql://` HCM_DATABASE_URL is given the installed driver —
+SQLAlchemy 2.1 switched its default to psycopg, so with only psycopg2 installed every lookup failed
+silently. `scripts/check_hcm_roi.py` walks the lookup step by step for a clip with no outlines (and
+`--repair`s a torn project.json). Next: an object picker for object-directed bouts (climbing → feeder,
+rearing → wall), pre-filled from these outlines.
 **Review + playback polish shipped:** (a) candidate accept-range can now be **extended** past the model's
 proposal, not just shortened (trim clamps to `[0, n_frames]`; keyboard `[`/`]` at the playhead extend
 beyond the zoom window). (b) A **whole-clip overview strip** (shown when zoomed/reviewing) draws the

@@ -201,6 +201,22 @@ def _outer_ring(g) -> list[list[float]]:
         return []
 
 
+def engine_url(url: str) -> str:
+    """A `postgresql://` URL names no driver, and SQLAlchemy's default changed under it: psycopg2
+    before 2.1, psycopg (3) from 2.1. With only the other one installed, every lookup failed -- and
+    silently, since a DB error returns {}. Name whichever driver is installed (psycopg first)."""
+    m = re.match(r"postgres(?:ql)?://", url)
+    if not m:
+        return url
+    for mod in ("psycopg", "psycopg2"):
+        try:
+            __import__(mod)
+        except ImportError:
+            continue
+        return f"postgresql+{mod}://" + url[m.end():]
+    return url
+
+
 def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
                source_video: str | None = None) -> dict:
     """Best-effort: {roi_field: polygon} for a clip, e.g. {'cage_roi': [[x,y],...]}, plus
@@ -228,7 +244,7 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
     source: dict = {}
     pat = recording_like(video_id) or recording_like_path(source_video)
     try:
-        engine = create_engine(DATABASE_URL, connect_args={"connect_timeout": timeout})
+        engine = create_engine(engine_url(DATABASE_URL), connect_args={"connect_timeout": timeout})
         with engine.connect() as conn:
             status = conn.execute(text(_STATUS_SQL), {"pat": pat}).scalar() if pat else None
             for cls in classes:

@@ -8,6 +8,9 @@ Against a stand-in for the HCM database (no VPN needed) and the real app:
              ('valid-no-feeder-cage'), not for one whose segmentation isn't valid ('change-detected')
   wall/spout unchanged: recording first, camera medoid as the fallback
   isolation  one class's failing query costs only that class (rolled back), not the others
+  driver     a postgresql:// URL is given the driver that is installed (psycopg, else psycopg2):
+             SQLAlchemy 2.1 switched its default to psycopg, and every lookup failed silently with
+             only psycopg2 installed
   re-ID      a clip named b21_20260613_h17.f37500-52500 (no cam_XX, no timestamp) is tied to its
              recording through the planner's clips.summary.json: next to the clip, or -- for a GUI
              upload, which copies the files into media/ -- next to the video its .slp names; the
@@ -18,6 +21,10 @@ Against a stand-in for the HCM database (no VPN needed) and the real app:
              one that wasn't is (and the answer is saved)
   features   the feeder outlines are not a feature input: adding them leaves the clip's feature hash
              unchanged (no rebuild)
+  saves      project.json survives concurrent saves (8 threads, the file growing and shrinking): it
+             always parses, mid-run and after, and no temp file is left. The ROI lookups made this
+             race real -- opening a project saves from a background job per clip while the open
+             clip's own lookup saves too -- and a torn project.json stops the project opening.
 
     PYTHONPATH=src python scripts/verify_feeder_roi.py
 """
@@ -231,6 +238,21 @@ def unit(root: Path) -> None:
           and g.get("cage_roi") == ring(CAGE) and DB.rollbacks == r0 + 1,
           "a failing query costs only its own class (rolled back; the spout falls back to the medoid)")
 
+    real = {m: sys.modules.get(m) for m in ("psycopg", "psycopg2")}
+    picked = []
+    for installed in (("psycopg2",), ("psycopg", "psycopg2"), ()):
+        for m in ("psycopg", "psycopg2"):
+            sys.modules[m] = types.ModuleType(m) if m in installed else None   # None: import fails
+        picked.append(hcm_roi.engine_url("postgresql://u:p@h:5432/hcm"))
+    for m, mod in real.items():
+        if mod is None:
+            sys.modules.pop(m, None)
+        else:
+            sys.modules[m] = mod
+    check(picked == ["postgresql+psycopg2://u:p@h:5432/hcm", "postgresql+psycopg://u:p@h:5432/hcm",
+                     "postgresql://u:p@h:5432/hcm"] and hcm_roi.engine_url("sqlite://") == "sqlite://",
+          "a driverless postgresql:// URL gets the installed driver (SQLAlchemy 2.1 changed its default)", str(picked))
+
     url, hcm_roi.DATABASE_URL = hcm_roi.DATABASE_URL, ""
     check(hcm_roi.fetch_rois("x", source_video=MAC) == {}, "no HCM_DATABASE_URL: {} (unchanged)")
     hcm_roi.DATABASE_URL = url
@@ -343,12 +365,39 @@ def app_level(root: Path) -> None:
     check(h1 == h2, "feeder outlines don't change the clip's feature hash (no feature rebuild)")
 
 
+def saves(root: Path) -> None:
+    import threading
+    print("saves")
+    store = ProjectStore(root / "save-race")
+    p = store.create("race")
+    torn: list[int] = []
+
+    def worker(i: int) -> None:
+        for k in range(150):
+            p.manifest[f"f{i}"] = "x" * ((k * 37 + i * 101) % 3000)   # the file grows and shrinks
+            p.save()
+            try:
+                json.loads((p.path / "project.json").read_text())
+            except json.JSONDecodeError:
+                torn.append(i)
+
+    ts = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    final = json.loads((p.path / "project.json").read_text())
+    check(not torn and final["name"] == "race" and not list(p.path.glob(".*.tmp")),
+          "concurrent saves never tear project.json; no temp files left", f"{len(torn)} torn reads")
+
+
 def main() -> int:
     warnings.filterwarnings("ignore")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         unit(root)
         app_level(root)
+        saves(root)
     print("\nALL PASS" if not FAILED else f"\n{len(FAILED)} FAILED: " + "; ".join(FAILED))
     return 1 if FAILED else 0
 
