@@ -288,7 +288,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return {"engine": "hidra", "lab": r.get("lab"), "action": r.get("action"),
                 "version": r.get("checkpoint"), "backend": r.get("backend"),
                 "n_pos_bouts": r.get("bouts"), "n_spans": r.get("spans"),
-                "n_videos": r.get("videos")}
+                "n_videos": r.get("videos"), "train_on": r.get("train_on"),
+                "clips": r.get("clips")}
 
     # Feature pre-warm: the first Train computes any missing feature cache lazily (a multi-minute cold
     # cost that lands inside the human-in-the-loop window). Instead we fire that same background compute
@@ -780,7 +781,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.post("/api/projects/{pid}/behaviors/{bid}/train")
     def train_behavior(pid: str, bid: int, predict_videos: str | None = None,
                        ft_smoke: bool = False, ft_configs: str | None = None,
-                       ft_steps: int = 8000, ft_mode: str = "head"):
+                       ft_steps: int = 8000, ft_mode: str = "head",
+                       ft_reviewed_only: bool | None = None, ft_train_on: str | None = None):
         """Fit this behavior's model, then apply it. `predict_videos` scopes that second step:
         omitted = every clip in the project (what the UI wants, so its timeline refreshes);
         empty (`?predict_videos=`) = train only, no prediction; a comma-separated list of video_ids =
@@ -797,7 +799,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         `?ft_mode=embedding` the lab embedding + head. `ft_steps` caps the per-config training
         steps: default 8000, HiDRA's own default, and where a head-only sweep found F1 plateaus;
         `?ft_steps=2000` gives a shorter round, and `?ft_steps=0` defers to whatever HiDRA's
-        default is. The `ft_*` options are ignored by this project's own model path."""
+        default is. `?ft_train_on=all|window|reviewed` overrides which frames this run learns from
+        (`?ft_reviewed_only=true` is the older spelling of `reviewed`). The `ft_*` options are
+        ignored by this project's own model path."""
         _behavior(pid, bid)
         if ft_mode not in hidra.FINETUNE_MODES:
             raise HTTPException(400, f"ft_mode must be one of {', '.join(hidra.FINETUNE_MODES)}")
@@ -810,7 +814,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             def hjob(progress):
                 with _hidra_exclusive(progress, "fine-tuning"):
                     return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                        steps=steps, mode=ft_mode)
+                                        steps=steps, mode=ft_mode,
+                                        train_on_override=ft_train_on or (
+                                            None if ft_reviewed_only is None
+                                            else "reviewed" if ft_reviewed_only else "all"))
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -955,7 +962,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
                      smoke: bool = False, configs: list[str] | None = None,
-                     steps: int | None = None, mode: str = "head") -> dict:
+                     steps: int | None = None, mode: str = "head",
+                     train_on_override: str | None = None) -> dict:
         """Fine-tune a bound head on this project's reviewed labels, via HiDRA's PyTorch fine-tuner
         (finetune.py prepare/train — the old single-shot LABTAIL CLI is gone).
 
@@ -973,7 +981,19 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         every later round of that behavior. Every non-bout frame of a staged video is a NEGATIVE,
         so only videos with reviewed positives for this behavior are staged; the caller must have
         reviewed them exhaustively (see hidra.export_bouts). The resulting per-config checkpoints are recorded
-        on the behavior as `weights`, so the next Predict loads the adapted head automatically."""
+        on the behavior as `weights`, so the next Predict loads the adapted head automatically.
+
+        Which frames it learns from is the behavior's `train_on` (or `train_on_override`):
+          all       every frame of each staged clip. Unlabeled frames are negatives.
+          window    every frame inside each clip's social window, unlabeled ones as negatives.
+                    Frames outside the window are left out.
+          reviewed  only the spans you answered yes or no. A frame you never reviewed is then
+                    neither a positive nor a negative, so a clip with only rejected candidates
+                    is worth staging too.
+        The last two pass a mask to HiDRA (`prepare --reviewed`).
+
+        The run writes manifest.json and HiDRA's full log (hidra_log.txt) next to its checkpoints:
+        which frames it trained on, every clip it used or skipped and why, and which HiDRA ran."""
         rt = hidra.runtime()
         if not rt["can_infer"]:
             raise RuntimeError(rt["why"])
@@ -984,6 +1004,11 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         h = beh["hidra"]
         proj = store.get(pid)
+        on = train_on_override or hidra.train_on(h)
+        if on not in hidra.TRAIN_ON:
+            raise RuntimeError(f"train_on must be one of {sorted(hidra.TRAIN_ON)}, not {on!r}")
+        reviewed_only = on == "reviewed"
+        started = time.strftime("%Y-%m-%d %H:%M:%S")
         data_root = proj.path / "hidra" / "_finetune" / f"{h['lab']}__{h['action']}"
         tracking = data_root / "tracking"
         # Start each run from a clean staging dir. Re-running otherwise hit "[WinError 32] the process
@@ -993,12 +1018,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         _shutil.rmtree(data_root, ignore_errors=True)
         tracking.mkdir(parents=True, exist_ok=True)
 
-        # Stage the tracking parquet for every video that has a reviewed POSITIVE for this behavior.
-        # Reading the poses here also gives n_animals per video, which export_bouts needs to
-        # reconstruct the partner of a directed head (the per-lane labels do not record it).
+        # Stage the tracking parquet for every video that has a reviewed POSITIVE for this behavior
+        # (or, reviewed-frames-only, any reviewed frame). Reading the poses here also gives n_animals
+        # per video, which export_bouts needs to reconstruct the partner of a directed head (the
+        # per-lane labels do not record it).
         progress(3, f"staging tracking for {h['action']}")
         n_by: dict[str, int] = {}
         meta_rows: list[tuple] = []
+        used: list[dict] = []
+        skipped: list[dict] = []
         for v in proj.videos:
             vid = v["video_id"]
             try:
@@ -1006,16 +1034,22 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             except (KeyError, FileNotFoundError):
                 df = None
             if df is None or df.empty:
+                skipped.append({"video_id": vid, "video_path": v.get("video_path"),
+                                "reason": "no labels for this behavior"})
                 continue
-            has_pos = any(
-                int(run[2]) == 1 and int(run[1]) > int(run[0])
-                for t in {int(x) for x in df["track"].unique()}
-                for run in labels.get_runs(pid, vid, t, bid).get(bid, []))
-            if not has_pos:
+            runs = [run for t in {int(x) for x in df["track"].unique()}
+                    for run in labels.get_runs(pid, vid, t, bid).get(bid, [])]
+            n_pos = sum(int(r[1]) - int(r[0]) for r in runs if int(r[2]) == 1)
+            n_neg = sum(int(r[1]) - int(r[0]) for r in runs if int(r[2]) == 0)
+            if not n_pos and not (reviewed_only and n_neg):
+                skipped.append({"video_id": vid, "video_path": v.get("video_path"),
+                                "reason": "no positive labels"})
                 continue
             entry = proj.video(vid)
             slp = entry.get("slp_path")
             if not slp:
+                skipped.append({"video_id": vid, "video_path": v.get("video_path"),
+                                "reason": "no tracking file"})
                 continue
             header = poseio.read_header(slp)
             poses = poseio.read_poses(slp, n_frames_hint=entry.get("n_frames"), header=header)
@@ -1033,6 +1067,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             stem = hidra.staged_stem(vid, entry.get("video_path"))   # must match export_bouts's `file` column
             hidra.export_tracking(poses, header.node_names, fps, ppc, stem, tracking)
             meta_rows.append((f"{stem}.parquet", fps, ppc))
+            used.append({"video_id": vid, "video_path": entry.get("video_path"), "slp_path": slp,
+                         "staged_as": f"{stem}.parquet", "positive_frames": n_pos,
+                         "negative_frames": n_neg, "fps": fps, "pix_per_cm": ppc})
 
         if not meta_rows:
             raise RuntimeError("no reviewed labels for this behavior yet — review some of the "
@@ -1047,7 +1084,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             w.writerows(meta_rows)
 
         progress(12, "collecting reviewed bouts")
-        ann = hidra.export_bouts(store, labels, pid, bid, h, data_root / "bouts.csv", n_by)
+        staged_ids = {c["video_id"] for c in used}
+        ann = hidra.export_bouts(store, labels, pid, bid, h, data_root / "bouts.csv", n_by,
+                                 only=staged_ids)
+        reviewed_csv, rev = None, {}
+        if on != "all":
+            reviewed_csv = data_root / "reviewed.csv"
+            export = hidra.export_reviewed if on == "reviewed" else hidra.export_window
+            rev = export(store, labels, pid, bid, h, reviewed_csv, n_by, only=staged_ids)
         if ann["bouts"] == 0:
             if ann.get("directed_ambiguous"):
                 raise RuntimeError(
@@ -1060,26 +1104,62 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                                "head's proposals first, then train")
 
         tag = "".join(c if c.isalnum() else "_" for c in f"{proj.pid}_{bid}_{h['action']}")[:48]
+        # What this run trains on, written before it starts so even a failed run leaves a record.
+        manifest = {"started": started, "project": pid, "behavior_id": bid,
+                    "behavior": beh.get("name"), "lab": h["lab"], "action": h["action"],
+                    "mode": mode, "steps": steps, "smoke": smoke, "configs": configs,
+                    "train_on": on, "reviewed_only": reviewed_only,
+                    "trained_clips": used, "skipped_clips": skipped,
+                    "positive_bouts": ann["bouts"], "reviewed_spans": rev.get("spans"),
+                    "hidra": _hidra_version(rt),
+                    "note": "HiDRA keeps about 15% of the staged clips out of each of its 5 models "
+                            "for validation. The [LABTAIL] lines in hidra_log.txt say which."}
+        (data_root / "manifest.json").write_text(json.dumps(manifest, indent=1))
+
         label = "smoke test" if smoke else "fine-tuning"
-        progress(15, f"{label} {h['action']} on {ann['bouts']} bouts ({rt['backend']}, {mode})")
+        what = hidra.TRAIN_ON[on]
+        progress(15, f"{label} {h['action']} on {ann['bouts']} bouts, {what} ({rt['backend']}, {mode})")
         r = hidra.finetune(rt, h, tracking, data_root / "bouts.csv", data_root, tag, ann,
                            mode=mode, configs=configs, smoke=smoke, steps=steps,
-                           progress=lambda p, m: progress(15 + int(p * 0.85), m))
+                           progress=lambda p, m: progress(15 + int(p * 0.85), m),
+                           reviewed_csv=reviewed_csv)
 
         # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
-        # passes h["weights"] through to predict.py --weights). Re-fetch the live behavior off the
-        # project before saving, rather than trusting the dict handed in. A smoke run writes no
-        # checkpoint, so it records nothing — a later real Predict must not load a path that is not
-        # there.
+        # passes h["weights"] through to predict.py --weights), plus which frames they were trained
+        # on. Re-fetch the live behavior off the project before saving, rather than trusting the dict
+        # handed in. A smoke run writes no checkpoint, so it records nothing — a later real Predict
+        # must not load a path that is not there.
         if not smoke and r.get("weights"):
+            manifest.update(finished=time.strftime("%Y-%m-%d %H:%M:%S"), weights=r["weights"])
+            (data_root / "manifest.json").write_text(json.dumps(manifest, indent=1))
             live = next((b for b in proj.behaviors if b["id"] == bid), None)
             if live is not None:
                 live.setdefault("hidra", {})["weights"] = r["weights"]
                 live["hidra"]["finetune_mode"] = mode
+                live["hidra"]["weights_reviewed_only"] = reviewed_only
+                live["hidra"]["weights_train_on"] = on
+                live["hidra"]["weights_manifest"] = str(data_root / "manifest.json")
                 proj.save()
+        r.update(train_on=on, reviewed_only=reviewed_only, clips=[c["video_id"] for c in used],
+                 manifest=str(data_root / "manifest.json"))
         if ann.get("directed_ambiguous"):
             r["directed_ambiguous"] = ann["directed_ambiguous"]
         return r
+
+    def _hidra_version(rt: dict) -> dict:
+        """Which HiDRA ran, for the run manifest. Its folder, git commit and branch, plus whether it
+        had local changes (the reviewed-frames patch is one). Best effort, never fails a run."""
+        import subprocess
+        out = {"home": rt.get("home")}
+        for key, args in (("commit", ["rev-parse", "HEAD"]), ("branch", ["rev-parse", "--abbrev-ref", "HEAD"]),
+                          ("local_changes", ["status", "--porcelain", "--untracked-files=no"])):
+            try:
+                res = subprocess.run(["git", "-C", str(rt.get("home")), *args], capture_output=True,
+                                     text=True, timeout=10)
+                out[key] = res.stdout.strip() if key != "local_changes" else bool(res.stdout.strip())
+            except (subprocess.SubprocessError, OSError):
+                out[key] = None
+        return out
 
     @app.post("/api/projects/{pid}/videos/{vid}/predict")
     def predict_video(pid: str, vid: str):
@@ -1510,6 +1590,28 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             beh["hidra"] = hidra.rebind(beh.get("hidra"), lab, action, collapse, rate)
         proj.save()
         return beh.get("hidra", {})
+
+    @app.put("/api/projects/{pid}/behaviors/{bid}/hidra/options")
+    def set_hidra_options(pid: str, bid: int, body: dict = Body(...)):
+        """Training switches for a bound head. `train_on`: all, window or reviewed (see
+        _hidra_train). `reviewed_only` is the older switch: fine-tune on the frames you reviewed
+        and nothing else, instead of counting every unreviewed frame as a negative. Takes effect at
+        the next fine-tune. The current checkpoint is unchanged."""
+        _behavior(pid, bid)
+        proj = store.get(pid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        if not beh.get("hidra", {}).get("action"):
+            raise HTTPException(409, "bind this behavior to a HiDRA classifier first")
+        if "reviewed_only" in body:
+            beh["hidra"]["reviewed_only"] = bool(body["reviewed_only"])
+            beh["hidra"]["train_on"] = "reviewed" if body["reviewed_only"] else "all"
+        if "train_on" in body:
+            if body["train_on"] not in hidra.TRAIN_ON:
+                raise HTTPException(400, f"train_on must be one of {sorted(hidra.TRAIN_ON)}")
+            beh["hidra"]["train_on"] = body["train_on"]
+            beh["hidra"]["reviewed_only"] = body["train_on"] == "reviewed"
+        proj.save()
+        return beh["hidra"]
 
     app.mount("/", StaticFiles(directory=str(web), html=True), name="web")
     return app
