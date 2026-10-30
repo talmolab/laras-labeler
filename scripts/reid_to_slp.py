@@ -132,7 +132,7 @@ def process(npz: Path, args, path_map) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     row = {"stem": stem, "age_days": meta.get("age_days"), "video": video_src}
 
-    labels = sio.load_slp(slp_src)
+    labels = sio.load_slp(slp_src, open_videos=False)   # the stored video path is the server's
     labels.replace_filenames(new_filenames=[video_src])
     n = relabel(labels, table)
     dup = check_unique(labels)
@@ -146,7 +146,7 @@ def process(npz: Path, args, path_map) -> dict:
         clip_mp4 = out / f"{stem}.f{start}-{end}.mp4"
         clip_slp = out / f"{stem}.f{start}-{end}.reid.slp"
         cut_video(video_src, clip_mp4, start, end, fps)
-        clip = sio.load_slp(str(full))
+        clip = sio.load_slp(str(full), open_videos=False)
         video = sio.Video.from_filename(str(clip_mp4))
         frames = []
         for lf in clip.labeled_frames:
@@ -173,6 +173,10 @@ def main(argv=None) -> int:
                          "when /Volumes/talmo exists)")
     args = ap.parse_args(argv)
 
+    if args.clip and shutil.which("ffmpeg") is None:
+        print("--clip needs ffmpeg on PATH (Mac: `brew install ffmpeg`), or leave --clip off",
+              file=sys.stderr)
+        return 1
     path_map = [tuple(m.split("=", 1)) for m in args.path_map]
     if not path_map and Path("/Volumes/talmo").exists():
         path_map = [("/mnt/vast", "/Volumes/talmo"), ("/root/vast", "/Volumes/talmo")]
