@@ -18,7 +18,8 @@ tracked instances only), so the summary reports how many there are.
 
 Optionally `--clip START END` also cuts frames [START, END) into `<stem>.f<START>-<END>.mp4` plus a
 matching `.reid.slp` with frame indices shifted to 0, which is how the labeler's existing clips are
-made. The cut re-encodes (frame-exact select filter), so it needs ffmpeg on PATH.
+made. The cut re-encodes (frame-exact select filter), so it needs ffmpeg: on PATH, or the binary
+bundled with the imageio-ffmpeg package (add `--with imageio-ffmpeg` to the uv command).
 
 Paths inside `meta` are the server's (`/mnt/vast/...`); `--path-map` rewrites the prefix for wherever
 the share is mounted. On a Mac with the talmo share connected that is the default:
@@ -30,7 +31,7 @@ the share is mounted. On a Mac with the talmo share connected that is the defaul
         --out ~/reid_b21
 
     # every hour of one day, plus a 5-min clip from each
-    uv run --with sleap-io python scripts/reid_to_slp.py \\
+    uv run --with sleap-io --with imageio-ffmpeg python scripts/reid_to_slp.py \\
         /Volumes/talmo/than/26-09-reid-v2/studies/reid_remaining_20261007/b21/ident_tables \\
         --day 2026-06-08 --out ~/reid_b21 --clip 0 15000
 """
@@ -107,11 +108,22 @@ def check_unique(labels) -> int:
     return bad
 
 
+def find_ffmpeg() -> str | None:
+    """ffmpeg on PATH, else the binary bundled with the imageio-ffmpeg package (no Homebrew needed:
+    `uv run --with sleap-io --with imageio-ffmpeg ...`)."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
 def cut_video(src: str, dst: Path, start: int, end: int, fps: str) -> None:
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit("--clip needs ffmpeg on PATH (Mac: `brew install ffmpeg`)")
     vf = f"select=between(n\\,{start}\\,{end - 1}),setpts=N/FRAME_RATE/TB"
-    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", src, "-vf", vf, "-r", fps,
+    cmd = [find_ffmpeg(), "-loglevel", "error", "-y", "-i", src, "-vf", vf, "-r", fps,
            "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(dst)]
     subprocess.run(cmd, check=True)
 
@@ -173,9 +185,9 @@ def main(argv=None) -> int:
                          "when /Volumes/talmo exists)")
     args = ap.parse_args(argv)
 
-    if args.clip and shutil.which("ffmpeg") is None:
-        print("--clip needs ffmpeg on PATH (Mac: `brew install ffmpeg`), or leave --clip off",
-              file=sys.stderr)
+    if args.clip and find_ffmpeg() is None:
+        print("--clip needs ffmpeg: add `--with imageio-ffmpeg` to the uv command (or install ffmpeg), "
+              "or leave --clip off", file=sys.stderr)
         return 1
     path_map = [tuple(m.split("=", 1)) for m in args.path_map]
     if not path_map and Path("/Volumes/talmo").exists():
