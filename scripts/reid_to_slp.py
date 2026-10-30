@@ -117,7 +117,7 @@ def find_ffmpeg() -> str | None:
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+    except (ImportError, RuntimeError):
         return None
 
 
