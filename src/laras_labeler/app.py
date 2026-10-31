@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import contextlib
 import json
 import shutil
 import threading
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from fastapi.staticfiles import StaticFiles
 
 from . import config, hidra, poseio
+from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series
@@ -62,6 +64,11 @@ class NewBehavior(BaseModel):
 class SetSpout(BaseModel):
     x: float | None = None   # video pixel coords; both None clears the spout
     y: float | None = None
+
+
+class SetSocialWindow(BaseModel):
+    start_frame: int | None = None   # half-open [start_frame, end_frame); both None clears the window
+    end_frame: int | None = None
 
 
 class SetSpoutRoi(BaseModel):
@@ -172,6 +179,52 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             raise HTTPException(404, "video not found")
         return proj
 
+    def _auto_scale(entry: dict) -> dict | None:
+        """The px/cm this clip's poses can supply on their own (a sidecar measured by the pose
+        converter from the camera calibration) -- see scale.py for the rules, including what happens
+        when the video's size differs from the one the scale was measured on."""
+        return pxscale.auto_scale(entry.get("slp_path"), entry.get("width"), entry.get("height"))
+
+    def _effective_ppc(proj, entry: dict) -> tuple[float | None, str | None]:
+        """px/cm for HiDRA and where it came from. Precedence: a value typed for THIS clip, then a
+        project-wide one, then a value MEASURED from the camera calibration. Never a guess: with none
+        of the three the caller must refuse to run, as it always did."""
+        v = entry.get("pix_per_cm")
+        if v:
+            return float(v), "video"
+        v = proj.manifest.get("pix_per_cm")
+        if v:
+            return float(v), "project"
+        auto = _auto_scale(entry)
+        if auto and auto.get("usable"):
+            return float(auto["pix_per_cm"]), "calibration"
+        return None, None
+
+    def _no_scale_message(entry: dict, what: str) -> str:
+        auto = _auto_scale(entry)
+        found = (f" A calibration scale was found next to the poses but cannot be used: {auto['why']}."
+                 if auto and not auto.get("usable") else "")
+        return (f"no pixels-per-cm for {what}. HiDRA's features are in centimetres, so a scale is required "
+                "— type px/cm for the video, or (for sDANNCE poses) convert them with "
+                "lab_scripts/dannce_to_slp.py, which measures it from the camera calibration." + found)
+
+    # HiDRA runs ONE AT A TIME on this machine. A run needs roughly 10 GiB of GPU memory and a scratch folder
+    # keyed by the head, so overlapping runs -- a second Predict click while the first is still going, or
+    # several clicks each of which runs every bound head -- either exhaust the GPU ("CUDA out of memory") or
+    # delete each other's scratch files ("FileNotFoundError ... _work/perlab_allbeh/..."), and the jobs die.
+    # A later request now waits its turn and says so in its progress line instead of crashing.
+    _hidra_lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def _hidra_exclusive(progress, what: str):
+        if not _hidra_lock.acquire(blocking=False):
+            progress(1, f"waiting for another HiDRA job to finish before {what} …")
+            _hidra_lock.acquire()
+        try:
+            yield
+        finally:
+            _hidra_lock.release()
+
     def _meta(pid: str, vid: str) -> dict:
         proj = store.get(pid)
         entry = proj.video(vid) or {}
@@ -183,7 +236,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # always blank and the "set px/cm" warning never cleared, so Predict looked permanently
         # gated even on a clip whose scale was set and which Predict would have run.
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
-                "pix_per_cm": entry.get("pix_per_cm"), **eff}
+                "pix_per_cm": entry.get("pix_per_cm"),
+                "pix_per_cm_auto": _auto_scale(entry),
+                "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
     # separate the human's time from the machine's, and the machine's time has to be recorded where the
@@ -540,6 +595,29 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         p.save()
         return {"spout": entry["spout"]}
 
+    @app.put("/api/projects/{pid}/videos/{vid}/social-window")
+    def set_social_window(pid: str, vid: str, body: SetSocialWindow):
+        """Set (or clear) THIS clip's social window — the frame range where a second animal is
+        actually in the arena (e.g. entry/exit times for a social session; left unset for an
+        alone-condition control clip, which then behaves exactly as before). Labels outside it are
+        clipped on write (see put_labels), training/candidates/metrics only ever see labeled or
+        predicted frames inside it, and the feature cache is only computed for it (also invalidates
+        the cache, since the window feeds compute_per_track_features's input slice)."""
+        p = _video(pid, vid)
+        entry = p.video(vid)
+        n = entry["n_frames"]
+        if body.start_frame is None or body.end_frame is None:
+            entry["social_start"] = None
+            entry["social_end"] = None
+        else:
+            s, e = int(body.start_frame), int(body.end_frame)
+            if not (0 <= s < e <= n):
+                raise HTTPException(400, f"social window must satisfy 0 <= start < end <= {n}")
+            entry["social_start"] = s
+            entry["social_end"] = e
+        p.save()
+        return {"social_start": entry["social_start"], "social_end": entry["social_end"]}
+
     @app.put("/api/projects/{pid}/videos/{vid}/spout-roi")
     def set_video_spout_roi(pid: str, vid: str, body: SetSpoutRoi):
         """Set (or clear) THIS clip's spout ROI polygon — overrides the project-wide default for this
@@ -730,8 +808,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
-                return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                    steps=steps, mode=ft_mode)
+                with _hidra_exclusive(progress, "fine-tuning"):
+                    return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
+                                        steps=steps, mode=ft_mode)
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -828,11 +907,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # seconds. A container's declared fps can disagree with the rig's true rate (ours declares
         # 30 for 50 fps video), so the project's recorded value wins and is reported back.
         fps = float(entry.get("fps") or 30.0)
-        ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
+        ppc, ppc_src = _effective_ppc(proj, entry)
         if ppc is None:
-            raise RuntimeError(
-                "no pixels-per-cm for this video. HiDRA's features are in centimetres, so a scale "
-                "is required — set pix_per_cm on the video or the project.")
+            raise RuntimeError(_no_scale_message(entry, "this video"))
 
         # Short dir key: the full clip name (~85 chars) appears twice in HiDRA's nested
         # _work/custom_tracking/<lab>/<clip>.parquet tree, which blows past Windows' 260-char path
@@ -874,7 +951,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                          "finetuned": bool(h.get("weights")),
                          "above_cut": int((lanes >= 0.6).sum()), "frames": n_frames})
         progress(100, "done")
-        return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "export": exported}
+        return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "pix_per_cm_source": ppc_src, "export": exported}
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
                      smoke: bool = False, configs: list[str] | None = None,
@@ -950,12 +1027,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 poses = poses[:n_frames]
             n_by[vid] = int(poses.shape[1])
             fps = float(entry.get("fps") or 30.0)
-            ppc = float(entry.get("pix_per_cm") or proj.manifest.get("pix_per_cm") or 0) or None
+            ppc, _ = _effective_ppc(proj, entry)
             if ppc is None:
-                raise RuntimeError(
-                    f"no pixels-per-cm for {vid}. HiDRA's features are in centimetres, so a scale "
-                    "is required — set pix_per_cm on the video or the project.")
-            stem = Path(str(entry.get("video_path") or vid)).stem or vid
+                raise RuntimeError(_no_scale_message(entry, vid))
+            stem = hidra.staged_stem(vid, entry.get("video_path"))   # must match export_bouts's `file` column
             hidra.export_tracking(poses, header.node_names, fps, ppc, stem, tracking)
             meta_rows.append((f"{stem}.parquet", fps, ppc))
 
@@ -1025,8 +1100,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         def job(progress):
             out = {}
             if bound:
-                out["hidra"] = _hidra_predict(pid, vid, bound,
-                                              lambda p, m: progress(int(p * (70 if predictor.trained_behaviors(pid) else 100) / 100), m))
+                with _hidra_exclusive(progress, "predicting"):
+                    out["hidra"] = _hidra_predict(pid, vid, bound,
+                                                  lambda p, m: progress(int(p * (70 if predictor.trained_behaviors(pid) else 100) / 100), m))
             if predictor.trained_behaviors(pid):
                 base = 70 if bound else 0
                 span = 30 if bound else 100
@@ -1252,8 +1328,21 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     @app.put("/api/projects/{pid}/labels/{vid}")
     def put_labels(pid: str, vid: str, spans: list[LabelSpan]):
-        _video(pid, vid)
+        p = _video(pid, vid)
         rows = [s.model_dump() for s in spans]
+        # Hard backstop for the social window: even if a client bypasses the GUI's paint clamp (a
+        # direct API call, an importer, a stale tab), a label can never land outside the window a
+        # clip has set -- clip each span to the intersection, drop it if there is none. A clip with
+        # no window (e.g. an alone-condition control) is unaffected.
+        entry = p.video(vid) or {}
+        ws, we = entry.get("social_start"), entry.get("social_end")
+        if ws is not None and we is not None:
+            clipped = []
+            for r in rows:
+                s, e = max(r["start"], ws), min(r["end"], we)
+                if e > s:
+                    clipped.append({**r, "start": s, "end": e})
+            rows = clipped
         labels.put_spans(pid, vid, rows)
         # Server-side backstop for the event log: the browser's semantic events (which paint, which
         # accept) are richer, but they live in a queue that a closed tab or a crash can lose. Every
@@ -1418,7 +1507,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             rate = float(body.get("rate", 0.15))
             if not 0 < rate < 1:
                 raise HTTPException(400, "rate must be between 0 and 1")
-            beh["hidra"] = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+            beh["hidra"] = hidra.rebind(beh.get("hidra"), lab, action, collapse, rate)
         proj.save()
         return beh.get("hidra", {})
 

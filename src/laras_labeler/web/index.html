@@ -349,7 +349,7 @@
       <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
              title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
       <label class="status" for="hidraPpc">px/cm:</label>
-      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:66px"
+      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:88px"
              title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
       <span class="status" id="hidraNote"></span>
     </span>
@@ -1638,6 +1638,16 @@ function renderTimeline() {
     // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
     tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
   });
+  // Social window (entry/exit of a second animal): dim everything outside it so it's obvious at a
+  // glance where labeling/review even applies. Drawn into the base (before captureTimelineBase) so
+  // it survives the playback fast-path repaint, not just a full render. No-op for a clip with no
+  // window set (e.g. an alone-condition control clip).
+  if (meta.social_start != null && meta.social_end != null) {
+    tctx.fillStyle = "rgba(0,0,0,0.45)";
+    const wx0 = xOf(meta.social_start, W), wx1 = xOf(meta.social_end, W);
+    if (wx0 > TL_GUT) tctx.fillRect(TL_GUT, RULER, wx0 - TL_GUT, H - RULER);
+    if (wx1 < W) tctx.fillRect(wx1, RULER, W - wx1, H - RULER);
+  }
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   drawTimelineOverlay(W, H, rh);
   drawFeatures(W, dpr);
@@ -1684,6 +1694,7 @@ function drawTimelineOverlay(W, H, rh) {
       const y = LANES_Y() + ri * rh, ym = y, t = reviewTrim || reviewCurrent;
       const xc0 = xOf(reviewCurrent.s, W), xc1 = xOf(reviewCurrent.e, W);
       const xt0 = xOf(t.s, W), xt1 = xOf(t.e, W), cH = hexRgb(HAPPENING_COLOR), cN = hexRgb(NOTHAPPENING_COLOR);
+      const gxe = xOf(Math.max(t.s, t.e - 1), W);   // end grip sits on the last included frame so it lines up with the playhead
       const isDis = reviewCurrent.mode === "disagree";
       const cAcc = (isDis && reviewCurrent.suggestVal === 0) ? cN : cH;   // disagree fills the range with the model's verdict color
       tctx.fillStyle = `rgba(${cAcc.r},${cAcc.g},${cAcc.b},0.30)`; tctx.fillRect(xt0, ym + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);
@@ -1691,7 +1702,7 @@ function drawTimelineOverlay(W, H, rh) {
       if (!isDis && t.e < reviewCurrent.e) { tctx.fillStyle = `rgba(${cN.r},${cN.g},${cN.b},0.30)`; tctx.fillRect(xt1, ym + 3, xc1 - xt1, MANUAL_H - 6); }
       tctx.strokeStyle = "#ffd24a"; tctx.lineWidth = 1.5;
       tctx.strokeRect(xc0, y + 1, Math.max(2, xc1 - xc0), rh - ROW_GAP - 2);                                    // candidate bracket
-      for (const xx of [xt0, xt1]) {                                       // trim markers + draggable grips
+      for (const xx of [xt0, gxe]) {                                       // trim markers + draggable grips
         tctx.strokeStyle = "#ffd24a"; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#ffd24a"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -1704,9 +1715,10 @@ function drawTimelineOverlay(W, H, rh) {
     const si = laneList().findIndex(b => b.id === selectedSeg.bid);
     if (si >= 0) {
       const y = LANES_Y() + si * rh, xt0 = xOf(segTrim.s, W), xt1 = xOf(segTrim.e, W);
+      const gxe = xOf(Math.max(segTrim.s, segTrim.e - 1), W);   // end grip sits on the last included frame
       const c = selectedSeg.val === 1 ? hexRgb(HAPPENING_COLOR) : selectedSeg.val === 2 ? hexRgb(NOTHAPPENING_COLOR) : { r: 150, g: 150, b: 150 };
       tctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.28)`; tctx.fillRect(xt0, y + 3, Math.max(1, xt1 - xt0), MANUAL_H - 6);  // edited extent
-      for (const xx of [xt0, xt1]) {                           // grips (white, matching the selection outline)
+      for (const xx of [xt0, gxe]) {                           // grips (white, matching the selection outline)
         tctx.strokeStyle = "#fff"; tctx.lineWidth = 1.5; tctx.beginPath(); tctx.moveTo(xx, y); tctx.lineTo(xx, y + MANUAL_H); tctx.stroke();
         tctx.fillStyle = "#fff"; rRect(tctx, xx - 4, y + MANUAL_H / 2 - 8, 8, 16, 3); tctx.fill();
         tctx.strokeStyle = "#1a1d23"; tctx.lineWidth = 1;
@@ -1871,6 +1883,15 @@ async function syncRange(bid, s, e) {   // reads per-frame value+source+target s
   scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
 async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
+  // Social window: every paint path (manual, drag, erase, candidate accept/trim/merge/split) funnels
+  // through here, so clamping once here covers all of them rather than patching each call site. The
+  // server clips again on write regardless (the authoritative guarantee — see put_labels); this just
+  // keeps the client's own label arrays/undo stack from ever showing something the server would
+  // reject. No-op for a clip with no window set.
+  if (meta && meta.social_start != null && meta.social_end != null) {
+    s = Math.max(s, meta.social_start); e = Math.min(e, meta.social_end);
+    if (e <= s) { busy("outside the social window — nothing to label there"); return; }
+  }
   clearSel();                                        // any label edit invalidates a highlighted selection
   const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
   const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
@@ -2095,7 +2116,23 @@ function hidraReflect() {
 
   const predict = el("predict"), train = el("train");
   const ppc = parseFloat(el("hidraPpc").value);
-  const needScale = bound && !(ppc > 0);
+  // A scale MEASURED from the camera calibration (server-side scale.py) satisfies the requirement; a typed
+  // value always wins over it. If a measured scale exists but must not be used for this clip (different
+  // shape, broken file) the server says why and we show that instead of a generic warning.
+  const auto = meta && meta.pix_per_cm_auto;
+  const autoOk = !!(auto && auto.usable);
+  const needScale = bound && !(ppc > 0) && !autoOk;
+  {
+    const pin = el("hidraPpc");
+    pin.placeholder = autoOk ? `${auto.pix_per_cm.toFixed(1)} auto` : "px/cm";
+    pin.dataset.autoTip = autoOk
+      ? `Automatic: ${auto.pix_per_cm.toFixed(2)} px/cm, ${auto.note}` +
+        (auto.iqr ? ` (the middle half of the measurements span ${auto.iqr[0].toFixed(1)}–${auto.iqr[1].toFixed(1)})` : "") +
+        ". Type a number to override it; clear the box to use this again."
+      : "";
+    if (!pin.dataset.baseTip) pin.dataset.baseTip = pin.title;
+    pin.title = pin.dataset.autoTip ? pin.dataset.autoTip + "\n\n" + pin.dataset.baseTip : pin.dataset.baseTip;
+  }
   if (bound) {
     predict.textContent = ftMode ? `▶ Predict — ${pick.action} (fine-tuned)` : `▶ Predict — ${pick.action}`;
     train.textContent = ftMode ? "⚙ HiDRA re-tune" : "⚙ HiDRA fine-tune";
@@ -2111,9 +2148,11 @@ function hidraReflect() {
   el("hidraNote").textContent =
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
-    : needScale ? "⚠ set px/cm — HiDRA measures in centimetres"
+    : needScale ? (auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres")
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
     : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  if (bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer)
+    el("hidraNote").textContent += ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)`;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
@@ -2433,7 +2472,11 @@ async function addBehavior() {
   const key = prompt("Hotkey (single char, optional):") || null;
   const r = await api(`/behaviors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, key }) });
   if (!r.ok) { alert("Could not add: " + (await r.json()).detail); return; }
+  const created = await r.json().catch(() => null);
   await reloadBehaviors();
+  // Make the new behavior the active one. Otherwise the previously active behavior stays selected, and the
+  // next thing you do -- typically choosing its HiDRA classifier -- silently rebinds THAT one instead.
+  if (created && created.id != null) await selectBehavior(created.id);
 }
 async function reloadBehaviors() {
   behaviors = await (await api(`/behaviors`)).json();
@@ -3628,7 +3671,7 @@ function trimHandleAt(x, y, W) {   // is (x,y) near a draggable trim-edge grip? 
   if (ri < 0) return null;
   const rh = ROWH(), ry = LANES_Y() + ri * rh;
   if (y < ry - 2 || y > ry + MANUAL_H + LANE_GAP) return null;
-  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(at.trim.e, W)), tol = 9;
+  const ds = Math.abs(x - xOf(at.trim.s, W)), de = Math.abs(x - xOf(Math.max(at.trim.s, at.trim.e - 1), W)), tol = 9;
   if (ds <= tol && ds <= de) return "s";
   if (de <= tol) return "e";
   return null;

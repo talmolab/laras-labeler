@@ -787,6 +787,13 @@ def _subproc_env(extra: dict | None = None) -> dict:
     return env
 
 
+def _gpu_flag() -> list[str]:
+    """`--gpu N` from the HIDRA_GPU env var. HiDRA resets CUDA_VISIBLE_DEVICES from --gpu, so the flag is the only way."""
+    import os
+    gpu = os.environ.get("HIDRA_GPU")
+    return ["--gpu", gpu] if gpu else []
+
+
 def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: float,
           weights: str | None = None, progress=lambda p, m: None) -> Path:
     """Run one (lab, action) head over the exported folder. Returns the frames parquet.
@@ -821,7 +828,7 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
     out.mkdir(parents=True, exist_ok=True)
     cmd = _hidra_cmd(rt, "hidra.cli", "predict.py") + [str(work),
            "--jobs", str(jobs_csv), "--out", str(out),
-           "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"]
+           "--fps", str(fps), "--pix-per-cm", str(pix_per_cm), "--output", "both"] + _gpu_flag()
     # Fine-tuned weights are a {config}-templated path; use them only if the checkpoints actually
     # exist. A fine-tune that recorded a weights path but produced no checkpoint (a failed/empty
     # train) would otherwise make every later Predict crash inside HiDRA with FileNotFoundError —
@@ -949,6 +956,27 @@ def directed_targets(frames_parquet: Path, lab: str, action: str,
     return tgt
 
 
+def rebind(prev: dict | None, lab: str, action: str, collapse: str, rate: float) -> dict:
+    """New hidra settings for a behavior. Keeps the fine-tuned checkpoint if the head is unchanged."""
+    out = {"lab": lab, "action": action, "collapse": collapse, "rate": rate}
+    prev = prev or {}
+    if (prev.get("lab"), prev.get("action")) == (lab, action):
+        for k in ("weights", "finetune_mode"):
+            if k in prev:
+                out[k] = prev[k]
+    return out
+
+
+def staged_stem(vid: str, video_path: str | None) -> str:
+    """Staged file name for a clip. Keyed on video_id because many clips share the file name 0.mp4.
+
+    Must match between export_bouts and _hidra_train in app.py."""
+    import re
+    raw = Path(str(video_path or vid)).stem or str(vid)
+    base = re.sub(r"[^A-Za-z0-9_-]", "_", str(vid))
+    return base if raw == str(vid) else f"{base}_{raw}"
+
+
 def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
                  n_animals_by_video: dict | None = None) -> dict:
     """Reviewed POSITIVE bouts for one behavior -> the annotation CSV `finetune.py prepare` reads.
@@ -994,7 +1022,7 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
             continue
         if df is None or df.empty:
             continue
-        stem = Path(str(v.get("video_path") or vid)).stem or vid
+        stem = staged_stem(vid, v.get("video_path"))
         n_animals = int(n_by.get(vid) or v.get("n_animals") or 0)
         tracks = sorted({int(x) for x in df["track"].unique()})
         for t in tracks:
@@ -1140,7 +1168,7 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
     train = entry + ["train",
              "--data", str(staged), "--lab", head["lab"], "--actions", head["action"],
              "--out", str(models), "--tag", tag, "--mode", mode,
-             "--backend", "torch", "--workdir", str(workdir)]
+             "--backend", "torch", "--workdir", str(workdir)] + _gpu_flag()
     if configs:
         train += ["--configs", ",".join(configs)]
     if steps:

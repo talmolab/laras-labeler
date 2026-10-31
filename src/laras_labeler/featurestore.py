@@ -157,7 +157,7 @@ class FeatureStore:
         project-wide default, so clips from different cameras carry their own arena landmarks. Because
         this feeds the per-video feature hash, changing one clip's ROI invalidates only that clip."""
         cfg = dict(proj.manifest["feature_config"])
-        for k in ("spout", "spout_roi", "cage_roi"):
+        for k in ("spout", "spout_roi", "cage_roi", "social_start", "social_end"):
             if entry.get(k) is not None:
                 cfg[k] = entry[k]
         return cfg
@@ -222,9 +222,26 @@ class FeatureStore:
         track_names = ov.track_names
         fps = float(entry["fps"])
 
-        progress(20, f"features: {pose.shape[0]} frames x {pose.shape[1]} animals (per-track)")
-        X, names, dropped, resolved = feat.compute_per_track_features(pose, node_names, track_names,
-                                                                      fps, cfg, roles)   # (F, T, D)
+        # Social window (PLAN: entry/exit of a second animal): frames outside it either have no
+        # second animal (alone-condition control clips never set one -- this is a no-op then) or a
+        # spurious detection where DANNCE guessed at an animal that wasn't physically there yet, so
+        # computing social/proximity features from them is not just wasted compute but wrong. Slice
+        # BEFORE the pipeline runs (not masked after) so windowed/smoothed features near the edges
+        # are never contaminated by the excluded region, then paste the result back at its real
+        # frame offset into a NaN-filled full-length array -- every other index (labels, predictions,
+        # playback) still addresses frames by their absolute position in the video.
+        s, e = cfg.get("social_start"), cfg.get("social_end")
+        window = s is not None and e is not None
+        pose_in = pose[s:e] if window else pose
+
+        progress(20, f"features: {pose_in.shape[0]} frames x {pose_in.shape[1]} animals (per-track)")
+        X_sub, names, dropped, resolved = feat.compute_per_track_features(pose_in, node_names, track_names,
+                                                                          fps, cfg, roles)   # (F', T, D)
+        if window:
+            X = np.full((pose.shape[0], X_sub.shape[1], X_sub.shape[2]), np.nan, dtype=X_sub.dtype)
+            X[s:e] = X_sub
+        else:
+            X = X_sub
         progress(85, f"writing cache (T={X.shape[1]}, D={X.shape[2]})")
 
         # persist resolved roles back to the manifest if not set
