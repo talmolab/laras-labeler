@@ -237,7 +237,9 @@
     </div>
   </div>
   <aside id="behaviorRail" class="siderail">
-    <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div></div>
+    <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div>
+      <div class="row" id="objectBar" style="margin-top:8px"
+           title="Objects a bout can be ON, for behaviors marked 'on object'. The feeder, cage wall and spout are outlined by each clip's ROIs (filled from the HCM database), so the nearest one is suggested. Add anything else (an enrichment item, a nest) with ＋ object: it can be picked, not suggested."></div></div>
   </aside>
   <div id="reviewPanel" class="panel review-rail">
     <div id="reviewQ" class="rvq"></div>
@@ -344,6 +346,11 @@
            title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
       <input type="checkbox" id="dirToggle"> directed (actor→target)
     </label>
+    <label class="status" id="objGroup" style="display:none; align-items:center; gap:4px"
+           title="Mark this behavior as object-directed: each Happening bout records the object it is on (the feeder, the cage wall, the spout, or one you added under Objects). After you paint or select a bout, pick the object; the one nearest the animal's nose during the bout is suggested (⏎ takes it). Accepting a review candidate fills in the suggestion.">
+      <input type="checkbox" id="objToggle"> on object
+    </label>
+    <span id="objPick" style="display:none; align-items:center; gap:4px; flex-wrap:wrap"></span>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
          unchanged and nothing here depends on HiDRA being present. -->
     <span class="sep" id="hidraSep" style="display:none"></span>
@@ -426,7 +433,7 @@
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
     <button id="statsBtn" title="Precision stats + learning curve vs. how much you've labeled">📊 Stats</button>
-    <button id="trainsetBtn" title="List the clips, tracks, and bouts THIS model was actually trained on">🗂 Training set</button>
+    <button id="trainsetBtn" title="Which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening) — and what the current model learned from">🗂 Training set</button>
     <button id="labelStatsBtn" title="How many bouts you labeled by hand vs accepted from candidates, per track">🏷 Label sources</button>
     <button id="featDiffBtn" title="How keypoint features differ between positive and negative frames">📈 Feature diff</button>
     <button id="importBtn">Import…</button>
@@ -544,15 +551,21 @@
 
   <div id="trainsetPanel" class="panel">
     <div class="row" style="margin-top:0; justify-content:space-between">
-      <b id="trainsetTitle" style="font-size:14px">Training set</b>
       <span>
-        <button id="trainsetCopy" title="Copy the full training-set list as JSON">⧉ Copy JSON</button>
+        <b id="trainsetTitle" style="font-size:14px">Training set</b>
+        <span style="margin-left:12px">
+          <button id="tsNextBtn" class="on" title="What the next Train will learn from, from your labels as they are now (click again to refresh)">Next Train</button>
+          <button id="tsLastBtn" title="What the current model was trained on (frozen at train time)">Current model</button>
+        </span>
+      </span>
+      <span>
+        <button id="trainsetCopy" title="Copy what this view lists as JSON">⧉ Copy JSON</button>
         <button id="trainsetClose">✕ Close</button>
       </span>
     </div>
     <div id="trainsetSummary" class="status" style="margin:12px 0 6px"></div>
-    <div class="status" style="color:#6b7280; margin-bottom:8px">Every clip · track · bout this model version learned from (frozen at train time). Click a bout to jump to it.</div>
-    <div id="trainsetList" style="max-height:360px; overflow:auto"></div>
+    <div id="trainsetNote" class="status" style="color:#6b7280; margin-bottom:8px"></div>
+    <div id="trainsetList" style="max-height:420px; overflow:auto"></div>
   </div>
 
   <div id="labelStatsPanel" class="panel">
@@ -678,6 +691,12 @@ let behaviors = [], activeBid = null, mode = "pos";
 let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
 const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
 let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
+let objectState = new Map();          // per behavior: per-frame object code (OBJ_IDS index; 0 = none) for object-directed bouts
+const OBJ_CODES = new Map([["", 0]]), OBJ_IDS = [""];   // object id <-> per-frame code, grown as ids are seen
+function objCode(id) { id = id || ""; if (!OBJ_CODES.has(id)) { OBJ_CODES.set(id, OBJ_IDS.length); OBJ_IDS.push(id); } return OBJ_CODES.get(id); }
+const projObjects = () => (projMeta && projMeta.objects) || [];
+const objName = id => (projObjects().find(o => o.id === id) || {}).name || id;
+let awaitObject = null;               // {bid,s,e,track,current,suggested,rows}: the object picker is open for this bout
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: auto-stop frame (play a single bout), null = play to end
@@ -916,6 +935,7 @@ function clearStage() {
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
   predsByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
+  objectState = new Map(); closeObjPick();
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
@@ -977,24 +997,40 @@ async function openVideo(vidId) {
   autoloadCageRoi();                                   // best-effort: fill a missing cage ROI from the HCM DB
   browseRefreshSources();                              // best-effort: other projects with this clip, for Browse labels
 }
-async function autoloadCageRoi() {   // when a clip has no cage ROI, pull this recording's polygon from the HCM DB (no-op off-VPN)
-  if (cageRoi) return;                                 // already set — don't clobber or re-hit the DB
-  const reqVid = vid;                                  // guard against a clip switch mid-request
+async function autoloadCageRoi() {   // fill a clip's missing cage / spout / feeder outlines from this recording in the HCM DB (no-op off-VPN)
+  // already set, or the feeder already looked for in this clip's recording — don't clobber or re-hit the DB
+  if (cageRoi && (meta.roi_checked || (meta.feeder_top_roi && meta.feeder_side_roi))) return;
+  const reqVid = vid, reqMeta = meta;                  // guard against a clip switch mid-request
   let d; try { const r = await api(`/videos/${vid}/autoload-roi`, { method: "POST" }); if (!r.ok) return; d = await r.json(); }
   catch (e) { return; }
-  if (vid !== reqVid || !d || !d.set) return;
+  if (!d || !d.set) return;
+  if (d.checked) { reqMeta.roi_checked = true; reqMeta.roi_recording_status = d.recording_status; }
+  // Keep this clip's meta current, so reopening it shows them. A newly set ROI is this clip's own and now
+  // overrides any project-wide default (it is what Train uses), so it replaces what's drawn. d.rois = the
+  // outlines as saved now: the background fetch on project open may have filled them first (d.set empty).
+  let fresh = false;
+  for (const k of ["cage_roi", "spout_roi", "feeder_top_roi", "feeder_side_roi"]) {
+    const v = d.set[k] || (!reqMeta[k] && (d.rois || {})[k]);
+    if (v) { reqMeta[k] = v; fresh = true; }
+  }
+  if (vid !== reqVid || !fresh) return;
+  cageRoi = reqMeta.cage_roi || null; spoutRoi = reqMeta.spout_roi || null;
+  updateCageCtl(); updateSpoutCtl(); drawPose();      // reflect the new ROI(s) on the overlay
   const src = d.source || {}, got = [];
-  if (d.set.cage_roi) { cageRoi = d.set.cage_roi; got.push(["cage", src.cage_roi]); }
-  if (d.set.spout_roi && !spoutRoi) { spoutRoi = d.set.spout_roi; got.push(["spout", src.spout_roi]); }
+  if (d.set.cage_roi) got.push(["cage", src.cage_roi]);
+  if (d.set.spout_roi) got.push(["spout", src.spout_roi]);
+  if (d.set.feeder_top_roi || d.set.feeder_side_roi)
+    got.push(["feeder", src.feeder_top_roi || src.feeder_side_roi]);
   if (got.length) {
-    updateCageCtl(); updateSpoutCtl(); drawPose();     // reflect the new ROI(s) on the overlay
     // Name where each polygon came from: this clip's own recording, or the camera-median fallback. The
     // spout in particular shifts between recordings, so which one you got changes spout-distance features.
     const pretty = s => s === "recording" ? "this recording" : s === "camera medoid" ? "camera median" : null;
     const uniq = [...new Set(got.map(([, s]) => pretty(s)).filter(Boolean))];
     const prov = uniq.length === 1 ? `, ${uniq[0]}`
                : uniq.length ? "; " + got.map(([n, s]) => `${n}: ${pretty(s) || "?"}`).join(", ") : "";
-    busy(`auto-loaded ${got.map(([n]) => n).join(" + ")} ROI from HCM DB (${d.camera || "?"}${prov}) — Train/Predict to use it`);
+    // the feeder outline is display-only for now: no feature reads it, so a retrain changes nothing
+    const use = got.some(([n]) => n !== "feeder") ? "Train/Predict to use it" : "shown on the video (not a classifier input yet)";
+    busy(`auto-loaded ${got.map(([n]) => n).join(" + ")} ROI from HCM DB (${d.camera || "?"}${prov}) — ${use}`);
   }
 }
 
@@ -1021,15 +1057,16 @@ async function maybeUpload() {
 
 async function loadLabels() {
   selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
-  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target]
-  labelState = new Map(); sourceState = new Map(); targetState = new Map();
-  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); }
+  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target, object]
+  labelState = new Map(); sourceState = new Map(); targetState = new Map(); objectState = new Map(); closeObjPick();
+  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); objectState.set(b.id, new Int16Array(meta.n_frames)); }
   for (const [bid, rl] of Object.entries(runs)) {
-    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid));
-    if (arr) for (const [s, e, val, source, target] of rl) {
+    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid)), oarr = objectState.get(Number(bid));
+    if (arr) for (const [s, e, val, source, target, obj] of rl) {
       arr.fill(val === 1 ? 1 : val === 0 ? 2 : 3, s, e);        // stored 1/0/2 -> state 1/2/3
       if (sarr) sarr.fill(SRC_CODES[source] ?? 0, s, e);         // provenance code (default manual)
       if (tarr) tarr.fill(target == null ? NO_TARGET : target, s, e);   // directed recipient track (-1 = self/undirected)
+      if (oarr && obj) oarr.fill(objCode(obj), s, e);            // object-directed bout's object ("" = none)
     }
   }
   for (const b of behaviors) recomputeBouts(b.id);   // keep the "new suggestion" bouts in sync with the freshly-loaded labels
@@ -1193,6 +1230,25 @@ function drawCageRoi() {
   octx.fillText("cage ROI", lbl[0], lbl[1] - 8); octx.textAlign = "left"; octx.textBaseline = "alphabetic";
   octx.restore();
 }
+// ---------- feeder outlines (from this clip's HCM recording; display-only: pink, dotted) ----------
+function drawFeederRoi() {
+  if (!meta) return;
+  const parts = [["feeder top", meta.feeder_top_roi], ["feeder side", meta.feeder_side_roi]]
+    .filter(([, pts]) => pts && pts.length >= 3);
+  if (!parts.length) return;
+  octx.save(); octx.lineWidth = 2; octx.setLineDash([3, 4]);
+  octx.font = "bold 13px system-ui"; octx.textAlign = "center"; octx.textBaseline = "middle";
+  for (const [name, pts] of parts) {
+    octx.strokeStyle = "#f28cd2"; octx.fillStyle = "rgba(242,140,210,0.10)";
+    octx.beginPath();
+    pts.forEach(([x, y], i) => i ? octx.lineTo(x, y) : octx.moveTo(x, y));
+    octx.closePath(); octx.fill(); octx.stroke();
+    // label at the outline's center: the feeder sits low in the frame, so a label below it can fall off
+    const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    octx.fillStyle = "#f28cd2"; octx.fillText(name, cx, cy);
+  }
+  octx.restore();
+}
 function noseIndex() {
   const nm = skeleton && skeleton.roles && skeleton.roles.nose;
   const nodes = (skeleton && skeleton.nodes) || [];
@@ -1260,6 +1316,7 @@ function drawPose() {
   drawSpoutMarker();                                    // always shown (independent of the pose toggle)
   drawSpoutRoi();                                       // spout ROI polygon (committed + in-progress)
   drawCageRoi();                                        // cage-boundary ROI polygon (committed + in-progress)
+  drawFeederRoi();                                      // feeder top / side outlines (from the HCM DB)
   drawApproaches();                                     // confirmed-positive nose approach paths (toggle)
   if (!poses) return;
   if (!showPoses) { drawIdentityMarkers(); return; }    // poses hidden -> keep a minimal per-mouse identity marker so the mice stay distinguishable
@@ -1617,11 +1674,20 @@ function renderTimeline() {
       if (v === 1) { tctx.fillStyle = HAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }          // Happening = blue
       else if (v === 2) { tctx.fillStyle = NOTHAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }   // Not-happening = red
       else hatchRect(tctx, x0, ym + 3, w, MANUAL_H - 6, UNKNOWN_HATCH);                                                       // Unknown = gray hatch
-      if (v === 1 && w > 14 && isDirected(b.id)) {   // directed bout: overlay its recipient, "→N" ("→?" = not set yet)
-        const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
+      if (v === 1 && w > 14 && (isDirected(b.id) || isObjDirected(b.id))) {   // overlay the recipient "→N" and/or the object "@name" ("?" = not set yet)
+        const parts = [];
+        if (isDirected(b.id)) { const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET; parts.push(tt >= 0 ? "→" + (tt + 1) : "→?"); }   // target as its 1-based track number, matching the chips
+        let objTxt = null;
+        if (isObjDirected(b.id)) { const ob = objectState.get(b.id), oid = ob ? OBJ_IDS[ob[s]] || "" : ""; objTxt = oid ? objName(oid) : "?"; }
         tctx.save();
         tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
-        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);   // target shown as its 1-based track number, matching the chips
+        let txt = parts.join(" ");
+        if (objTxt != null) {                                   // the full name if it fits, else its initials
+          const full = (txt ? txt + " " : "") + "@" + objTxt;
+          const short = (txt ? txt + " " : "") + "@" + objTxt.split(/\s+/).map(w => w[0]).join("");
+          txt = tctx.measureText(full).width <= w - 4 ? full : short;
+        }
+        if (tctx.measureText(txt).width <= w - 2) tctx.fillText(txt, x0 + w / 2, ym + MANUAL_H / 2);
         tctx.restore();
       }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
@@ -1940,24 +2006,24 @@ function overviewNav(clientX) {
 }
 
 // ---------- labeling ops ----------
-function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target) within [s,e), skipping unlabeled — for faithful re-sync
-  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid); if (!v) return [];
+function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target, object) within [s,e), skipping unlabeled — for faithful re-sync
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid); if (!v) return [];
   const out = []; let i = s;
   while (i < e) {
     if (!v[i]) { i++; continue; }
-    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET; let j = i + 1;
-    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt) j++;
-    out.push([i, j, v[i], sc, tt]); i = j;
+    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET, oo = ob ? ob[i] : 0; let j = i + 1;
+    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt && (ob ? ob[j] : 0) === oo) j++;
+    out.push([i, j, v[i], sc, tt, oo]); i = j;
   }
   return out;
 }
 async function syncRange(bid, s, e) {   // reads per-frame value+source+target so each run persists with its own provenance & recipient
   await api(`/labels/${vid}?behavior=${bid}&track=${activeTrack}&start=${s}&end=${e}`, { method: "DELETE" });
-  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt }));  // state 1/2/3 -> stored 1/0/2
+  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt, oo]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt, object: OBJ_IDS[oo] || "" }));  // state 1/2/3 -> stored 1/0/2
   if (spans.length) await api(`/labels/${vid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spans) });
   scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
-async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
+async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET, obj = "") {
   if (browseBlocked()) return;                       // browsing detections is read only
   // Social window: every paint path (manual, drag, erase, candidate accept/trim/merge/split) funnels
   // through here, so clamping once here covers all of them rather than patching each call site. The
@@ -1969,21 +2035,22 @@ async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
     if (e <= s) { busy("outside the social window — nothing to label there"); return; }
   }
   clearSel();                                        // any label edit invalidates a highlighted selection
-  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
-  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
-  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e);
-  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e) }); redoStack.length = 0;
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid), sc = SRC_CODES[source] ?? 0;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e);   // snapshot value+provenance+target+object for a faithful undo
+  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e); ob.fill(k === 1 ? objCode(obj) : 0, s, e);
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
   recomputeBouts(bid);                               // labeling this range drops it from the "new suggestion" bouts
   renderTimeline(); await syncRange(bid, s, e);
 }
-async function applyOp(op, vSlice, sSlice, tSlice) {
-  clearSel();
+async function applyOp(op, vSlice, sSlice, tSlice, oSlice) {
+  clearSel(); closeObjPick();
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
   if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
+  if (oSlice && objectState.get(op.bid)) objectState.get(op.bid).set(oSlice, op.s);        // and the object
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { if (browseBlocked()) return; const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
-async function redo() { if (browseBlocked()) return; const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
+async function undo() { if (browseBlocked()) return; const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT, op.beforeO); }
+async function redo() { if (browseBlocked()) return; const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT, op.afterO); }
 
 // ---------- directed (actor -> target) helpers ----------
 function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
@@ -1992,12 +2059,15 @@ function syncDirectedToggle() {   // reflect the active behavior's `directed` fl
   const b = behaviors.find(x => x.id === activeBid);
   grp.style.display = b ? "inline-flex" : "none";
   if (b) cb.checked = !!b.directed;
+  const og = el("objGroup"), oc = el("objToggle");
+  if (og && oc) { og.style.display = b ? "inline-flex" : "none"; if (b) oc.checked = !!b.object_directed; }
 }
 async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
   const a = awaitTarget; if (!a) return;
   if (track === a.actor) { busy("target can't be the acting track — press Shift + a different track number"); return; }
   awaitTarget = null;
-  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
+  const ob = objectState.get(a.bid), keepObj = ob ? OBJ_IDS[ob[a.s]] || "" : "";   // an object-directed bout keeps its object
+  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track, keepObj);   // rewrite that span with its recipient (actor stays activeTrack)
   logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
   busy(`${bname(a.bid)}: track ${a.actor + 1} → track ${track + 1}`);
 }
@@ -2007,6 +2077,105 @@ function setReviewTarget(track) {   // correct the recipient of the directed can
   reviewCurrent.target = track;
   updateReviewText(); renderTimeline();
   busy(`${bname(reviewCurrent.bid)}: track ${activeTrack + 1} → track ${track + 1} (accept to save)`);
+}
+// ---------- object-directed (bout -> object) helpers ----------
+function isObjDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && b.object_directed === true); }
+async function objectSuggest(bid, s, e, track = activeTrack) {   // the project's objects ranked for this bout (nearest first), or null
+  try { const r = await api(`/videos/${vid}/object-suggest?track=${track}&start=${s}&end=${e}`); return r.ok ? await r.json() : null; }
+  catch (err) { return null; }
+}
+async function armObjectPick(bid, s, e, current = "") {   // open the picker for one Happening bout
+  const forVid = vid, track = activeTrack, fromSel = !!selectedSeg;
+  awaitObject = { bid, s, e, track, current, suggested: null, fromSel,
+                  rows: projObjects().map(o => ({ id: o.id, name: o.name, outline: !!o.roi, distance_px: null })) };
+  renderObjPick();
+  const sug = await objectSuggest(bid, s, e, track);
+  if (!awaitObject || awaitObject.bid !== bid || awaitObject.s !== s || vid !== forVid) return;   // picker moved on meanwhile
+  if (sug) { awaitObject.rows = sug.objects; awaitObject.suggested = sug.suggested; }
+  renderObjPick();
+}
+function renderObjPick() {
+  const box = el("objPick"); if (!box) return;
+  box.innerHTML = "";
+  if (!awaitObject) { box.style.display = "none"; return; }
+  const a = awaitObject; box.style.display = "inline-flex";
+  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = `${bname(a.bid)} on:`; box.appendChild(lab);
+  for (const o of a.rows) {
+    const btn = document.createElement("button");
+    const near = o.id === a.suggested ? "★ " : "";
+    btn.textContent = near + o.name + (o.distance_px != null ? ` · ${Math.round(o.distance_px)}px` : "");
+    btn.title = o.outline ? (o.distance_px != null ? `median nose distance to the ${o.name} over the bout` : `${o.name}: nose not visible in this bout`)
+                          : `${o.name} has no outline on this clip, so it can't be suggested`;
+    if (o.id === a.current) btn.classList.add("primary");
+    btn.onclick = () => setBoutObject(o.id);
+    box.appendChild(btn);
+  }
+  const add = document.createElement("button"); add.textContent = "＋ new object…";
+  add.onclick = async () => { const o = await addObject(); if (o) setBoutObject(o.id); };
+  box.appendChild(add);
+  const none = document.createElement("button"); none.textContent = "none"; none.title = "no object for this bout";
+  none.onclick = () => setBoutObject(""); box.appendChild(none);
+  const hint = document.createElement("span"); hint.className = "status";
+  hint.textContent = a.suggested ? "⏎ nearest · Esc skip" : "Esc skip"; box.appendChild(hint);
+}
+function closeObjPick() { awaitObject = null; renderObjPick(); }
+async function applyObject(bid, s, e, id) {   // set the object on the Happening frames of [s,e) only — value, source and target untouched; undoable
+  if (browseBlocked()) return;                       // browsing detections is read only
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid);
+  if (!v || !ob) return;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e), oc = objCode(id);
+  for (let i = s; i < e; i++) if (v[i] === 1) ob[i] = oc;
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
+  renderTimeline(); await syncRange(bid, s, e);
+}
+async function setBoutObject(id) {
+  const a = awaitObject; if (!a) return;
+  closeObjPick();
+  if (a.track !== activeTrack) { busy("the track changed — select the bout again to set its object"); return; }
+  await applyObject(a.bid, a.s, a.e, id);
+  logEvent("bout_object", { behavior_id: a.bid, track: a.track, object: id, suggested: a.suggested, start: a.s, end: a.e,
+                            via: a.fromSel ? "select" : "paint" });
+  busy(id ? `${bname(a.bid)}: frames ${a.s}–${a.e} on ${objName(id)}` : `${bname(a.bid)}: frames ${a.s}–${a.e}, no object`);
+}
+async function fillSuggestedObject(bid, s, e) {   // review accept: take the nearest object without asking
+  const sug = await objectSuggest(bid, s, e);
+  if (!sug || !sug.suggested) return;
+  await applyObject(bid, s, e, sug.suggested);
+  logEvent("bout_object", { behavior_id: bid, track: activeTrack, object: sug.suggested, suggested: sug.suggested, start: s, end: e, via: "accept" });
+}
+async function addObject() {   // ＋ object: a project object by name (an enrichment item, a nest) — picked, not suggested (no outline)
+  if (browseBlocked()) return null;
+  const name = (prompt("New object (e.g. running wheel, nest, toy):") || "").trim();
+  if (!name) return null;
+  const r = await api(`/objects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!r.ok) { alert("Could not add: " + ((await r.json().catch(() => ({}))).detail || r.status)); return null; }
+  const o = await r.json();
+  if (projMeta) projMeta.objects = [...projObjects(), o];
+  logEvent("object_add", { object_id: o.id, name: o.name });
+  renderObjectBar(); if (awaitObject) renderObjPick();
+  return o;
+}
+function renderObjectBar() {
+  const bar = el("objectBar"); if (!bar) return; bar.innerHTML = "";
+  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Objects:"; bar.appendChild(lab);
+  for (const o of projObjects()) {
+    const chip = document.createElement("span"); chip.className = "chip";
+    chip.title = o.roi ? `${o.name}: outlined by each clip's ${o.roi} (HCM database or drawn), so it can be suggested`
+                       : `${o.name}: added by hand — picked, not suggested`;
+    chip.innerHTML = `<span class="bname">${esc(o.name)}</span>` + (o.roi ? `<span class="k" title="outlined">◇</span>` : `<span class="x" title="remove">✕</span>`);
+    const x = chip.querySelector(".x");
+    if (x) x.onclick = async ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (!confirm(`Remove object "${o.name}"? Bouts already labeled with it keep it.`)) return;
+      const r = await api(`/objects/${encodeURIComponent(o.id)}`, { method: "DELETE" });
+      if (!r.ok) { busy("could not remove: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+      projMeta.objects = projObjects().filter(y => y.id !== o.id);
+      logEvent("object_delete", { object_id: o.id });
+      renderObjectBar();
+    };
+    bar.appendChild(chip);
+  }
+  const add = document.createElement("button"); add.textContent = "＋ object"; add.onclick = addObject; bar.appendChild(add);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
@@ -2055,9 +2224,15 @@ function updateSelStatus() {
       const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
       dir = tt >= 0 ? ` · → track ${tt + 1}` : ` · no target yet (Shift + track number)`;
     }
+    if (selectedSeg.val === 1 && isObjDirected(selectedSeg.bid)) {
+      const ob = objectState.get(selectedSeg.bid), oid = ob ? OBJ_IDS[ob[selectedSeg.s]] || "" : "";
+      dir += oid ? ` · on ${objName(oid)}` : " · no object yet";
+      if (!awaitObject || awaitObject.s !== selectedSeg.s || awaitObject.bid !== selectedSeg.bid)
+        armObjectPick(selectedSeg.bid, selectedSeg.s, selectedSeg.e, oid);
+    }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack + 1}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
-  } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
+  } else { btn.disabled = true; busy(""); if (awaitObject && awaitObject.fromSel) closeObjPick(); }   // nothing selected -> drop the stale "Selected …" message
 }
 async function deleteSelectedSeg() {
   if (!selectedSeg || browseBlocked()) return;
@@ -2115,6 +2290,7 @@ function renderBehaviorBar() {
     bar.appendChild(chip);
   }
   const add = document.createElement("button"); add.textContent = "＋ behavior"; add.onclick = addBehavior; bar.appendChild(add);
+  renderObjectBar();
   if (activeBid != null) {
     const cSame = document.createElement("button");
     cSame.textContent = "⎘ clone (seed labels)";
@@ -2469,6 +2645,17 @@ async function hidraInit() {
   el("hidraTrainOn").onchange = hidraSaveTrainOn;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
+  el("objToggle").onchange = async () => {   // mark this behavior object-directed: each Happening bout records its object
+    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("objToggle").checked = false; return; }
+    const val = el("objToggle").checked;
+    b.object_directed = val;                           // optimistic; roll back on failure
+    const r = await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object_directed: val }) }).catch(() => null);
+    if (!r || !r.ok) { b.object_directed = !val; el("objToggle").checked = !val; busy("couldn't save the 'on object' flag"); return; }
+    logEvent("behavior_object_directed", { behavior_id: activeBid, object_directed: val });
+    if (!val) closeObjPick();
+    busy(val ? `${bname(activeBid)} is on an object — paint or select a bout, then pick the object (⏎ takes the nearest)` : `${bname(activeBid)} no longer records an object`);
+    renderTimeline();
+  };
   el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
     const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
     const val = el("dirToggle").checked;
@@ -2837,16 +3024,151 @@ function drawStatsPlot(history, compare) {
   if (cpts.length) { ctx.fillStyle = compare.color; ctx.fillRect(padL + 8, padT + 26, 9, 9); ctx.fillStyle = "#aeb6c2"; ctx.fillText(`${compare.name} — AP (compare)`, padL + 21, padT + 26); }
   ctx.textBaseline = "alphabetic";
 }
-// ---------- training-set provenance (what THIS model actually learned from) ----------
+// ---------- training set: what the NEXT Train will use, and what THIS model learned from ----------
+let trainsetView = "next";
 async function openTrainset() {
   if (activeBid == null) { busy("select a behavior first"); return; }
-  const bid = activeBid;
-  const r = await api(`/behaviors/${bid}/trainset`);
-  if (!r.ok) { busy("no model yet — Train to build one, then its training set appears here"); return; }
-  lastTrainset = await r.json();
+  await showTrainsetView(trainsetView, activeBid);        // the 🗂 button always means the active behavior
+}
+async function showTrainsetView(view, bid = lastTrainsetBid ?? activeBid) {   // the toggle keeps the panel's own
+  if (bid == null) { busy("select a behavior first"); return; }
+  trainsetView = view;
+  el("tsNextBtn").classList.toggle("on", view === "next");
+  el("tsLastBtn").classList.toggle("on", view === "last");
   lastTrainsetBid = bid;                 // freeze which behavior this panel belongs to (activeBid may change later)
-  renderTrainset(lastTrainset);
+  if (view === "next") {
+    const r = await api(`/behaviors/${bid}/training-data`);
+    if (!r.ok) { busy("could not load what the next Train will use"); return; }
+    lastTrainset = await r.json();
+    renderNextTrain(lastTrainset);
+  } else {
+    const r = await api(`/behaviors/${bid}/trainset`);
+    lastTrainset = r.ok ? await r.json() : null;
+    if (lastTrainset) renderTrainset(lastTrainset);
+    else {
+      const b = behaviors.find(x => x.id === bid) || {};
+      el("trainsetTitle").textContent = `${b.name || "behavior"} — training set`;
+      el("trainsetSummary").innerHTML = b.hidra && b.hidra.action
+        ? `No frozen list for a HiDRA head — its fine-tunes are recorded by HiDRA. <b>Next Train</b> shows what the next one will use.`
+        : `No model yet — Train to build one, then what it learned from appears here.`;
+      el("trainsetNote").textContent = ""; el("trainsetList").innerHTML = "";
+    }
+  }
   el("trainsetPanel").classList.add("on");
+}
+// One clip x mouse row of the next-Train table: what it contributes, and why not when it doesn't.
+function renderNextTrain(d) {
+  const hid = d.engine === "hidra", T = d.totals, WARN = "#e8a33d";
+  el("trainsetTitle").textContent = `${d.behavior || "behavior"} — training data`;
+  const n = x => Number(x || 0).toLocaleString();
+  const pct = (a, b) => b ? ` <span style="color:#6b7280">(${Math.round(100 * a / b)}%)</span>` : "";
+  const H = `<b style="color:${HAPPENING_COLOR}">Happening</b>`, N = `<b style="color:${NOTHAPPENING_COLOR}">Not-happening</b>`;
+  const on = d.train_on || "all";
+  let s = !hid
+    ? `<b>Next Train</b> fits this project's own model on every ${H} and ${N} bout below. Unlabeled frames and Unknown are not used.`
+    : on === "reviewed"
+    ? `<b>Next Train</b> fine-tunes HiDRA <code>${esc(d.head.lab)}/${esc(d.head.action)}</code> on <b>reviewed frames only</b>: `
+      + `the ${H} and ${N} spans you answered below, and nothing else. Frames you never reviewed, and Unknown, are left out — `
+      + `not trained as ${N}.`
+    : on === "window"
+    ? `<b>Next Train</b> fine-tunes HiDRA <code>${esc(d.head.lab)}/${esc(d.head.action)}</code> on the ${H} bouts below, `
+      + `<b>inside each clip's social window</b>: for each mouse with a ${H} bout, every other frame inside the window trains as ${N} — `
+      + `including frames you never looked at. Frames outside the window are left out. Mice and clips with no ${H} bout are not used.`
+    : `<b>Next Train</b> fine-tunes HiDRA <code>${esc(d.head.lab)}/${esc(d.head.action)}</code> on the ${H} bouts below. `
+      + `HiDRA has no “not reviewed”: for each mouse with a ${H} bout in a clip, <b>every other frame of that clip trains as ${N}</b> — `
+      + `including frames you never looked at. Mice and clips with no ${H} bout are not used.`;
+  s += `<div style="margin-top:6px">${T.clips_used} clip${T.clips_used !== 1 ? "s" : ""} · ${T.tracks_used} ${T.tracks_used === 1 ? "mouse" : "mice"} · `
+    + `<b style="color:${HAPPENING_COLOR}">${T.pos_bouts}</b> ${H} bout${T.pos_bouts !== 1 ? "s" : ""}`
+    + (hid ? ` · <b>${n(T.trained_neg_frames)}</b> frames train as ${N}`
+             + (T.left_out_frames ? ` · ${n(T.left_out_frames)} left out` : "")
+           : ` · <b style="color:${NOTHAPPENING_COLOR}">${T.neg_bouts}</b> ${N} bout${T.neg_bouts !== 1 ? "s" : ""}`) + `</div>`;
+  if (T.blockers && T.blockers.length)
+    s += `<div style="color:${WARN}; margin-top:4px">⚠ <b>Train will stop</b> on ${T.blockers.map(v => esc(clipShortName(v))).join(", ")}: `
+      + `its .slp can't be found on this computer (see the row below). Relink the media or remove its labels for this behavior.</div>`;
+  if (hid && T.never_reviewed_frames > 0)
+    s += `<div style="color:${WARN}; margin-top:4px">⚠ <b>${n(T.never_reviewed_frames)}</b> of those ${N} frames`
+      + `${pct(T.never_reviewed_frames, T.trained_neg_frames)} were never reviewed`
+      + (T.unknown_on_used ? ` (${n(T.unknown_on_used)} of them you marked Unknown)` : "")
+      + ` — any real ${esc(d.behavior)} in them is taught as ${N}.</div>`;
+  if (T.remaining_on_used > 0)
+    s += `<div style="color:${WARN}; margin-top:4px">⚠ ${T.remaining_on_used} review proposal${T.remaining_on_used !== 1 ? "s" : ""} still unreviewed on mice this Train uses`
+      + (hid && on !== "reviewed" ? ` — those that are real will train as ${N}. Review each mouse until its queue reads 0 first.` : ` — reviewing them adds training bouts.`) + `</div>`;
+  if (T.skipped_directed > 0)
+    s += `<div style="color:${WARN}; margin-top:4px">⚠ ${T.skipped_directed} directed bout${T.skipped_directed !== 1 ? "s have" : " has"} no partner picked and ${T.skipped_directed !== 1 ? "are" : "is"} skipped (Shift + track number sets it).</div>`;
+  el("trainsetSummary").innerHTML = s;
+  el("trainsetNote").textContent = "From your labels as they are now — click Next Train again after labeling to refresh. Click a mouse to list its bouts; click a bout to jump to it.";
+
+  const host = el("trainsetList"); host.innerHTML = "";
+  const th = "text-align:right; padding:3px 10px; color:#7b8494; font-weight:600; white-space:nowrap";
+  const cols = hid ? ["Used", "Happening sent", `Trains as Not-happening`, "…never reviewed", "Proposals left"]
+                   : ["Used", "Happening", "Not-happening", "Unknown (not used)", "Proposals left"];
+  for (const cl of d.clips) {
+    if (!cl.tracks.length) continue;
+    const isCur = cl.video_id === vid;
+    const sec = document.createElement("div"); sec.style.margin = "6px 0 14px";
+    sec.innerHTML = `<div style="color:#9aa3b2; font-size:12px; margin:6px 0 2px">🎬 <b${isCur ? ` style="color:${HAPPENING_COLOR}"` : ""}>${esc(clipShortName(cl.video_id))}</b>`
+      + `${isCur ? " (current clip)" : ""}${cl.used ? "" : ` <span style="color:#6b7280">· not used</span>`}</div>`;
+    const tbl = document.createElement("table");
+    tbl.style.cssText = "border-collapse:collapse; font-size:12.5px; width:100%";
+    tbl.innerHTML = `<thead><tr><th style="text-align:left; padding:3px 10px 3px 2px; color:#7b8494; font-weight:600">Mouse</th>`
+      + cols.map((c, i) => `<th style="${th}${i === 0 ? "; text-align:left" : ""}"${c === "…never reviewed"
+          ? ` title="Frames with no Happening or Not-happening label (unlabeled, or marked Unknown) that will train as Not-happening"` : ""}>${c}</th>`).join("") + `</tr></thead>`;
+    const body = document.createElement("tbody");
+    for (const t of cl.tracks) {
+      const col = TRACK_COLORS[t.track % TRACK_COLORS.length];
+      const tr = document.createElement("tr");
+      tr.style.cssText = `cursor:pointer; border-top:1px solid #20252e${t.used || t.blocker ? "" : "; opacity:.55"}`;
+      tr.title = t.note || "click to list this mouse's bouts";
+      const left = t.remaining == null ? `<span style="color:#4b5563">—</span>`
+        : `<span style="color:${t.used && t.remaining ? WARN : "inherit"}">${t.remaining}</span>`;
+      const cells = hid
+        ? [t.used ? "✓" : `<span style="color:${t.blocker ? WARN : "#6b7280"}">${t.blocker ? "⚠ " : ""}${esc(t.note)}</span>`,
+           t.used ? `<b style="color:${HAPPENING_COLOR}">${t.pos_bouts}</b>` : "—",
+           t.used ? n(t.trained_neg_frames) + pct(t.trained_neg_frames, cl.n_frames * Math.max(t.partners.length, 1)) : "—",
+           t.used ? `<span style="color:${t.never_reviewed_frames ? WARN : "inherit"}">${n(t.never_reviewed_frames)}</span>`
+                    + pct(t.never_reviewed_frames, cl.n_frames * Math.max(t.partners.length, 1)) : "—",
+           left]
+        : [t.used && !t.blocker ? "✓" : `<span style="color:${t.blocker ? WARN : "#6b7280"}">${t.blocker ? "⚠ " : ""}${esc(t.note)}</span>`,
+           `<b style="color:${HAPPENING_COLOR}">${t.pos_bouts}</b> <span style="color:#6b7280">(${n(t.pos_frames)} fr)</span>`,
+           `<b style="color:${NOTHAPPENING_COLOR}">${t.neg_bouts}</b> <span style="color:#6b7280">(${n(t.neg_frames)} fr)</span>`,
+           t.unknown_frames ? `${n(t.unknown_frames)} fr` : "—", left];
+      tr.innerHTML = `<td style="padding:4px 10px 4px 2px; white-space:nowrap"><span class="sw" style="display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; background:${col}"></span>track ${t.track + 1}`
+        + (hid && t.partners && t.partners.length && t.partners[0] !== "self" ? ` <span style="color:#6b7280">→ ${t.partners.map(p => "track " + p.replace("mouse", "")).join(", ")}</span>` : "")
+        + `</td>` + cells.map((c, i) => `<td style="text-align:${i === 0 ? "left" : "right"}; padding:4px 10px">${c}</td>`).join("");
+      const sub = document.createElement("tr"); sub.style.display = "none";
+      const subtd = document.createElement("td"); subtd.colSpan = cols.length + 1;
+      subtd.style.cssText = "padding:2px 2px 8px 22px";
+      sub.appendChild(subtd);
+      tr.onclick = () => {
+        if (sub.style.display === "none") { fillNextTrainBouts(subtd, cl, t, hid); sub.style.display = ""; }
+        else sub.style.display = "none";
+      };
+      body.appendChild(tr); body.appendChild(sub);
+    }
+    tbl.appendChild(body); sec.appendChild(tbl); host.appendChild(sec);
+  }
+}
+function fillNextTrainBouts(td, cl, t, hid) {
+  td.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex; gap:5px; align-items:center; flex-wrap:wrap";
+  const CAP = 60;
+  if (!t.bouts.length) { wrap.innerHTML = `<span class="status" style="color:#6b7280">no Happening / Not-happening bouts on this mouse</span>`; }
+  t.bouts.slice(0, CAP).forEach(x => {
+    const chip = boutChip(cl.video_id, { ...x, track: t.track, n_frames: x.end - x.start });
+    if (!x.sent) {
+      chip.style.opacity = ".45"; chip.style.borderStyle = "dashed";
+      chip.title = (x.why ? `skipped — ${x.why}` : hid && x.value === 0
+        ? "reviewed Not-happening — not sent; HiDRA already trains every non-Happening frame of this mouse as Not-happening"
+        : "not used by the next Train") + " · click to jump here";
+    } else if (hid && x.target && x.target !== "self") chip.title = `sent: track ${t.track + 1} → track ${x.target.replace("mouse", "")} · click to jump here`;
+    wrap.appendChild(chip);
+  });
+  if (t.bouts.length > CAP) {
+    const more = document.createElement("span"); more.className = "status"; more.style.color = "#6b7280";
+    more.textContent = `+${t.bouts.length - CAP} more (Copy JSON for all)`; wrap.appendChild(more);
+  }
+  td.appendChild(wrap);
 }
 function boutChip(vidId, x) {
   const chip = document.createElement("button");
@@ -2862,6 +3184,7 @@ function renderTrainset(ts) {
   const b = behaviors.find(x => x.id === lastTrainsetBid) || {};
   el("trainsetTitle").textContent = `${b.name || "behavior"} — training set`;
   const when = ts.trained_at ? new Date(ts.trained_at).toLocaleString() : "";
+  el("trainsetNote").textContent = "Every clip · track · bout this model version learned from (frozen at train time). Click a bout to jump to it.";
   el("trainsetSummary").innerHTML =
     `<b>${ts.n_videos}</b> clip${ts.n_videos !== 1 ? "s" : ""} · `
     + `<b style="color:${HAPPENING_COLOR}">${ts.n_pos_bouts}</b>+/<b style="color:${NOTHAPPENING_COLOR}">${ts.n_neg_bouts}</b>− bouts · `
@@ -3561,6 +3884,7 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");     // trimmed edges are Not-happening (no target)
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
   if (isDirected(bid) && at >= 0) logEvent("bout_target", { behavior_id: bid, track: activeTrack, target: at, start: t.s, end: t.e, via: "accept" });
+  if (isObjDirected(bid)) await fillSuggestedObject(bid, t.s, t.e);   // on object: the nearest one, correctable later
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
@@ -3804,7 +4128,7 @@ async function browseStart() {                    // the Browse button, and a re
     return;
   }
   const fresh = !browse;
-  if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); }
+  if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); closeObjPick(); }
   browse = { bid, track, which, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
              srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
   logEvent("browse_start", { behavior_id: bid, name: bname(bid), which, order, threshold: browse.thr, labels_from: src || "this project",
@@ -3932,6 +4256,7 @@ function commitPaint() {
   painting = null;
   if (k === 1 && isDirected(bid) && nTracks() >= 2) armTargetPick(bid, s, e, k);   // directed: ask for the recipient
   else busy(`marked ${bname(bid)}: ${s}–${e}`);
+  if (k === 1 && isObjDirected(bid)) armObjectPick(bid, s, e);                       // on object: ask which
 }
 function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   if (drag) return;           // ignore while a timeline lane drag is live (avoids a concurrent anchor-paint)
@@ -3974,11 +4299,12 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
   const tg = targetState.get(bid), keepTgt = (val === 1 && tg) ? tg[s] : NO_TARGET;   // preserve a directed bout's recipient across the trim
+  const ob = objectState.get(bid), keepObj = (val === 1 && ob) ? OBJ_IDS[ob[s]] || "" : "";   // and an object-directed bout's object
   logEvent("label_trim", { behavior_id: bid, name: bname(bid), from_start: s, from_end: e,
                            start: ns, end: ne, n_frames: ne - ns, delta_frames: (ne - ns) - (e - s), value: val });
   if (ns > s) await applyPaint(bid, s, ns, 0);             // trimmed on the left -> unlabel [s, ns)
   if (ne < e) await applyPaint(bid, ne, e, 0);             // trimmed on the right -> unlabel [ne, e)
-  await applyPaint(bid, ns, ne, val, "manual", keepTgt);   // (re)label the new range (covers extensions), same value + target
+  await applyPaint(bid, ns, ne, val, "manual", keepTgt, keepObj);   // (re)label the new range (covers extensions), same value + target + object
   selectRunAt(bid, ns);                                    // re-select the edited bout so you can keep adjusting
   busy(`bout → frames ${ns}–${ne}`);
 }
@@ -4116,6 +4442,7 @@ tl.addEventListener("pointerup", () => {
                                  mode, value: dk, start: s, end: e, n_frames: e - s, source: "manual", target: NO_TARGET });
       applyPaint(dbid, s, e, dk); show(drag.curFrame);
       if (dk === 1 && isDirected(dbid) && nTracks() >= 2) armTargetPick(dbid, s, e, dk);   // directed: ask for the recipient
+      if (dk === 1 && isObjDirected(dbid)) armObjectPick(dbid, s, e);                       // on object: ask which
     }
   }
   drag = null;
@@ -4219,6 +4546,8 @@ el("statsExport").onclick = () => {   // download the full precision-stats histo
 el("statsXMode").onchange = e => { statsXMode = e.target.value; drawStatsPlot(lastStatsHistory, statsCompare); };
 el("statsCompare").onchange = async e => { statsCompareBid = e.target.value ? parseInt(e.target.value, 10) : null; await refreshStats(); };
 el("trainsetBtn").onclick = openTrainset;
+el("tsNextBtn").onclick = () => showTrainsetView("next");
+el("tsLastBtn").onclick = () => showTrainsetView("last");
 el("trainsetClose").onclick = () => el("trainsetPanel").classList.remove("on");
 el("trainsetCopy").onclick = copyTrainset;
 el("labelStatsBtn").onclick = openLabelStats;
@@ -4317,6 +4646,8 @@ window.addEventListener("keydown", e => {
     if (!["ArrowLeft", "ArrowRight", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
   }
   const reviewing = el("reviewPanel").classList.contains("on");
+  if (awaitObject && !reviewing && e.key === "Enter") { e.preventDefault(); return setBoutObject(awaitObject.suggested || awaitObject.current || ""); }
+  if (awaitObject && !reviewing && e.key === "Escape") { e.preventDefault(); closeObjPick(); busy("object skipped — select the bout to set it later"); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }

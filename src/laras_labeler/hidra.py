@@ -1028,7 +1028,8 @@ def export_bouts(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
 
     Returns counts plus `video_ids`, the videos carrying at least one positive -- exactly the set of
     tracking parquets the caller must stage alongside this CSV."""
-    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {1}, only)
+    return _write_spans(*finetune_bouts(store, labels, pid, bid, head, n_animals_by_video, only=only),
+                        out_csv)
 
 
 def export_reviewed(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
@@ -1039,7 +1040,8 @@ def export_reviewed(store, labels, pid: str, bid: int, head: dict, out_csv: Path
     frames only and leaves every other frame out, instead of counting it as a negative. Frames
     marked Unknown (2) are not exported, so they are left out too. Needs the HiDRA change that
     adds `prepare --reviewed` (scripts/hidra_patches/)."""
-    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {0, 1}, only)
+    return _write_spans(*finetune_bouts(store, labels, pid, bid, head, n_animals_by_video,
+                                        values={0, 1}, only=only), out_csv)
 
 
 def export_window(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
@@ -1049,19 +1051,40 @@ def export_window(store, labels, pid: str, bid: int, head: dict, out_csv: Path,
     Every frame inside the window is trained on, unlabeled frames as negatives as in a normal run.
     Every frame outside it is left out. A clip with no window counts as all window. One span per
     labeled track, with the same target rules as `export_bouts`."""
-    return _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, {0}, only,
-                         window=True)
+    return _write_spans(*finetune_bouts(store, labels, pid, bid, head, n_animals_by_video,
+                                        values={0}, only=only, window=True), out_csv)
 
 
-def _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, values, only,
-                  window=False):
+CSV_FIELDS = ["file", "agent", "target", "action", "start_frame", "stop_frame"]
+
+
+def _write_spans(rows: list[dict], skipped: list[dict], out_csv: Path) -> dict:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    vids = sorted({r["video_id"] for r in rows})
+    return {"bouts": len(rows), "spans": len(rows), "path": str(out_csv),
+            "videos": len(vids), "video_ids": vids, "directed_ambiguous": len(skipped)}
+
+
+def finetune_bouts(store, labels, pid: str, bid: int, head: dict,
+                   n_animals_by_video: dict | None = None, values=frozenset({1}),
+                   only: set | None = None, window: bool = False) -> tuple[list[dict], list[dict]]:
+    """The spans a fine-tune sends, and the ones it has to skip -- the single definition the three
+    exports (which write them) and the GUI's training-data table (which shows them) use, so the
+    table cannot drift from what training actually gets. Rows carry `video_id` and `track` beside
+    the CSV fields; skipped rows are directed bouts with no recoverable partner (see `export_bouts`).
+
+    `values` are the label values sent: {1} the positive bouts (`export_bouts`), {0, 1} every
+    answered span (`export_reviewed`). `window=True` sends each labeled track's social window
+    instead of its labels (`export_window`). `only` limits it to those video_ids."""
     proj = store.get(pid)
     n_by = n_animals_by_video or {}
     self_directed = head.get("collapse") == "self"
     rows: list[dict] = []
-    vids: set[str] = set()
-    n_bouts = 0
-    ambiguous = 0
+    skipped: list[dict] = []
     for v in proj.videos:
         vid = v["video_id"]
         if only is not None and vid not in only:
@@ -1101,22 +1124,11 @@ def _export_spans(store, labels, pid, bid, head, out_csv, n_animals_by_video, va
                     # Directed, >2 animals, and no valid stored target (or target == self, which would
                     # crash HiDRA's epoch builder): unrecoverable. Skip and report — the annotator must
                     # pick a target for these bouts (directed labeling), else they are zero-shot only.
-                    ambiguous += 1
+                    skipped.append({"video_id": vid, "track": t, "start_frame": a, "stop_frame": b})
                     continue
-                n_bouts += 1
-                vids.add(vid)
-                rows.append({"file": f"{stem}.parquet", "agent": agent, "target": target,
-                             "action": head["action"], "start_frame": a, "stop_frame": b})
-
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "agent", "target", "action",
-                                          "start_frame", "stop_frame"])
-        w.writeheader()
-        w.writerows(rows)
-    return {"bouts": n_bouts, "spans": len(rows), "path": str(out_csv),
-            "videos": len(vids), "video_ids": sorted(vids),
-            "directed_ambiguous": ambiguous}
+                rows.append({"video_id": vid, "track": t, "file": f"{stem}.parquet", "agent": agent,
+                             "target": target, "action": head["action"], "start_frame": a, "stop_frame": b})
+    return rows, skipped
 
 
 _TRAIN_HELP: dict[tuple, str] = {}   # cache of `finetune <cmd> --help` text, keyed by command prefix
