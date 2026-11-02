@@ -20,11 +20,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import config, hidra, poseio
+from . import config, hcm_roi, hidra, objects, poseio, trainpreview
 from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
-from .features import quick_series
+from .features import quick_series, resolve_roles
 from .featurestore import FeatureStore
 from .importers import Importer
 from .jobs import JobManager
@@ -88,6 +88,7 @@ class EditBehavior(BaseModel):
     key: str | None = None
     feature_set: str | None = None   # None keeps current; 'all'|'spout'|'cage'|'spout_cage'|'no_social'|'pose'|'social'|'social_pose'
     directed: bool | None = None      # social behavior: each bout records an actor->target pair (independent of any HiDRA head)
+    object_directed: bool | None = None   # each Happening bout records the object it is on (objects.py)
 
 
 class ReviewedBout(BaseModel):
@@ -107,6 +108,7 @@ class LabelSpan(BaseModel):
     value: int = Field(ge=0, le=2)  # 1 = Happening, 0 = Not-happening, 2 = Unknown (saved, excluded from training)
     source: str = "manual"          # provenance: 'manual' (painted) | 'candidate' (accepted from review) | 'imported'
     target: int = -1                # recipient track for a DIRECTED bout; -1 = self / undirected (default keeps old clients working)
+    object: str = ""                # the object an OBJECT-DIRECTED bout is on (a project object id, objects.py); "" = none
 
 
 class ImportRequest(BaseModel):
@@ -235,10 +237,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # in this payload because the GUI's HiDRA field reads it from here: without it the field was
         # always blank and the "set px/cm" warning never cleared, so Predict looked permanently
         # gated even on a clip whose scale was set and which Predict would have run.
+        # The feeder outlines are per clip only (no project default: a feeder moves). roi_checked: the
+        # clip's own recording has been asked, so a missing feeder outline is an answer, not a pending fetch.
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
                 "pix_per_cm": entry.get("pix_per_cm"),
                 "pix_per_cm_auto": _auto_scale(entry),
-                "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff}
+                "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff,
+                **{k: entry.get(k) for k in hcm_roi.FEEDER_FIELDS},
+                "roi_checked": "roi_recording_status" in entry,
+                "roi_recording_status": entry.get("roi_recording_status")}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
     # separate the human's time from the machine's, and the machine's time has to be recorded where the
@@ -372,6 +379,41 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     _roi_attempts: dict = {}
     _MAX_ROI_TRIES = 3
 
+    def _link_source(entry: dict) -> bool:
+        """Record which HCM recording a re-ID clip was cut from (its clips.summary.json says; its name
+        doesn't), so its ROIs can be looked up -- and still can after the clip's folder moves. True if
+        the entry changed."""
+        if entry.get("source_video"):
+            return False
+        src = hcm_roi.source_recording(entry)
+        if not src:
+            return False
+        entry["source_video"], entry["source_frames"] = src["video"], src["frames"]
+        return True
+
+    def _rois_settled(v: dict) -> bool:
+        """Nothing left to ask the DB for: wall and spout set, and the feeder either set or already looked
+        for in this clip's own recording (`roi_recording_status` is recorded once the DB has answered;
+        a recording with no feeder outline has none to find on a retry)."""
+        if not (v.get("cage_roi") and v.get("spout_roi")):
+            return False
+        return all(v.get(f) for f in hcm_roi.FEEDER_FIELDS) or "roi_recording_status" in v
+
+    def _roi_snapshot(entry: dict) -> list:
+        """What a ROI fetch can change on a clip -- including whether `roi_recording_status` exists at
+        all, since a recording-status of None (no recording found) is still an answer worth saving."""
+        return [entry.get(k, "<absent>") for k in (*hcm_roi.ROI_FIELDS, "roi_recording_status")]
+
+    def _apply_rois(entry: dict, got: dict, overwrite: bool = False) -> dict:
+        """Copy fetched polygons onto a clip (missing ones only, unless overwrite) -> the fields set."""
+        set_fields = {}
+        for field in hcm_roi.ROI_FIELDS:
+            if got.get(field) and (overwrite or not entry.get(field)):
+                entry[field] = set_fields[field] = got[field]
+        if "recording_status" in got:
+            entry["roi_recording_status"] = got["recording_status"]
+        return set_fields
+
     def _autoload_missing_rois(pid: str) -> None:
         from . import hcm_roi
         proj = store.get(pid)
@@ -381,7 +423,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             if not v.get("has_poses"):
                 continue
             vid = v["video_id"]
-            if v.get("cage_roi") and v.get("spout_roi"):    # nothing missing
+            if _rois_settled(v):                               # nothing missing
                 continue
             key = (pid, vid)
             with _prewarm_lock:
@@ -392,13 +434,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
             def _fn(progress, _pid=pid, _vid=vid, _key=key):
                 try:
-                    got = hcm_roi.fetch_rois(_vid)
                     entry = store.get(_pid).video(_vid)
-                    changed = False
-                    for field in ("cage_roi", "spout_roi"):
-                        if got.get(field) and entry is not None and not entry.get(field):
-                            entry[field] = got[field]; changed = True
-                    if changed:
+                    if entry is None:
+                        return
+                    linked = _link_source(entry)
+                    got = hcm_roi.fetch_rois(_vid, source_video=entry.get("source_video"))
+                    before = _roi_snapshot(entry)
+                    _apply_rois(entry, got)
+                    if linked or before != _roi_snapshot(entry):
                         store.get(_pid).save()
                 finally:
                     with _prewarm_lock:
@@ -434,6 +477,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return {
             "pid": p.pid, "name": p.name,
             "behaviors": p.behaviors,
+            "objects": objects.project_objects(p),   # what an object-directed bout can be on (objects.py)
             "videos": [_meta(pid, v["video_id"]) for v in p.videos],
             "spout": p.manifest.get("feature_config", {}).get("spout"),   # [x,y] arena landmark, shared across clips
             "spout_roi": p.manifest.get("feature_config", {}).get("spout_roi"),   # [[x,y],...] polygon region
@@ -662,23 +706,26 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     @app.post("/api/projects/{pid}/videos/{vid}/autoload-roi")
     def autoload_roi(pid: str, vid: str, overwrite: bool = False):
-        """Best-effort: fill THIS clip's cage (and spout) ROI from the HCM database, preferring the
-        clip's own recording and falling back per class to the camera's medoid polygon. Only fills a
-        MISSING ROI unless overwrite=true. Silently no-ops (set: {}) if the DB is unreachable (off-VPN),
-        sqlalchemy isn't installed, the camera can't be parsed, or no valid polygon exists — so video
-        loading never depends on it. `source` reports which polygon each field came from."""
-        from . import hcm_roi
+        """Best-effort: fill THIS clip's cage, spout and feeder ROIs from the HCM database, preferring
+        the clip's own recording and falling back per class to the camera's medoid polygon (never for
+        the feeder -- see hcm_roi.RECORDING_ONLY). Only fills a MISSING ROI unless overwrite=true.
+        Silently no-ops (set: {}) if the DB is unreachable (off-VPN), sqlalchemy isn't installed, the
+        camera can't be parsed, or no valid polygon exists — so video loading never depends on it.
+        `source` reports which polygon each field came from; `recording_status` is the recording's
+        rois status (e.g. 'valid-no-feeder-cage'), `checked` whether the DB answered at all."""
         p = _video(pid, vid)
         entry = p.video(vid)
-        got = hcm_roi.fetch_rois(vid)
-        set_fields = {}
-        for field in ("cage_roi", "spout_roi"):
-            if got.get(field) and (overwrite or not entry.get(field)):
-                entry[field] = got[field]
-                set_fields[field] = got[field]
-        if set_fields:
+        before = _roi_snapshot(entry)
+        linked = _link_source(entry)
+        got = hcm_roi.fetch_rois(vid, source_video=entry.get("source_video"))
+        set_fields = _apply_rois(entry, got, overwrite)
+        if linked or before != _roi_snapshot(entry):
             p.save()
-        return {"camera": got.get("camera"), "source": got.get("source", {}), "set": set_fields}
+        # `rois`: the clip's outlines as saved now. The background fetch on project open can fill them
+        # before this request runs; `set` is then empty, but the GUI still has to draw them.
+        return {"camera": got.get("camera"), "source": got.get("source", {}), "set": set_fields,
+                "rois": {k: entry.get(k) for k in hcm_roi.ROI_FIELDS},
+                "recording_status": got.get("recording_status"), "checked": "recording_status" in got}
 
     @app.post("/api/projects/{pid}/videos")
     def add_video(pid: str, body: NewVideo):
@@ -687,8 +734,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             entry = p.add_video(body.video_path, body.slp_path)
         except ValueError as e:
             raise HTTPException(409, str(e))
+        if _link_source(p.video(entry["video_id"])):   # a re-ID clip: note its recording while its summary is beside it
+            p.save()
         _prewarm_features(pid, [entry["video_id"]])   # start computing features immediately in the background
-        return entry
+        return p.video(entry["video_id"])
 
     @app.post("/api/projects/{pid}/videos/upload")
     async def upload_video(pid: str, video: UploadFile = File(...), slp: UploadFile | None = File(None)):
@@ -705,8 +754,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 shutil.copyfileobj(slp.file, f)
         try:
             entry = proj.add_video(str(vpath), str(spath) if spath else None)
+            if _link_source(proj.video(entry["video_id"])):   # found via the folder named inside the .slp
+                proj.save()
             _prewarm_features(pid, [entry["video_id"]])   # background feature compute right after upload
-            return entry
+            return proj.video(entry["video_id"])
         except ValueError as e:
             if "already added" in str(e):   # re-loading the same file -> just reopen it
                 existing = next((v for v in proj.videos if v["video_path"] == str(vpath)), None)
@@ -858,6 +909,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         """Per-feature positive-vs-negative separation (AUC + histograms) for this behavior."""
         _behavior(pid, bid)
         return trainer.feature_diff(pid, bid, top_n=top_n)
+
+    @app.get("/api/projects/{pid}/behaviors/{bid}/training-data")
+    def get_training_data(pid: str, bid: int):
+        """What the NEXT Train of this behavior will learn from, per clip x track -- the bouts it
+        sends and, for a HiDRA fine-tune, how many frames will train as Not-happening without ever
+        having been reviewed (see trainpreview). Read-only and unlogged."""
+        _behavior(pid, bid)
+        return trainpreview.preview(store, labels, predictor, features, pid, bid)
 
     @app.get("/api/projects/{pid}/behaviors/{bid}/trainset")
     def get_trainset(pid: str, bid: int):
@@ -1312,6 +1371,55 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def list_behaviors(pid: str):
         return _proj(pid).behaviors
 
+    # ---- objects: what an object-directed bout can be on (objects.py). The project's own list, like
+    # its behaviors: the HCM-outlined arena objects (feeder, cage wall, spout) plus any added by name
+    # (an enrichment item, a nest), which can be picked but, having no outline, not suggested.
+    @app.get("/api/projects/{pid}/objects")
+    def list_objects(pid: str):
+        return objects.project_objects(_proj(pid))
+
+    @app.post("/api/projects/{pid}/objects")
+    def add_object(pid: str, body: dict = Body(...)):
+        try:
+            obj = objects.add_object(_proj(pid), body.get("name"))
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        elog.log(pid, "object_add", object_id=obj["id"], name=obj["name"])
+        return obj
+
+    @app.delete("/api/projects/{pid}/objects/{oid}")
+    def delete_object(pid: str, oid: str):
+        """Remove an ADDED object (one with no outline). Bouts already labeled with it keep its id,
+        which the GUI then shows as is. The outlined arena objects stay: their outlines come from the
+        clips' ROIs."""
+        p = _proj(pid)
+        objs = objects.project_objects(p)
+        o = next((x for x in objs if x["id"] == oid), None)
+        if o is None:
+            raise HTTPException(404, "object not found")
+        if o.get("roi"):
+            raise HTTPException(409, f"{o['name']} is outlined by the clips' ROIs and can't be removed")
+        p.manifest["objects"] = [x for x in objs if x["id"] != oid]
+        p.save()
+        elog.log(pid, "object_delete", object_id=oid)
+        return {"deleted": oid}
+
+    @app.get("/api/projects/{pid}/videos/{vid}/object-suggest")
+    def object_suggest(pid: str, vid: str, track: int, start: int, end: int):
+        """Rank the project's objects for one bout by how near the acting animal's nose stays to each
+        outlined one (objects.suggest). Read-only."""
+        p = _video(pid, vid)
+        entry = p.video(vid) or {}
+        poses, nose = None, None
+        if entry.get("has_poses"):
+            try:
+                ov = vm._get(pid, vid)
+                poses = ov.poses()
+                nose = resolve_roles(ov.node_names, p.manifest.get("skeleton_roles")).get("nose")
+            except Exception:  # noqa: BLE001  -- no suggestion is fine; never fail the picker over it
+                poses, nose = None, None
+        return objects.suggest(p, entry, poses, nose, track, start, end)
+
     @app.post("/api/projects/{pid}/behaviors")
     def add_behavior(pid: str, body: NewBehavior):
         from .featurestore import suggest_feature_set
@@ -1410,6 +1518,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def put_labels(pid: str, vid: str, spans: list[LabelSpan]):
         p = _video(pid, vid)
         rows = [s.model_dump() for s in spans]
+        # an object must be on the project's list; ids already stored on this clip stay writable, so a
+        # removed object's old bouts can still be re-saved around an edit
+        known = objects.object_ids(p) | {str(o) for o in labels.stored_objects(pid, vid)}
+        bad = sorted({r["object"] for r in rows if r["object"] and r["object"] not in known})
+        if bad:
+            raise HTTPException(400, f"unknown object(s) {bad}; add them to the project first")
         # Hard backstop for the social window: even if a client bypasses the GUI's paint clamp (a
         # direct API call, an importer, a stale tab), a label can never land outside the window a
         # clip has set -- clip each span to the intersection, drop it if there is none. A clip with
