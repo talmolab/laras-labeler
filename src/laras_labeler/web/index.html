@@ -36,8 +36,41 @@
              align-items: center; background: rgba(14,17,23,0.72); backdrop-filter: blur(8px);
              border: 1px solid var(--border-strong); border-radius: 10px; padding: 4px 6px; line-height: 1.2; }
   #zoomCtl button { padding: 2px 9px; font-size: 15px; border-radius: 6px; }
+  #zoomCtl #followBtn.on { background: #1f3346; border-color: #6ea8fe; color: #9cc3ff; }   /* following the active track */
+  #zoomCtl #imgAdjBtn.on { background: #3a3220; border-color: #ffd24a; color: #ffd24a; }   /* an adjustment is active */
+  #imgAdj { position: absolute; top: 52px; right: 10px; z-index: 6; display: grid;
+            grid-template-columns: auto 140px 42px; gap: 6px 8px; align-items: center;
+            background: rgba(14,17,23,0.88); backdrop-filter: blur(8px); border: 1px solid var(--border-strong);
+            border-radius: 10px; padding: 8px 10px; font-size: 12px; color: #c2c9d4; line-height: 1.4; }   /* #stage sets line-height: 0 */
+  #imgAdj[hidden] { display: none; }
+  #imgAdj input[type=range] { width: 100%; min-width: 0; margin: 0; }   /* global ranges have min-width: 200px */
+  #imgAdj span { text-align: right; font-variant-numeric: tabular-nums; color: #b8c0cc; }
+  #imgAdj .imgAdjBtns { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
+  #imgAdj .imgAdjBtns button { padding: 2px 10px; font-size: 12px; }
+  #imgAdj #imgAuto.on { border-color: #ffd24a; color: #ffd24a; }   /* auto levels in effect */
   #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center;
                         font-variant-numeric: tabular-nums; }
+  #modelCompare h4 { margin: 0 0 6px; font-size: 11px; color: #7b8494; text-transform: uppercase; letter-spacing: .5px; }
+  #modelCompare table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #modelCompare th, #modelCompare td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border, #262b33); white-space: nowrap; }
+  #modelCompare th { color: #8b93a2; font-weight: 600; }
+  #modelCompare td.m, #modelCompare th.m { text-align: left; white-space: normal; }
+  #modelCompare .ins { color: #6b7382; font-style: italic; }
+  #modelCompare .cur { color: #9cc3ff; font-weight: 700; }
+  #modelCompare .note { color: #8b93a2; font-size: 11.5px; line-height: 1.45; margin-top: 6px; }
+  #modelCompare .warn { color: #ffb347; }
+  #modelCompare .callout { border-left: 3px solid #6ea8fe; background: rgba(110,168,254,0.08); padding: 7px 10px; border-radius: 4px; font-size: 12px; line-height: 1.45; margin: 6px 0; }
+  #modelCompare .bars { margin: 8px 0 2px; }
+  #modelCompare .bar { display: grid; grid-template-columns: minmax(120px, 34%) 1fr 48px; gap: 8px; align-items: center; font-size: 12px; margin: 3px 0; }
+  #modelCompare .bar .fill { height: 12px; border-radius: 3px; background: #6ea8fe; }
+  #modelCompare .bar .track { background: rgba(255,255,255,0.06); border-radius: 3px; }
+  .chip .testtag { margin-left: 6px; font-size: 10.5px; color: #ffd24a; }
+  #trackBadge { position: absolute; left: 10px; bottom: 10px; z-index: 5; display: flex; align-items: center; gap: 7px;
+                background: rgba(14,17,23,0.78); border: 1px solid var(--border-strong); border-radius: 9px;
+                padding: 4px 10px; font: 600 13px system-ui; color: #e6edf5; line-height: 1.3; pointer-events: none; }
+  #trackBadge[hidden] { display: none; }
+  #trackBadge .sw { width: 11px; height: 11px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0,0,0,0.6); }
+  #trackBadge .nt { color: #ffb347; font-weight: 500; }
   #poseCtl { position: absolute; top: 10px; left: 10px; z-index: 5; background: rgba(14,17,23,0.72);
              backdrop-filter: blur(8px); border: 1px solid var(--border-strong); border-radius: 10px; padding: 5px 10px; }
   #poseCtl label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #c2c9d4;
@@ -217,6 +250,7 @@
   </aside>
   <div id="stage">
     <div id="stageInner"><canvas id="frame"></canvas><canvas id="overlay"></canvas></div>
+    <div id="trackBadge" hidden title="The animal you are labeling / reviewing. Switch with the track chips or number keys."></div>
     <div id="poseCtl"><label><input type="checkbox" id="showPoses" checked> Poses</label>
       <span id="spoutCtl">
         <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features. Right-click the video to clear.">◎ Set spout</button>
@@ -234,7 +268,35 @@
       <span id="zoomLabel">1.0×</span>
       <button id="zIn" title="Zoom in (+)">＋</button>
       <button id="zReset" title="Reset zoom (0)">⤢</button>
+      <button id="followBtn" title="Follow: while zoomed in, keep the animal you are labeling in frame (f). Turning it on at 1× zooms in on it. Dragging the video turns it off.">⌖</button>
+      <button id="imgAdjBtn" title="Brightness / contrast of the video (display only — poses, features and labels are unaffected)">☀</button>
     </div>
+    <div id="imgAdj" hidden>
+      <label for="imgBright">Brightness</label>
+      <input type="range" id="imgBright" min="50" max="300" step="5" value="100" title="Double-click to reset">
+      <span id="imgBrightVal">100%</span>
+      <label for="imgContrast">Contrast</label>
+      <input type="range" id="imgContrast" min="50" max="300" step="5" value="100" title="Double-click to reset">
+      <span id="imgContrastVal">100%</span>
+      <label for="imgGamma">Gamma</label>
+      <input type="range" id="imgGamma" min="0.5" max="3" step="0.05" value="1" title="Above 1 lifts the shadows without blowing out the highlights — usually the most useful control for a dark cage. Double-click to reset">
+      <span id="imgGammaVal">1.00</span>
+      <div class="imgAdjBtns">
+        <button id="imgAuto" title="Stretch THIS frame's darkest..brightest range to full black..white (auto levels). Re-press after moving to a differently-lit clip">Auto</button>
+        <button id="imgAdjReset">Reset</button>
+      </div>
+    </div>
+    <!-- levels (auto) then gamma, referenced from #frame's CSS filter only when either is active -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <filter id="imgAdjFilter" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="linear" class="lv" slope="1" intercept="0"/><feFuncG type="linear" class="lv" slope="1" intercept="0"/><feFuncB type="linear" class="lv" slope="1" intercept="0"/>
+        </feComponentTransfer>
+        <feComponentTransfer>
+          <feFuncR type="gamma" class="gm" exponent="1"/><feFuncG type="gamma" class="gm" exponent="1"/><feFuncB type="gamma" class="gm" exponent="1"/>
+        </feComponentTransfer>
+      </filter>
+    </svg>
   </div>
   <aside id="behaviorRail" class="siderail">
     <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div>
@@ -244,7 +306,7 @@
   <div id="reviewPanel" class="panel review-rail">
     <div id="reviewQ" class="rvq"></div>
     <div class="row" style="margin-top:10px">
-      <button id="rvReplay" title="Replay this bout from the start (r)">↺ Replay (r)</button>
+      <button id="rvReplay" title="Replay this bout as trimmed — from its current start to its current end, i.e. what y would accept (r)">↺ Replay (r)</button>
       <button id="rvTrimS" title="Set the accept-range START to the playhead ([)">◂ Start</button>
       <button id="rvTrimE" title="Set the accept-range END to the playhead (])">End ▸</button>
       <button id="rvSplit" title="This candidate spans more than one bout: split at the playhead — the part up to the playhead is saved as a confirmed bout, and the remainder becomes the next candidate to review (s)">✂ Split at playhead (s)</button>
@@ -531,6 +593,7 @@
         <button id="statsClose">✕ Close</button>
       </span>
     </div>
+    <div id="modelCompare" style="margin:12px 0 4px"></div>
     <div id="statsBreakdown" style="margin:12px 0 4px"></div>
     <div class="row" style="margin:10px 0 4px; justify-content:space-between; align-items:center">
       <span class="status" style="color:#7b8494; font-size:11px; text-transform:uppercase; letter-spacing:.5px; font-weight:700" title="Observational: each point is a real past training. Lines are split by feature set (a line never joins points from different configs). For a controlled sample-efficiency curve, subsample training size with everything else fixed.">Learning curve — metric vs. labeled (by feature set)</span>
@@ -688,7 +751,8 @@ const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metrics
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
 let poses = null, poseShape = null;
 let behaviors = [], activeBid = null, mode = "pos";
-let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
+let labelState = new Map(), predsByBeh = new Map(), predInfoByBeh = new Map(),   // predInfoByBeh: which model made each lane (server X-Pred-Model)
+    sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
 const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
 let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
 let objectState = new Map();          // per behavior: per-frame object code (OBJ_IDS index; 0 = none) for object-directed bouts
@@ -933,7 +997,7 @@ function clearStage() {
   if (videoBackend) { try { videoBackend.close(); } catch (e) {} videoBackend = null; }
   frameOrder = null; pfStart = 0; pfEnd = -1;
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
-  predsByBeh = new Map(); predictedBouts = new Map();
+  predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   objectState = new Map(); closeObjPick();
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
@@ -951,6 +1015,7 @@ async function openVideo(vidId) {
   closeBrowse();                // the list belongs to the clip being left
   renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
   stop();                       // don't carry playback (or its stale wall-clock anchor) across a clip switch
+  if (imgLevels) { imgLevels = null; applyImgAdj(); }   // auto levels were measured on the old clip's lighting
   vid = vidId;
   meta = projMeta.videos.find(v => v.video_id === vidId);
   spoutRoi = meta.spout_roi || null;              // per-clip spout ROI (from this clip's meta; falls back to project default)
@@ -973,7 +1038,7 @@ async function openVideo(vidId) {
   metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${meta.fps.toFixed(1)} fps · `
     + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
   await loadVideoBackend();
-  predsByBeh = new Map(); predictedBouts = new Map();
+  predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   activeTrack = 0;
   renderTrackBar();
   renderClipBar();
@@ -1318,6 +1383,8 @@ function drawPose() {
   drawCageRoi();                                        // cage-boundary ROI polygon (committed + in-progress)
   drawFeederRoi();                                      // feeder top / side outlines (from the HCM DB)
   drawApproaches();                                     // confirmed-positive nose approach paths (toggle)
+  updateTrackBadge();                                   // "track N" badge on the video, both pose modes
+  followTrack();                                        // keep the active animal in frame when zoomed + following
   if (!poses) return;
   if (!showPoses) { drawIdentityMarkers(); return; }    // poses hidden -> keep a minimal per-mouse identity marker so the mice stay distinguishable
   const [F, T, N, C] = poseShape;
@@ -1361,26 +1428,75 @@ function drawIdentityMarkers() {
   const [F, T, N, C] = poseShape;
   if (cur >= F) return;
   const base = cur * T * N * C;
-  octx.globalAlpha = 1; octx.textAlign = "center"; octx.textBaseline = "middle";
-  for (let t = 0; t < T; t++) {
+  octx.save();
+  octx.textAlign = "center"; octx.textBaseline = "middle";
+  // others first (small, faded numbered dot), the active track last so it's never covered
+  const order = [...Array(T).keys()].sort((a, b) => (a === activeTrack ? 1 : 0) - (b === activeTrack ? 1 : 0));
+  for (const t of order) {
     const o = base + t * N * C;
-    let sx = 0, sy = 0, n = 0;
+    let sx = 0, sy = 0, n = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (let k = 0; k < N; k++) {
       const x = poses[o + k * C], y = poses[o + k * C + 1];
       if (Number.isNaN(x)) continue;
       sx += x; sy += y; n++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
     if (!n) continue;                                   // this mouse isn't tracked on this frame
-    const cx = sx / n, cy = sy / n, color = TRACK_COLORS[t % TRACK_COLORS.length];
-    const active = (t === activeTrack), r = active ? 13 : 10;
-    octx.beginPath(); octx.arc(cx, cy, r, 0, Math.PI * 2);
-    octx.fillStyle = color; octx.fill();
-    octx.lineWidth = active ? 3 : 2; octx.strokeStyle = "rgba(0,0,0,0.65)"; octx.stroke();
-    octx.font = `bold ${active ? 15 : 12}px system-ui`;   // 1-based track number (matches the chips and number keys), white with dark outline (legible on any disc color)
-    octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t + 1), cx, cy + 0.5);
-    octx.fillStyle = "#fff"; octx.fillText(String(t + 1), cx, cy + 0.5);
+    const color = TRACK_COLORS[t % TRACK_COLORS.length];
+    if (t !== activeTrack) {                            // small, faded, numbered dot — identifiable, not attention-grabbing
+      const cx = sx / n, cy = sy / n;
+      octx.globalAlpha = 0.6;
+      octx.beginPath(); octx.arc(cx, cy, 8, 0, Math.PI * 2); octx.fillStyle = color; octx.fill();
+      octx.lineWidth = 1.5; octx.strokeStyle = "rgba(0,0,0,0.6)"; octx.stroke();
+      octx.globalAlpha = 0.85; octx.font = "bold 11px system-ui";
+      octx.lineWidth = 3; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(String(t + 1), cx, cy + 0.5);
+      octx.fillStyle = "#fff"; octx.fillText(String(t + 1), cx, cy + 0.5);
+      continue;
+    }
+    // ACTIVE track: corner brackets around the animal (nothing over its body, so posture stays visible)
+    const pad = 14, minHalf = 22;
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const hw = Math.max((x1 - x0) / 2 + pad, minHalf), hh = Math.max((y1 - y0) / 2 + pad, minHalf);
+    const L = mx - hw, R = mx + hw, Tp = my - hh, Bt = my + hh, arm = Math.min(16, hw * 0.6, hh * 0.6);
+    const brackets = () => {
+      octx.beginPath();
+      octx.moveTo(L, Tp + arm); octx.lineTo(L, Tp); octx.lineTo(L + arm, Tp);
+      octx.moveTo(R - arm, Tp); octx.lineTo(R, Tp); octx.lineTo(R, Tp + arm);
+      octx.moveTo(R, Bt - arm); octx.lineTo(R, Bt); octx.lineTo(R - arm, Bt);
+      octx.moveTo(L + arm, Bt); octx.lineTo(L, Bt); octx.lineTo(L, Bt - arm);
+      octx.stroke();
+    };
+    octx.globalAlpha = 1; octx.lineCap = "round";
+    octx.lineWidth = 6; octx.strokeStyle = "rgba(0,0,0,0.55)"; brackets();   // dark under-stroke: legible on light or dark cages
+    octx.lineWidth = 3; octx.strokeStyle = color; brackets();
+    octx.font = "bold 18px system-ui"; octx.textBaseline = "bottom";
+    const ly = Math.max(20, Tp - 6);
+    octx.lineWidth = 4; octx.strokeStyle = "rgba(0,0,0,0.7)"; octx.strokeText(`track ${t + 1}`, mx, ly);
+    octx.fillStyle = color; octx.fillText(`track ${t + 1}`, mx, ly);
+    octx.textBaseline = "middle";
   }
-  octx.textAlign = "left"; octx.textBaseline = "alphabetic";
+  octx.restore();
+}
+// Fixed badge on the video: which track you're labeling/reviewing, and whether it is tracked on this
+// frame — so the answer never depends on spotting a marker. Only touches the DOM when the text changes.
+let trackBadgeKey = "";
+function updateTrackBadge() {
+  const b = el("trackBadge"); if (!b) return;
+  let tracked = null;
+  if (poses && poseShape) {
+    const [F, T, N, C] = poseShape;
+    if (cur < F && activeTrack < T) {
+      const o = cur * T * N * C + activeTrack * N * C;
+      tracked = false; for (let k = 0; k < N; k++) if (!Number.isNaN(poses[o + k * C])) { tracked = true; break; }
+    }
+  }
+  const key = `${activeTrack}|${tracked}`;
+  if (key === trackBadgeKey) return;
+  trackBadgeKey = key;
+  b.hidden = !poses;
+  const color = TRACK_COLORS[activeTrack % TRACK_COLORS.length];
+  b.innerHTML = `<span class="sw" style="background:${color}"></span>track ${activeTrack + 1}`
+    + (tracked === false ? ` <span class="nt">· not tracked on this frame</span>` : "");
 }
 
 // WORKAROUND for sleap-io.js@0.4.1: its MediaBunny backend converts each VideoSample via
@@ -1577,6 +1693,46 @@ function scrubTo(f) {
 }
 
 // ---------- video zoom + pan ----------
+// Follow: keep the active track in frame while zoomed. The view only moves once the animal leaves a
+// central dead zone, then eases back (no shake from pose jitter); it SNAPS on a jump — seek, track
+// switch, next review candidate. Frames where the animal isn't tracked hold the view still.
+let follow = false, followLast = null;               // followLast: {f, t} of the last frame we followed
+try { follow = localStorage.getItem("ll_follow") === "1"; } catch (e) { /* default off */ }
+function trackCentroid(t, f) {                      // mean of tracked nodes, video pixels; null if untracked
+  if (!poses || !poseShape) return null;
+  const [F, T, N, C] = poseShape;
+  if (f >= F || t >= T) return null;
+  const o = (f * T + t) * N * C;
+  let sx = 0, sy = 0, n = 0;
+  for (let k = 0; k < N; k++) { const x = poses[o + k * C]; if (Number.isNaN(x)) continue; sx += x; sy += poses[o + k * C + 1]; n++; }
+  return n ? { x: sx / n, y: sy / n } : null;
+}
+function followTrack(force = false) {
+  if (!follow || zoom <= 1 || !meta || stageDrag) return;
+  const c = trackCentroid(activeTrack, cur); if (!c) return;   // untracked this frame: hold the view
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const sx = c.x / meta.width * W, sy = c.y / meta.height * H;  // stage-local, unzoomed (stage has the video's aspect)
+  const jump = force || !followLast || followLast.t !== activeTrack || Math.abs(cur - followLast.f) > 3;
+  followLast = { f: cur, t: activeTrack };
+  const dx = panX + zoom * sx - W / 2, dy = panY + zoom * sy - H / 2;   // animal's offset from the view centre, screen px
+  if (!jump && Math.abs(dx) < 0.18 * W && Math.abs(dy) < 0.18 * H) return;   // inside the dead zone: stay put
+  const a = jump ? 1 : 0.3;
+  panX -= dx * a; panY -= dy * a;
+  applyZoom();                                       // clamps at the frame edges
+}
+function setFollow(on) {
+  follow = on; followLast = null;
+  try { localStorage.setItem("ll_follow", on ? "1" : "0"); } catch (e) { /* not persisted */ }
+  el("followBtn").classList.toggle("on", on);
+  if (!on) return;
+  if (zoom <= 1) {                                   // zooming in is the point of following: do it on the animal
+    const c = meta && trackCentroid(activeTrack, cur);
+    const W = stage.clientWidth, H = stage.clientHeight;
+    if (c) setZoom(2.5, c.x / meta.width * W, c.y / meta.height * H); else setZoom(2.5);
+  }
+  followTrack(true);
+  busy(`follow on — keeping track ${activeTrack + 1} in frame (drag the video or press f to stop)`);
+}
 function applyZoom() {
   const W = stage.clientWidth, H = stage.clientHeight;
   const mx = zoom > 1 ? 0 : W * 0.45, my = zoom > 1 ? 0 : H * 0.45;   // zoomed: content covers frame; at 1× allow dragging it ±45% to reposition
@@ -1595,6 +1751,7 @@ function setZoom(z, cx, cy) {
   zoom = nz;
   if (zoom === 1) { panX = 0; panY = 0; }
   applyZoom();
+  if (follow) followTrack(true);                    // zooming while following re-centres on the animal
 }
 
 // ---------- timeline + heatstrip ----------
@@ -1616,33 +1773,35 @@ function runsOf(arr, s = 0, e = arr.length) {
 }
 
 const ROWH = () => MANUAL_H + LANE_GAP + PRED_H + ROW_GAP;
-// Composite lane: every behavior in one strip under the ruler — your Happening labels on top, the
-// model's detected bouts below, one thin band per behavior in its own color so co-occurring behaviors
-// stay visible. Display-only (a press there scrubs, like the ruler). Hidden with fewer than 2 behaviors.
-const COMP_HALF = () => Math.max(20, Math.min(48, behaviors.length * 6));   // ≥ ~5px band per behavior, capped
-const COMP_H = () => behaviors.length >= 2 ? 2 * COMP_HALF() + LANE_GAP + ROW_GAP : 0;
+// Composite lane: every behavior's Happening labels in ONE row under the ruler, drawn like a manual
+// lane but in each behavior's own color. Where behaviors overlap, the row is split into one stripe per
+// behavior for that stretch so neither hides the other. Display-only (a press there scrubs, like the
+// ruler). Hidden with fewer than 2 behaviors.
+const COMP_H = () => behaviors.length >= 2 ? MANUAL_H + ROW_GAP : 0;
 const LANES_Y = () => RULER + COMP_H();   // top of the first per-behavior lane
 function drawComposite(W) {
   if (!COMP_H()) return;
-  const half = COMP_HALF(), bh = half / behaviors.length;
-  const rows = [["labels", RULER + 2], ["detected", RULER + 2 + half + LANE_GAP]];
-  for (const [name, y] of rows) {
-    tctx.fillStyle = "#141922"; rRect(tctx, TL_GUT, y, W - TL_GUT, half, 4); tctx.fill();
-    tctx.font = "600 10.5px system-ui"; tctx.fillStyle = "#6b7c93"; tctx.textAlign = "left";
-    tctx.fillText(name === "labels" ? "all · labels" : "all · detected", 11, y + half / 2);
+  const ym = RULER, F = meta.n_frames;
+  tctx.fillStyle = "#141922"; rRect(tctx, TL_GUT, ym, W - TL_GUT, MANUAL_H, 6); tctx.fill();
+  tctx.font = "600 13px system-ui"; tctx.fillStyle = "#ccd3de"; tctx.textAlign = "left";
+  tctx.fillText("all behaviors", 11, ym + MANUAL_H / 2);
+  // stable behavior order (not laneList), so stripes don't reshuffle when the active behavior changes
+  const arrs = behaviors.map(b => labelState.get(b.id));
+  const on = (k, f) => !!arrs[k] && arrs[k][f] === 1;
+  const same = (f, g) => { for (let k = 0; k < arrs.length; k++) if (on(k, f) !== on(k, g)) return false; return true; };
+  tctx.save(); tctx.beginPath(); tctx.rect(TL_GUT, ym, W - TL_GUT, MANUAL_H); tctx.clip();   // zoomed: runs off-view must not paint over the gutter
+  const vS = viewS(), vE = viewE();
+  for (let s = 0, f = 1; f <= F; f++) {                          // runs of a constant set of Happening behaviors
+    if (f < F && same(f, s)) continue;
+    const set = behaviors.filter((_, k) => on(k, s));
+    if (set.length && f > vS && s < vE) {                        // skip empty runs and runs outside the zoom window
+      const x0 = xOf(s, W), w = Math.max(1, xOf(f, W) - x0), y0 = ym + 3, h = MANUAL_H - 6;
+      if (set.length === 1) { tctx.fillStyle = set[0].color; rRect(tctx, x0, y0, w, h, 3); tctx.fill(); }
+      else set.forEach((b, j) => { tctx.fillStyle = b.color; tctx.fillRect(x0, y0 + j * h / set.length, w, h / set.length); });
+    }
+    s = f;
   }
-  behaviors.forEach((b, k) => {   // stable behavior order (not laneList), so bands don't reshuffle on select
-    tctx.fillStyle = b.color;
-    const yl = rows[0][1] + k * bh, yd = rows[1][1] + k * bh, h = Math.max(1, bh - (bh > 3 ? 1 : 0));
-    const arr = labelState.get(b.id);
-    if (arr) for (const [s, e, v] of runsOf(arr)) {
-      if (v !== 1) continue;                                     // Happening only; negatives/unknown would drown it
-      const x0 = xOf(s, W); tctx.fillRect(x0, yl, Math.max(1, xOf(e, W) - x0), h);
-    }
-    for (const bt of (predictedBouts.get(b.id) || [])) {
-      const x0 = xOf(bt.s, W); tctx.fillRect(x0, yd, Math.max(1, xOf(bt.e, W) - x0), h);
-    }
-  });
+  tctx.restore();
 }
 function rRect(ctx, x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); ctx.beginPath(); ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); }
 // Timeline lane order: the ACTIVE behavior is floated to the top lane so it stays visible next to the
@@ -1761,6 +1920,8 @@ function renderTimeline() {
     }
     // gutter label (the live P value at the playhead is drawn on the trace itself, in the overlay)
     tctx.font = "600 10.5px system-ui"; tctx.fillStyle = active ? "#8b97a8" : "#6b7c93"; tctx.textAlign = "left"; tctx.fillText("conf", 11, ya + PRED_H / 2);
+    const tag = predTag(b.id);                                   // which model drew this trace (⚠ = a newer one isn't applied here)
+    if (tag) { tctx.fillStyle = tag.stale ? "#ffb347" : "#7f9bbd"; tctx.fillText("· " + tag.text, 11 + tctx.measureText("conf ").width, ya + PRED_H / 2); }
   });
   // Social window (entry/exit of a second animal): dim everything outside it so it's obvious at a
   // glance where labeling/review even applies. Drawn into the base (before captureTimelineBase) so
@@ -2423,14 +2584,24 @@ function hidraReflect() {
     train.disabled = false;
   }
 
-  el("hidraNote").textContent =
+  const base =
     !bound ? "using this project's own model"
     : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
     : needScale ? (auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres")
     : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
     : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
-  if (bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer)
-    el("hidraNote").textContent += ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)`;
+  // What the configuration above says Predict WILL use can differ from what made the trace on screen
+  // (a fine-tune that was not applied yet) — say which one you are looking at, loudly when it's stale.
+  const info = predInfoByBeh.get(activeBid);
+  const shown = !info ? (predsByBeh.has(activeBid) ? "" : " · no predictions on this clip yet")
+    : info.stale ? ` · ⚠ timeline shows ${info.label || "older"} predictions (${hhmm(info.predicted_at)}), ${info.why}`
+        + (info.no_model ? " — press ⚙ Train to fit this project's own model (there is none yet to Predict with)"
+           : /checkpoints are missing/.test(info.why || "") ? "" : " — press ▶ Predict to apply the current model")
+    : ` · timeline shows ${info.label} predictions (${hhmm(info.predicted_at)})`;
+  const autoScale = bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer
+    ? ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)` : "";
+  el("hidraNote").textContent = base + autoScale + shown;
+  el("hidraNote").style.color = info && info.stale ? "#ffb347" : "";
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
@@ -2493,7 +2664,8 @@ async function hidraSave() {
     el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
     return;
   }
-  hidraReflect();
+  if (vid) { await loadPredictions(activeBid); renderTimeline(); }   // re-judge the on-screen lane against the new binding
+  else hidraReflect();
 }
 
 // The setup row: only reachable when the server answered /status, so HiDRA is present in this
@@ -2701,6 +2873,7 @@ function renderClipBar() {
     chip.title = v.video_id;
     chip.onclick = () => { if (v.video_id !== vid) openVideo(v.video_id); };
     const name = document.createElement("span"); name.textContent = clipShortName(v.video_id); chip.appendChild(name);
+    if (v.role === "test") { const t = document.createElement("span"); t.className = "testtag"; t.textContent = "🧪 test"; t.title = "Held-out test clip: never used to train any model; scored in Stats → Model comparison"; chip.appendChild(t); }
     const x = document.createElement("span"); x.textContent = "✕";
     x.title = "Remove this clip from the project"; x.style.cssText = "margin-left:7px; opacity:.5; font-size:11px";
     x.onmouseenter = () => x.style.opacity = "1"; x.onmouseleave = () => x.style.opacity = ".5";
@@ -2708,6 +2881,26 @@ function renderClipBar() {
     chip.appendChild(x);
     bar.appendChild(chip);
   }
+  const cv = vids.find(v => v.video_id === vid);
+  if (cv) {                                             // hold the open clip out of training, for fair model scores
+    const tb = document.createElement("button");
+    const isTest = cv.role === "test";
+    tb.textContent = isTest ? "🧪 test clip ✓" : "🧪 use as test clip";
+    tb.title = isTest ? "This clip is held out of all training and used to score models fairly. Click to use it for training again."
+      : "Hold this clip out of ALL training (HiDRA fine-tunes and the project model) and use it to score models fairly in Stats → Model comparison. Review it as completely as you can.";
+    tb.onclick = () => setClipRole(cv.video_id, isTest ? null : "test");
+    bar.appendChild(tb);
+  }
+}
+async function setClipRole(vidId, role) {
+  if (role === "test" && !confirm("Use this clip as the TEST clip?\n\nIts labels will no longer be used to train any model (HiDRA fine-tunes or the project model) — "
+      + "they are only used to score models fairly. A model that already trained on this clip will be marked in-sample here until you train it again.")) return;
+  const r = await api(`/videos/${vidId}/role`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+  if (!r.ok) { alert("Could not change the clip: " + ((await r.json()).detail || r.status)); return; }
+  projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
+  renderClipBar();
+  busy(role ? "test clip set — it is held out of training; score models in 📊 Stats" : "clip will be used for training again");
+  if (el("statsPanel").classList.contains("on")) refreshStats();
 }
 async function removeClip(vidId) {
   if (browseBlocked()) return;
@@ -2829,6 +3022,67 @@ async function refreshStats() {
     if (cd && cb) statsCompare = { history: cd.history || [], meta: cd.meta, name: cb.name, color: cb.color || "#c9a227" };
   }
   renderStats(d.history || [], d.meta);
+  await refreshModelCompare();
+}
+// ---- Model comparison: every model that has predicted this behavior, scored on reviewed frames ----
+const fmt3 = x => x == null ? "—" : Number(x).toFixed(3);
+async function refreshModelCompare() {
+  const box = el("modelCompare"); if (!box || activeBid == null) return;
+  const r = await api(`/behaviors/${activeBid}/compare`);
+  if (!r.ok) { box.innerHTML = ""; return; }
+  renderModelCompare(await r.json());
+}
+function renderModelCompare(d) {
+  const box = el("modelCompare");
+  const bound = !!(behaviors.find(b => b.id === activeBid) || {}).hidra;
+  const models = (d.models || []).filter(m => m.comparable !== false);
+  if (!models.length && !bound) { box.innerHTML = ""; return; }   // nothing to compare for a plain native behavior with no predictions yet
+  const testNames = (d.test_videos || []).map(clipShortName);
+  const cell = (s, inSample) => {
+    if (!s) return `<td>—</td><td>—</td><td>—</td>`;
+    const c = inSample ? ' class="ins"' : "", thin = s.thin ? ` <span class="warn" title="fewer than ${d.min_per_class} positive or negative frames — too few to trust">⚠</span>` : "";
+    return `<td${c}>${fmt3(s.ap)}${thin}</td><td${c}>${fmt3(s.auroc)}</td>`
+      + `<td${c} title="precision ${fmt3(s.precision)} · recall ${fmt3(s.recall)} · ${s.n_pos}+ / ${s.n_neg}− frames">${fmt3(s.best_f1)}</td>`;
+  };
+  const rows = models.map(m => {
+    const sc = m.scores || {}, train = sc.train_out || sc.train_in, inS = !sc.train_out && !!sc.train_in && m.kind !== "zeroshot";
+    const tag = m.kind === "zeroshot" ? "" : (inS ? ' <span class="ins">(in-sample)</span>' : (sc.train_out ? ' <span>(not trained on these)</span>' : ""));
+    const kept = m.kind === "finetune" && m.models_kept === false ? ' <span class="ins" title="checkpoints pruned (only the last 3 fine-tunes are kept); its stored scores remain">· pruned</span>' : "";
+    return `<tr><td class="m">${m.current ? '<span class="cur" title="the model Predict uses now">● </span>' : ""}${esc(m.label)}${kept}</td>`
+      + (sc.test ? cell(sc.test, false).replace(/<\/td>$/, m.test_partial ? ` <span class="warn" title="scored on ${(m.test_clips || []).length} of ${(d.test_videos || []).length} test clips — compute it on the rest for a like-for-like number">◐</span></td>` : "</td>")
+         : (m.test_in_sample || []).length ? `<td colspan="3" class="ins" title="this model trained on the test clip (before it was marked test), so its score there is in-sample — retrain to get a fair score">trained on it</td>` : cell(null, false))
+      + cell(train, inS) + `<td class="m" style="font-size:11px">${tag}</td></tr>`;
+  }).join("");
+  const testScored = models.filter(m => m.scores && m.scores.test && m.scores.test.ap != null);
+  const maxAp = Math.max(0.0001, ...testScored.map(m => m.scores.test.ap));
+  const bars = testScored.length >= 1 ? `<div class="bars">${testScored.map(m =>
+      `<div class="bar"><span>${esc(m.kind === "native" ? m.label.replace("project model · ", "project ") : m.label.split(" · ")[0])}${m.test_partial ? " ◐" : ""}</span><span class="track"><div class="fill" style="width:${(100 * m.scores.test.ap / maxAp).toFixed(1)}%"></div></span><b>${fmt3(m.scores.test.ap)}</b></div>`).join("")}</div>` : "";
+  const cov = Object.entries(d.test_coverage || {}).map(([v, c]) =>
+      `${esc(clipShortName(v))}: ${c.n_pos}+ / ${c.n_neg}− reviewed frames (${(100 * c.labeled_frac).toFixed(1)}% of frame×animal)`).join(" · ");
+  const testInfo = testNames.length
+    ? `<div class="note">Test clip: <b>${testNames.map(esc).join(", ")}</b> — held out of all training. ${cov}</div>`
+    : `<div class="callout"><b>No test clip yet, so there's no fair score.</b> A fine-tune trains on every frame of the clips it used, so scoring it on those clips is in-sample (shown in grey). `
+      + `To compare fairly: open a clip that hasn't been used to train this behavior, click <b>🧪 use as test clip</b> in the clip bar, review it, then come back here.</div>`;
+  const buttons = (d.can_compute || []).map(c => `<button data-model="${esc(c.model)}" class="mcRun">▶ score ${esc(c.label)} on the test clip</button>`).join(" ");
+  box.innerHTML = `<h4>Model comparison — ${esc(bname(activeBid))}</h4>${testInfo}`
+    + (models.length ? `<table><thead><tr><th class="m">model</th><th colspan="3">test clip (fair) — AP · AUROC · best F1</th><th colspan="3">training clips — AP · AUROC · best F1</th><th class="m"></th></tr></thead><tbody>${rows}</tbody></table>`
+       : `<div class="note">No predictions stored for this behavior yet — press ▶ Predict.</div>`)
+    + (bars ? `<div class="note" style="margin-top:10px"><b>AP on the test clip</b>, per model:</div>${bars}` : "")
+    + (buttons ? `<div class="row" style="margin-top:8px; gap:6px; flex-wrap:wrap">${buttons}</div><div class="note">Each runs that model over the test clip only (≈1–2 min); your timeline and review queue are not changed.</div>` : "")
+    + `<div class="note">Scored on reviewed frames only (Happening vs Not-happening; unlabeled and Unknown excluded). AP and AUROC don't depend on a threshold; best F1 uses each model's own best threshold (hover for precision/recall). `
+    + `Reviewed frames aren't a random sample — review visits what a model proposed — so treat small differences with caution, and review the test clip as completely as you can.</div>`;
+  box.querySelectorAll(".mcRun").forEach(b => b.onclick = () => runCompareModel(b.dataset.model, b));
+}
+async function runCompareModel(model, btn) {
+  if (btn) btn.disabled = true;
+  const r = await api(`/behaviors/${activeBid}/compare/run?model=${encodeURIComponent(model)}`, { method: "POST" });
+  if (!r.ok) { busy("could not start: " + ((await r.json()).detail || r.status)); if (btn) btn.disabled = false; return; }
+  const { job_id } = await r.json();
+  pollJob(job_id, async s => {
+    if (s.status === "error") { busy("scoring failed: " + String(s.error || "").slice(0, 300)); if (btn) btn.disabled = false; return; }
+    busy("scored on the test clip — see 📊 Stats → Model comparison");
+    if (el("statsPanel").classList.contains("on")) await refreshModelCompare();
+  });
 }
 function sbar(label, pos, neg) {
   const tot = Math.max(1, pos + neg);
@@ -3389,10 +3643,25 @@ function recomputeBouts(bid) {   // refresh the clickable predicted bouts from c
 }
 async function loadPredictions(bid) {
   const r = await api(`/predict/${vid}?behavior=${bid}&track=${activeTrack}`);
-  if (r.ok) { const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout(); }
-  else { predsByBeh.delete(bid); predictedBouts.delete(bid); }
+  if (r.ok) {
+    let info = null; try { info = JSON.parse(r.headers.get("X-Pred-Model") || "null"); } catch (e) { /* older server */ }
+    if (info) predInfoByBeh.set(bid, info); else predInfoByBeh.delete(bid);
+    const p = new Float32Array(await r.arrayBuffer()); predsByBeh.set(bid, p); recomputeBouts(bid); if (bid === activeBid) renderThreshReadout();
+  }
+  else { predsByBeh.delete(bid); predInfoByBeh.delete(bid); predictedBouts.delete(bid); }
+  if (bid === activeBid) hidraReflect();   // the note says which model the trace on screen came from
 }
 async function loadAllPredictions() { for (const b of behaviors) await loadPredictions(b.id); }
+// Short tag for a lane's confidence trace: which model drew it, or ⚠ when a newer model exists that
+// has not been applied to this clip (e.g. right after a HiDRA fine-tune). null = nothing to say.
+function predTag(bid) {
+  const i = predInfoByBeh.get(bid);
+  if (!i) return null;
+  if (i.stale) return { text: "⚠ old", stale: true };
+  if (i.engine === "hidra") return { text: /fine-tuned/.test(i.label || "") ? "tuned" : "zero-shot", stale: false };
+  return null;                             // the project's own, current model: plain "conf" as before
+}
+const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
 
 // JS port of the backend bouts_from_proba (smooth -> hi/lo runs -> min-bout filter -> min-gap merge)
 // for the clickable auto lane. Mirrors predict.py exactly — same order (filter THEN merge) and the same
@@ -3569,11 +3838,12 @@ async function train() { jobsRunning++; try { await trainJob(); } finally { jobs
 async function trainJob() {
   if (activeBid == null || browseBlocked()) return;
   const bid = activeBid, bname = (behaviors.find(x => x.id === bid) || {}).name;   // capture the model being trained (activeBid may change during the async job)
+  const vid0 = vid;                                                               // ...and the clip (the user may switch clips during a long fine-tune)
   const t0 = Date.now();                                                          // wall-clock of the train job (feature compute + CV + fit)
   busy("starting…");
   // Scope the post-fit prediction sweep (the fit itself always pools every labeled clip). Sweeping a
   // 17-clip project costs minutes; re-predicting just the clip under review costs seconds.
-  const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid)}`;
+  const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid0)}`;
   const bh = (behaviors.find(x => x.id === bid) || {}).hidra;
   logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips",
                             train_on: bh && bh.action ? (bh.train_on || (bh.reviewed_only ? "reviewed" : "all")) : null });
@@ -3614,8 +3884,15 @@ async function trainJob() {
           + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
           + `(this only proves the pipeline; run Train without smoke for the real fit)`);
       } else {
-        busy(`Fine-tuned ${r.action} (${r.lab}, ${r.mode}) on ${r.bouts} reviewed bout`
-          + `${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · press ▶ Predict to apply it`);
+        // The fit is followed by a predict on the "predict:" scope, so say where the new weights now show
+        const ap = r.predict || {}, nOk = (ap.videos || []).length, sk = ap.skipped || [];
+        const here = (ap.videos || []).includes(vid);
+        const applied = here ? `applied to ${nOk === 1 ? "this clip" : `${nOk} clips`} — the timeline now shows the fine-tuned model`
+          : nOk ? `applied to ${nOk} clip${nOk === 1 ? "" : "s"}, but not the one on screen — press ▶ Predict here to see it`
+          : "not applied yet — press ▶ Predict to see it on the timeline";
+        const skipped = sk.length ? ` · ⚠ not applied to ${sk.length} clip${sk.length === 1 ? "" : "s"}: ${sk[0].error}` : "";
+        busy(`✓ Fine-tuned ${r.action} (${r.lab}, ${r.mode}) on ${r.bouts} reviewed bout`
+          + `${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · ${applied}${skipped}`);
       }
     } else if (r) {                            // make it explicit that ALL tracks & clips were pooled, not just the active one
       const tks = (r.tracks || []).map(t => `t${t}:${(r.pos_by_track || {})[t] || 0}+`).join(" ");
@@ -3832,8 +4109,32 @@ function populateReclassifySelect() {   // every OTHER behavior, so you can mark
   const sel = el("rvReclassify"); if (!sel || !reviewCurrent) return;
   const others = behaviors.filter(b => b.id !== reviewCurrent.bid);
   sel.innerHTML = '<option value="">↷ mark as other behavior…</option>'
-    + others.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("");
+    + others.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("")
+    + '<option value="__new__">＋ new behavior…</option>';
   sel.value = "";
+}
+// "＋ new behavior…" in the reclassify menu: create the behavior and reclassify this candidate as it,
+// without leaving the review. Deliberately NOT addBehavior()/reloadBehaviors(): those re-select a
+// behavior and reload every label, which would throw away the review queue mid-session.
+async function reclassifyAsNewBehavior() {
+  if (!reviewCurrent) return;
+  const name = (prompt("New behavior name — this candidate will be labeled as it:") || "").trim(); if (!name) return;
+  const same = behaviors.find(b => b.name.trim().toLowerCase() === name.toLowerCase());
+  if (same) {                                       // already exists: use it rather than making a duplicate
+    if (same.id === reviewCurrent.bid) { busy(`"${same.name}" is the behavior under review — use y to accept instead`); return; }
+    busy(`"${same.name}" already exists — marked as it`); return reclassifyCandidate(same.id);
+  }
+  const key = (prompt("Hotkey (single char, optional):") || "").trim().slice(0, 1) || null;
+  const r = await api(`/behaviors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, key }) });
+  if (!r.ok) { alert("Could not add: " + (await r.json()).detail); return; }
+  const b = await r.json();
+  behaviors.push(b);
+  labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames));   // same per-frame state loadLabels builds
+  targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); recomputeBouts(b.id);
+  renderBehaviorBar();
+  logEvent("behavior_add", { behavior_id: b.id, name: b.name, from: "reclassify" });
+  await reclassifyCandidate(b.id);                  // advances the queue, like picking an existing behavior
+  busy(`added "${b.name}" and marked this candidate as it`);
 }
 async function reclassifyCandidate(otherBid) {
   if (!reviewCurrent || browseBlocked()) return;
@@ -4554,11 +4855,13 @@ el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
-function replayCandidate() {   // re-watch the bout under review from its start
+function replayCandidate() {   // re-watch the bout under review — the range as you've trimmed/extended it, i.e. what y would accept
   if (!reviewCurrent) return;
+  const t = reviewTrim || reviewCurrent;
   evCandReplays++;                                  // replays ride along on the decision event
-  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e, n: evCandReplays });
-  playBout(reviewCurrent.s, reviewCurrent.e);
+  logEvent("candidate_replay", { behavior_id: reviewCurrent.bid, start: reviewCurrent.s, end: reviewCurrent.e,
+                                 play_start: t.s, play_end: t.e, n: evCandReplays });
+  playBout(t.s, t.e);
 }
 el("rvReplay").onclick = replayCandidate;
 el("rvYes").onclick = acceptCandidate;
@@ -4573,9 +4876,10 @@ el("brReplay").onclick = browseReplay;
 el("brStop").onclick = closeBrowse;
 for (const id of ["browseWhich", "browseOrder", "browseLabels"]) el(id).onchange = e => { e.target.blur(); if (browse) browseStart(); };   // blur so arrow keys go back to scrubbing
 el("rvReclassify").onchange = e => {
-  const otherBid = parseInt(e.target.value, 10);
-  e.target.value = "";                              // reset immediately so it never looks "stuck" on a choice
-  if (Number.isFinite(otherBid)) reclassifyCandidate(otherBid);
+  const v = e.target.value, otherBid = parseInt(v, 10);
+  e.target.value = ""; e.target.blur();             // reset immediately so it never looks "stuck" on a choice; give keys back (y/n/r)
+  if (v === "__new__") reclassifyAsNewBehavior();
+  else if (Number.isFinite(otherBid)) reclassifyCandidate(otherBid);
 };
 el("rvTrimS").onclick = setTrimStart;
 el("rvTrimE").onclick = setTrimEnd;
@@ -4600,6 +4904,65 @@ el("showApproaches").onclick = () => toggleApproaches();
 el("zIn").onclick = () => setZoom(zoom * 1.3);
 el("zOut").onclick = () => setZoom(zoom / 1.3);
 el("zReset").onclick = () => setZoom(1);
+el("followBtn").onclick = () => { setFollow(!follow); el("followBtn").blur(); if (!follow) busy("follow off"); };
+el("followBtn").classList.toggle("on", follow);
+// Video display adjustments: brightness / contrast / gamma, plus one-click auto levels. Applied as a CSS
+// filter on the frame canvas only — the pose overlay is a separate canvas, so skeletons keep their
+// colors, and nothing is re-decoded. Display only: features, training and exports never see it.
+// Levels + gamma go through the SVG #imgAdjFilter, referenced only while one of them is active, so the
+// plain brightness/contrast path stays a cheap built-in filter. Brightness/contrast/gamma are remembered
+// per browser; auto levels are not (they belong to the frame they were measured on).
+const IMG_ADJ_KEY = "ll_imgAdj";
+const IMG_ADJ_DEFAULT = { b: 100, c: 100, g: 1 };
+const IMG_ADJ_RANGE = { b: [50, 300], c: [50, 300], g: [0.5, 3] };
+let imgAdj = { ...IMG_ADJ_DEFAULT }, imgLevels = null;   // imgLevels: {lo, hi} in 0..255, from Auto
+try {
+  const saved = JSON.parse(localStorage.getItem(IMG_ADJ_KEY) || "{}");
+  for (const k of ["b", "c", "g"]) if (Number.isFinite(saved[k])) imgAdj[k] = Math.max(IMG_ADJ_RANGE[k][0], Math.min(IMG_ADJ_RANGE[k][1], saved[k]));
+} catch (e) { /* keep defaults */ }
+function applyImgAdj() {
+  const { b, c, g } = imgAdj, svgOn = g !== 1 || !!imgLevels;
+  const isDefault = b === 100 && c === 100 && !svgOn;
+  const slope = imgLevels ? 255 / (imgLevels.hi - imgLevels.lo) : 1, icept = imgLevels ? -imgLevels.lo / (imgLevels.hi - imgLevels.lo) : 0;
+  document.querySelectorAll("#imgAdjFilter .lv").forEach(f => { f.setAttribute("slope", slope); f.setAttribute("intercept", icept); });
+  document.querySelectorAll("#imgAdjFilter .gm").forEach(f => f.setAttribute("exponent", 1 / g));   // C' = C^(1/g): g > 1 lifts shadows
+  const parts = [];
+  if (svgOn) parts.push("url(#imgAdjFilter)");
+  if (b !== 100) parts.push(`brightness(${b}%)`);
+  if (c !== 100) parts.push(`contrast(${c}%)`);
+  frameEl.style.filter = parts.join(" ");
+  el("imgBright").value = b; el("imgContrast").value = c; el("imgGamma").value = g;
+  el("imgBrightVal").textContent = b + "%"; el("imgContrastVal").textContent = c + "%"; el("imgGammaVal").textContent = g.toFixed(2);
+  el("imgAuto").classList.toggle("on", !!imgLevels);
+  el("imgAdjBtn").classList.toggle("on", !isDefault);
+  try { localStorage.setItem(IMG_ADJ_KEY, JSON.stringify(imgAdj)); } catch (e) { /* not persisted */ }
+}
+function autoLevels() {   // 0.5th..99.5th luminance percentile of the frame on screen -> full black..white
+  if (!meta) return;
+  const d = vctx.getImageData(0, 0, frameEl.width, frameEl.height).data, hist = new Uint32Array(256);
+  let n = 0;
+  for (let i = 0; i < d.length; i += 16) { hist[(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0]++; n++; }   // every 4th pixel
+  const pct = q => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= q * n) return v; } return 255; };
+  const lo = pct(0.005), hi = pct(0.995);
+  if (hi - lo < 8) { busy("auto levels: this frame is nearly uniform — nothing to stretch"); return; }
+  imgLevels = { lo, hi }; applyImgAdj();
+  busy(`auto levels: ${lo}–${hi} stretched to full range`);
+}
+el("imgAdjBtn").onclick = () => { el("imgAdj").hidden = !el("imgAdj").hidden; el("imgAdjBtn").blur(); };   // else Space/Enter re-toggle it
+// A click on a slider's <label> would focus the slider without any pointerup/change on it, trapping focus
+// (the shortcuts skip INPUT targets) — keep the captions as captions.
+document.querySelectorAll("#imgAdj label").forEach(l => { l.onmousedown = e => e.preventDefault(); l.onclick = e => e.preventDefault(); });
+for (const [id, k] of [["imgBright", "b"], ["imgContrast", "c"], ["imgGamma", "g"]]) {
+  const s = el(id);
+  s.oninput = () => { imgAdj[k] = +s.value; applyImgAdj(); };
+  // hand focus back, or the keyboard shortcuts stay dead (they skip INPUT targets). pointerup, not just
+  // change: a drag that ends where it began fires no change event.
+  s.onpointerup = s.onchange = () => s.blur();
+  s.ondblclick = () => { imgAdj[k] = IMG_ADJ_DEFAULT[k]; applyImgAdj(); s.blur(); };
+}
+el("imgAuto").onclick = () => { autoLevels(); el("imgAuto").blur(); };
+el("imgAdjReset").onclick = () => { imgAdj = { ...IMG_ADJ_DEFAULT }; imgLevels = null; applyImgAdj(); el("imgAdjReset").blur(); };
+applyImgAdj();
 stageInner.addEventListener("wheel", ev => {
   if (!(ev.ctrlKey || ev.metaKey)) return;         // plain scroll -> page scrolls; Ctrl/⌘+scroll (or pinch) -> zoom
   ev.preventDefault();
@@ -4626,6 +4989,7 @@ stageInner.addEventListener("pointermove", ev => {
   if (!stageDrag) return;
   panX = stageDrag.px + (ev.clientX - stageDrag.x);
   panY = stageDrag.py + (ev.clientY - stageDrag.y);
+  if (follow && (Math.abs(ev.clientX - stageDrag.x) > 4 || Math.abs(ev.clientY - stageDrag.y) > 4)) { setFollow(false); busy("follow off — you panned the view"); }
   panMoved = true; applyZoom();
 });
 stageInner.addEventListener("pointerup", ev => {
@@ -4691,6 +5055,7 @@ window.addEventListener("keydown", e => {
   else if (e.key === "+" || e.key === "=") setZoom(zoom * 1.3);
   else if (e.key === "-" || e.key === "_") setZoom(zoom / 1.3);
   else if (e.key === "0") setZoom(1);
+  else if (e.key === "f" && !behaviors.some(b => b.key === "f")) { setFollow(!follow); if (!follow) busy("follow off"); }
   else if (e.key === "v" && !behaviors.some(b => b.key === "v")) setTool("select");
   else if (e.key === "b" && !behaviors.some(b => b.key === "b")) setTool("paint");
   else { const b = behaviors.find(b => b.key === e.key); if (b) togglePaint(b.id); }

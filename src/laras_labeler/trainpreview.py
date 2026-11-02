@@ -26,6 +26,8 @@ from pathlib import Path
 
 from . import hidra, poseio
 
+HELD_OUT = "test clip (held out) — scored by the model comparison, never trained on"
+
 
 def _n_animals(entry: dict) -> int:
     """Tracks in the clip's .slp, from its header alone (no pose read); 0 if it can't be read."""
@@ -75,6 +77,7 @@ def preview(store, labels, predictor, features, pid: str, bid: int) -> dict:
         n_tracks = max(n_animals[vid], predictor.n_tracks(pid, vid, bid), max(label_tracks, default=-1) + 1)
         left = predictor.remaining(pid, vid, bid)["tracks"] if predictor.n_tracks(pid, vid, bid) else {}
         slp_ok = bool(v.get("slp_path")) and Path(v["slp_path"]).exists()
+        held_out = v.get("role") == "test"             # the test clip: scored by the model comparison, never trained on
 
         tracks = []
         for t in range(n_tracks):
@@ -93,8 +96,9 @@ def preview(store, labels, predictor, features, pid: str, bid: int) -> dict:
             if engine == "native":
                 # Trainer.gather: a clip with poses; every labeled Happening / Not-happening run
                 # of every track is one training bout; Unknown and unlabeled frames are dropped.
-                row["used"] = bool(v.get("has_poses")) and bool(bouts)
-                row["note"] = ("" if row["used"] else "no poses for this clip" if bouts
+                row["used"] = bool(v.get("has_poses")) and bool(bouts) and not held_out
+                row["note"] = (HELD_OUT if held_out and bouts else "" if row["used"]
+                               else "no poses for this clip" if bouts
                                else "no Happening / Not-happening labels")
                 row["blocker"] = bool(row["used"] and not slp_ok and features.status(pid, vid)["status"] != "ready")
                 if row["blocker"]:
@@ -111,7 +115,9 @@ def preview(store, labels, predictor, features, pid: str, bid: int) -> dict:
                 # without one makes the fine-tune fail, so say so rather than count it.
                 row["used"] = contributes and slp_ok
                 row["blocker"] = contributes and not slp_ok
-                if contributes and not slp_ok:
+                if held_out and (frames[1] or frames[0]):
+                    row["note"] = HELD_OUT
+                elif contributes and not slp_ok:
                     row["note"] = "clip's .slp not found — the fine-tune will stop on it"
                 elif not contributes and vid not in staged and not v.get("slp_path") and (
                         frames[1] or (train_on == "reviewed" and frames[0])):
@@ -185,11 +191,13 @@ def preview(store, labels, predictor, features, pid: str, bid: int) -> dict:
 
 
 def _staged_clips(proj, labels, pid: str, bid: int, reviewed_only: bool) -> set[str]:
-    """The clips `_hidra_train` stages: labels for this behavior, a Happening frame (or, reviewed
-    frames only, any answered frame), and a tracking file."""
+    """The clips `_hidra_train` stages: not the test clip, labels for this behavior, a Happening
+    frame (or, reviewed frames only, any answered frame), and a tracking file."""
     out = set()
     for v in proj.videos:
         vid = v["video_id"]
+        if v.get("role") == "test":
+            continue
         try:
             df = labels.rows_for_behavior(pid, vid, bid)
         except (KeyError, FileNotFoundError):

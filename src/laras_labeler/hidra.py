@@ -964,7 +964,7 @@ def rebind(prev: dict | None, lab: str, action: str, collapse: str, rate: float)
     prev = prev or {}
     if (prev.get("lab"), prev.get("action")) == (lab, action):
         for k in ("weights", "finetune_mode", "weights_reviewed_only", "weights_train_on",
-                  "weights_manifest"):
+                  "weights_manifest", "run_id"):
             if k in prev:
                 out[k] = prev[k]
     for k in ("reviewed_only", "train_on"):
@@ -1087,6 +1087,8 @@ def finetune_bouts(store, labels, pid: str, bid: int, head: dict,
     skipped: list[dict] = []
     for v in proj.videos:
         vid = v["video_id"]
+        if v.get("role") == "test":                   # held-out test clip: never trains a model
+            continue
         if only is not None and vid not in only:
             continue
         try:

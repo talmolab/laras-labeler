@@ -23,6 +23,13 @@ def test_different_head_drops_checkpoint():
     assert "weights" not in hidra.rebind(TUNED, "LyricalHare", "attack", "directed", 0.15)
 
 
+def test_same_head_keeps_its_fine_tune_run():
+    """The model comparison and the lane's provenance key on run_id, so it travels with the weights."""
+    out = hidra.rebind({**TUNED, "run_id": "ft-20261019-120000"}, "LyricalHare", "approach", "directed", 0.05)
+    assert out["run_id"] == "ft-20261019-120000"
+    assert "run_id" not in hidra.rebind({**TUNED, "run_id": "ft-1"}, "GroovyShrew", "approach", "directed", 0.15)
+
+
 def test_first_bind_has_no_checkpoint():
     out = hidra.rebind(None, "LyricalHare", "approach", "directed", 0.15)
     assert out == {"lab": "LyricalHare", "action": "approach", "collapse": "directed", "rate": 0.15}

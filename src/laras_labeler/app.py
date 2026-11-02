@@ -241,7 +241,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # clip's own recording has been asked, so a missing feeder outline is an answer, not a pending fetch.
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
                 "pix_per_cm": entry.get("pix_per_cm"),
-                "pix_per_cm_auto": _auto_scale(entry),
+                "pix_per_cm_auto": _auto_scale(entry), "role": entry.get("role"),
                 "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff,
                 **{k: entry.get(k) for k in hcm_roi.FEEDER_FIELDS},
                 "roi_checked": "roi_recording_status" in entry,
@@ -863,12 +863,36 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if beh.get("hidra", {}).get("action"):
             cfgs = [c.strip() for c in ft_configs.split(",") if c.strip()] if ft_configs else None
             def hjob(progress):
+                # Like the native path: fit, then apply the fresh weights to the clips `predict_videos`
+                # names — otherwise the timeline keeps showing the previous (often zero-shot) head's
+                # lane right after a fine-tune and nothing on screen reflects it. Smoke runs write no
+                # checkpoint, and a subset of configs cannot predict (Predict needs all five). Both
+                # steps hold the HiDRA lock, so a queued Predict can't run between fit and apply.
+                apply = not ft_smoke and not cfgs and scope != []
                 with _hidra_exclusive(progress, "fine-tuning"):
-                    return _hidra_train(pid, bid, beh, progress, smoke=ft_smoke, configs=cfgs,
-                                        steps=steps, mode=ft_mode,
-                                        train_on_override=ft_train_on or (
-                                            None if ft_reviewed_only is None
-                                            else "reviewed" if ft_reviewed_only else "all"))
+                    r = _hidra_train(pid, bid, beh, (lambda p, m: progress(int(p * 0.8), m)) if apply else progress,
+                                     smoke=ft_smoke, configs=cfgs, steps=steps, mode=ft_mode,
+                                     train_on_override=ft_train_on or (
+                                         None if ft_reviewed_only is None
+                                         else "reviewed" if ft_reviewed_only else "all"))
+                    if not apply or not r.get("weights"):
+                        return r
+                    proj = store.get(pid)
+                    live = next((b for b in proj.behaviors if b["id"] == bid), None)
+                    if live is None:                         # deleted while it was fine-tuning
+                        r["predict"] = {"videos": [], "skipped": [], "note": "behavior deleted during fine-tune"}
+                        return r
+                    targets = scope if scope is not None else [v["video_id"] for v in proj.videos if v.get("slp_path")]
+                    done, skipped = [], []
+                    for i, v in enumerate(targets):
+                        lo, span = 80 + int(20 * i / len(targets)), max(1, int(20 / len(targets)))
+                        try:
+                            _hidra_predict(pid, v, [live], lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), f"applying fine-tune: {m}"))
+                            done.append(v)
+                        except Exception as e:               # never fail a finished fine-tune over the apply step
+                            skipped.append({"video_id": v, "error": str(e)[:300]})
+                    r["predict"] = {"videos": done, "skipped": skipped}
+                    return r
             # Through _timed_job like the native path, not jobs.start directly: a Train is what CLOSES
             # a round in the annotation event log (events.py), so a fine-tune that skipped the log
             # would leave the behavior's rounds open forever -- one endless round, no per-round split,
@@ -945,11 +969,17 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     # ------------------------------------------------------------------------------------------
     # HiDRA: pretrained heads as an alternative to this project's own models
     # ------------------------------------------------------------------------------------------
-    def _hidra_predict(pid: str, vid: str, behaviors: list[dict], progress) -> dict:
+    def _hidra_predict(pid: str, vid: str, behaviors: list[dict], progress, model: dict | None = None) -> dict:
         """Run each bound head over one video and write predictions/<vid>/<bid>.npy.
 
         Writing the same artifact the project's own predictor writes is the whole integration: the
-        timeline, candidate queue and review keys never learn where a lane came from."""
+        timeline, candidate queue and review keys never learn where a lane came from.
+
+        Every run also keeps that model's RAW scores in predictions/<vid>/<bid>.models/ for the model
+        comparison. `model` = {"weights": template-or-None, "run_id": ...} scores a specific model
+        (the zero-shot baseline, an earlier fine-tune) INSTEAD of the bound one and touches only that
+        store — the timeline's lane, sidecar and review queue are left exactly as they were."""
+        active = model is None
         proj = store.get(pid)
         entry = proj.video(vid)
         slp = entry.get("slp_path")
@@ -992,14 +1022,36 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             h = b["hidra"]
             lo = 5 + int(90 * i / max(len(behaviors), 1))
             span = int(90 / max(len(behaviors), 1))
-            out = proj.path / "hidra" / vkey / f"{h['lab']}__{h['action']}"
-            fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc, h.get("weights"),
+            from .predict import weights_mtime, write_pred_meta, store_model_pred, ft_model_key
+            weights = h.get("weights") if active else model.get("weights")
+            run_id = h.get("run_id") if active else model.get("run_id")
+            wm = weights_mtime(weights)
+            used = weights if wm else None                   # infer falls back to zero-shot when checkpoints are gone
+            collapse = h.get("collapse", "scene")
+            model_key = ft_model_key(run_id) if used else "zs"
+            # a comparison run gets its own output dir so it never overwrites the active model's raw table
+            out = proj.path / "hidra" / vkey / (f"{h['lab']}__{h['action']}" + ("" if active else f"__{model_key}"))
+            fp = hidra.infer(work, out, h["lab"], h["action"], fps, ppc, weights,
                              lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m))
-            lanes = hidra.to_lanes(fp, h["lab"], h["action"], h.get("collapse", "scene"),
-                                   n_frames, n_animals, h.get("rate", 0.15))
+            raw = hidra.to_lanes(fp, h["lab"], h["action"], collapse, n_frames, n_animals, None)
+            store_model_pred(proj.path, vid, b["id"], f"{model_key}__{collapse}", raw,
+                             {"engine": "hidra", "kind": "finetune" if used else "zeroshot", "run_id": run_id if used else None,
+                              "lab": h["lab"], "action": h["action"], "collapse": collapse, "weights": used,
+                              "weights_mtime": wm})
+            if not active:
+                done.append({"behavior_id": b["id"], "model_key": model_key, "collapse": collapse, "frames": n_frames})
+                continue
+            lanes = hidra.by_rate(raw, float(h.get("rate", 0.15)))[0]   # == to_lanes(..., rate): one parquet read
             dest = proj.path / "predictions" / vid / f"{b['id']}.npy"
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.save(dest, lanes)
+            # record WHICH weights made this lane, so the GUI can say zero-shot vs fine-tuned and flag it
+            # stale after a later fine-tune (see Predictor.provenance). Record what infer actually
+            # LOADED: with the checkpoints gone it falls back to the zero-shot head, so a bound template
+            # with no files is recorded as None, not as "fine-tuned".
+            write_pred_meta(dest, {"engine": "hidra", "lab": h["lab"], "action": h["action"],
+                                   "collapse": collapse, "rate": h.get("rate", 0.15),
+                                   "weights": used, "weights_mtime": wm, "run_id": run_id if used else None})
             # DIRECTED head: also save WHO each subject was pointed at, parallel to the lanes, so the
             # review queue can propose an actor->target pair (Stage 2). The lane collapses over targets;
             # this keeps the argmax recipient. Non-directed heads write no target file (candidates plain).
@@ -1018,6 +1070,24 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                          "above_cut": int((lanes >= 0.6).sum()), "frames": n_frames})
         progress(100, "done")
         return {"behaviors": done, "fps": fps, "pix_per_cm": ppc, "pix_per_cm_source": ppc_src, "export": exported}
+
+    FINETUNES_KEPT = 3     # fine-tunes whose checkpoints (~135 MB each) stay on disk per behavior
+
+    def _prune_finetunes(beh: dict, head_root: Path, keep: int) -> None:
+        """Delete the checkpoints of all but the newest `keep` fine-tunes of this head. Their
+        run.json, bouts.csv and stored predictions stay, so they remain in the model comparison —
+        they just can't be re-run. Never touches the run the behavior is currently bound to."""
+        import shutil as _sh
+        h = beh.get("hidra") or {}
+        mine = [r for r in beh.get("hidra_runs", []) if (r.get("lab"), r.get("action")) == (h.get("lab"), h.get("action"))]
+        for r in sorted(mine, key=lambda r: r.get("created_at", ""))[:-keep] if keep > 0 else mine:
+            if not r.get("models_kept") or r.get("run_id") == h.get("run_id"):
+                continue
+            _sh.rmtree(head_root / r["run_id"] / "models", ignore_errors=True)
+            r["models_kept"] = False
+            rj = head_root / r["run_id"] / "run.json"
+            if rj.exists():
+                rj.write_text(json.dumps(r, indent=2))
 
     def _hidra_train(pid: str, bid: int, beh: dict, progress,
                      smoke: bool = False, configs: list[str] | None = None,
@@ -1066,16 +1136,41 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         on = train_on_override or hidra.train_on(h)
         if on not in hidra.TRAIN_ON:
             raise RuntimeError(f"train_on must be one of {sorted(hidra.TRAIN_ON)}, not {on!r}")
+        # Each fine-tune gets its OWN directory (…/_finetune/<lab>__<action>/<run_id>/), so a new run
+        # never destroys the previous one's checkpoints and bout list: they are what the model
+        # comparison scores, and a failed run must leave the working model intact. (A fresh dir per
+        # run also sidesteps the old Windows "[WinError 32] file in use" on a reused staging dir.)
+        # Smoke runs write no checkpoint and reuse one "smoke" dir.
+        import shutil as _shutil
+        from datetime import datetime as _dt, timezone as _tz
+        head_root = proj.path / "hidra" / "_finetune" / f"{h['lab']}__{h['action']}"
+        run_id = "smoke" if smoke else "ft-" + _dt.now(_tz.utc).strftime("%Y%m%d-%H%M%S")
+        data_root = head_root / run_id
+        _shutil.rmtree(data_root, ignore_errors=True)
+        tracking = data_root / "tracking"
+        tracking.mkdir(parents=True, exist_ok=True)
+        ok = False
+        try:
+            r = _hidra_train_staged(pid, bid, beh, h, proj, rt, data_root, tracking, run_id, head_root,
+                                    progress, smoke, configs, steps, mode, on)
+            ok = not smoke and bool(r.get("weights"))
+            return r
+        finally:
+            # Bulky intermediates go; bouts.csv, run.json, manifest.json and hidra_log.txt stay, so even
+            # a failed or smoke run leaves a record of what it trained on. Only a run that wrote a
+            # checkpoint keeps models/. A dir with nothing worth keeping is removed outright.
+            for junk in ("_work", "staged", "tracking") + (() if ok else ("models",)):
+                _shutil.rmtree(data_root / junk, ignore_errors=True)
+            if not any((data_root / f).exists() for f in ("manifest.json", "hidra_log.txt", "models")):
+                _shutil.rmtree(data_root, ignore_errors=True)
+
+    def _hidra_train_staged(pid, bid, beh, h, proj, rt, data_root, tracking, run_id, head_root,
+                            progress, smoke, configs, steps, mode, on) -> dict:
+        """The body of _hidra_train once its per-run directory exists (split out so the caller can
+        clean that directory up however this ends)."""
+        from datetime import datetime as _dt, timezone as _tz
         reviewed_only = on == "reviewed"
         started = time.strftime("%Y-%m-%d %H:%M:%S")
-        data_root = proj.path / "hidra" / "_finetune" / f"{h['lab']}__{h['action']}"
-        tracking = data_root / "tracking"
-        # Start each run from a clean staging dir. Re-running otherwise hit "[WinError 32] the process
-        # cannot access the file because it is being used by another process" when export_tracking
-        # tried to overwrite a parquet a prior run had left open/locked on Windows.
-        import shutil as _shutil
-        _shutil.rmtree(data_root, ignore_errors=True)
-        tracking.mkdir(parents=True, exist_ok=True)
 
         # Stage the tracking parquet for every video that has a reviewed POSITIVE for this behavior
         # (or, reviewed-frames-only, any reviewed frame). Reading the poses here also gives n_animals
@@ -1088,6 +1183,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         skipped: list[dict] = []
         for v in proj.videos:
             vid = v["video_id"]
+            if v.get("role") == "test":                  # held-out test clip: not even as implicit negatives
+                skipped.append({"video_id": vid, "video_path": v.get("video_path"),
+                                "reason": "held-out test clip"})
+                continue
             try:
                 df = labels.rows_for_behavior(pid, vid, bid)
             except (KeyError, FileNotFoundError):
@@ -1164,7 +1263,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         tag = "".join(c if c.isalnum() else "_" for c in f"{proj.pid}_{bid}_{h['action']}")[:48]
         # What this run trains on, written before it starts so even a failed run leaves a record.
-        manifest = {"started": started, "project": pid, "behavior_id": bid,
+        manifest = {"run_id": run_id, "started": started, "project": pid, "behavior_id": bid,
                     "behavior": beh.get("name"), "lab": h["lab"], "action": h["action"],
                     "mode": mode, "steps": steps, "smoke": smoke, "configs": configs,
                     "train_on": on, "reviewed_only": reviewed_only,
@@ -1185,12 +1284,18 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
         # passes h["weights"] through to predict.py --weights), plus which frames they were trained
-        # on. Re-fetch the live behavior off the project before saving, rather than trusting the dict
-        # handed in. A smoke run writes no checkpoint, so it records nothing — a later real Predict
-        # must not load a path that is not there.
+        # on and a per-run record for the model comparison. Re-fetch the live behavior off the
+        # project before saving, rather than trusting the dict handed in. A smoke run writes no
+        # checkpoint, so it records nothing — a later real Predict must not load a path that is not there.
         if not smoke and r.get("weights"):
             manifest.update(finished=time.strftime("%Y-%m-%d %H:%M:%S"), weights=r["weights"])
             (data_root / "manifest.json").write_text(json.dumps(manifest, indent=1))
+            run = {"run_id": run_id, "created_at": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                   "lab": h["lab"], "action": h["action"], "mode": mode, "steps": steps,
+                   "configs": configs, "train_on": on, "bouts": ann.get("bouts"), "spans": ann.get("spans"),
+                   "trained_videos": sorted(n_by), "weights": r["weights"], "models_kept": True,
+                   "backend": r.get("backend")}
+            (data_root / "run.json").write_text(json.dumps(run, indent=2))
             live = next((b for b in proj.behaviors if b["id"] == bid), None)
             if live is not None:
                 live.setdefault("hidra", {})["weights"] = r["weights"]
@@ -1198,7 +1303,11 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 live["hidra"]["weights_reviewed_only"] = reviewed_only
                 live["hidra"]["weights_train_on"] = on
                 live["hidra"]["weights_manifest"] = str(data_root / "manifest.json")
+                live["hidra"]["run_id"] = run_id
+                live.setdefault("hidra_runs", []).append(run)
+                _prune_finetunes(live, head_root, keep=FINETUNES_KEPT)
                 proj.save()
+            r["run_id"] = run_id
         r.update(train_on=on, reviewed_only=reviewed_only, clips=[c["video_id"] for c in used],
                  manifest=str(data_root / "manifest.json"))
         if ann.get("directed_ambiguous"):
@@ -1263,8 +1372,13 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         if proba is None:
             raise HTTPException(404, "no predictions")
         blob = proba.astype("<f4").tobytes()
+        try:
+            prov = predictor.provenance(pid, vid, behavior) or {}
+        except Exception:                                   # a label about the lane must never block the lane
+            prov = {}
         return Response(content=blob, media_type="application/octet-stream",
-                        headers={"X-Shape": str(len(proba)), "Cache-Control": "no-cache"})
+                        headers={"X-Shape": str(len(proba)), "Cache-Control": "no-cache",
+                                 "X-Pred-Model": json.dumps(prov)})   # ASCII-safe: json.dumps escapes non-ASCII
 
     @app.get("/api/projects/{pid}/behaviors/{bid}/candidates/{vid}")
     def get_candidates(pid: str, vid: str, bid: int, track: int = 0, n: int = 12, mode: str = "new",
@@ -1726,6 +1840,69 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             beh["hidra"]["reviewed_only"] = body["train_on"] == "reviewed"
         proj.save()
         return beh["hidra"]
+
+    # ---- model comparison (Stats panel): zero-shot vs each fine-tune vs native, on a held-out test clip
+    @app.get("/api/projects/{pid}/behaviors/{bid}/compare")
+    def compare_models(pid: str, bid: int):
+        from . import modelcompare
+        _behavior(pid, bid)
+        return modelcompare.compare(store, labels, pid, bid)
+
+    @app.post("/api/projects/{pid}/behaviors/{bid}/compare/run")
+    def compare_run(pid: str, bid: int, model: str):
+        """Predict the test clip(s) with one specific model — "zs" (the zero-shot head) or
+        "ft-<run_id>" (a kept fine-tune) — into the comparison store only. The timeline's lane, its
+        provenance and the review queue are not touched."""
+        _behavior(pid, bid)
+        proj = store.get(pid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        h = beh.get("hidra") or {}
+        if not h.get("action"):
+            raise HTTPException(409, "this behavior is not bound to a HiDRA head")
+        tests = [v["video_id"] for v in proj.videos if v.get("role") == "test"]
+        if not tests:
+            raise HTTPException(409, "mark a clip as the test clip first")
+        if model == "zs":
+            spec = {"weights": None, "run_id": None}
+        else:
+            from .predict import ft_model_key, weights_mtime
+            run = next((r for r in beh.get("hidra_runs", []) if ft_model_key(r["run_id"]) == model), None)
+            if run is None:
+                raise HTTPException(404, f"no fine-tune {model}")
+            if (run.get("lab"), run.get("action")) != (h.get("lab"), h.get("action")):
+                raise HTTPException(409, "that fine-tune belongs to a different head than the one bound now")
+            if not run.get("models_kept") or weights_mtime(run.get("weights")) is None:
+                raise HTTPException(409, "that fine-tune's checkpoints were pruned (only the last "
+                                         f"{FINETUNES_KEPT} are kept), so it can't be re-run")
+            spec = {"weights": run["weights"], "run_id": run["run_id"]}
+
+        def job(progress):
+            done = []
+            with _hidra_exclusive(progress, "scoring the test clip"):     # one HiDRA job at a time, like Predict
+                for i, vid in enumerate(tests):
+                    lo, span = int(100 * i / len(tests)), max(1, int(100 / len(tests)))
+                    _hidra_predict(pid, vid, [beh], lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), m), model=spec)
+                    done.append(vid)
+            return {"model": model, "videos": done}
+        j = _timed_job("compare", pid, job, {"pid": pid, "behavior_id": bid, "model": model})   # logged like Predict: compute time
+        return {"job_id": j.id}
+
+    @app.put("/api/projects/{pid}/videos/{vid}/role")
+    def set_video_role(pid: str, vid: str, body: dict = Body(...)):
+        """role "test" holds a clip out of ALL training (HiDRA fine-tunes and the project model) so
+        the model comparison has a fair score; null puts it back."""
+        proj = _video(pid, vid)
+        role = body.get("role")
+        if role not in (None, "test"):
+            raise HTTPException(400, 'role must be "test" or null')
+        entry = proj.video(vid)
+        if role:
+            entry["role"] = role
+        else:
+            entry.pop("role", None)
+        proj.save()
+        elog.log(pid, "video_role", video_id=vid, role=role)
+        return {"video_id": vid, "role": role}
 
     app.mount("/", StaticFiles(directory=str(web), html=True), name="web")
     return app
