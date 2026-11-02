@@ -20,11 +20,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import config, hcm_roi, hidra, poseio, trainpreview
+from . import config, hcm_roi, hidra, objects, poseio, trainpreview
 from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
-from .features import quick_series
+from .features import quick_series, resolve_roles
 from .featurestore import FeatureStore
 from .importers import Importer
 from .jobs import JobManager
@@ -88,6 +88,7 @@ class EditBehavior(BaseModel):
     key: str | None = None
     feature_set: str | None = None   # None keeps current; 'all'|'spout'|'cage'|'spout_cage'|'no_social'|'pose'|'social'|'social_pose'
     directed: bool | None = None      # social behavior: each bout records an actor->target pair (independent of any HiDRA head)
+    object_directed: bool | None = None   # each Happening bout records the object it is on (objects.py)
 
 
 class ReviewedBout(BaseModel):
@@ -107,6 +108,7 @@ class LabelSpan(BaseModel):
     value: int = Field(ge=0, le=2)  # 1 = Happening, 0 = Not-happening, 2 = Unknown (saved, excluded from training)
     source: str = "manual"          # provenance: 'manual' (painted) | 'candidate' (accepted from review) | 'imported'
     target: int = -1                # recipient track for a DIRECTED bout; -1 = self / undirected (default keeps old clients working)
+    object: str = ""                # the object an OBJECT-DIRECTED bout is on (a project object id, objects.py); "" = none
 
 
 class ImportRequest(BaseModel):
@@ -475,6 +477,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return {
             "pid": p.pid, "name": p.name,
             "behaviors": p.behaviors,
+            "objects": objects.project_objects(p),   # what an object-directed bout can be on (objects.py)
             "videos": [_meta(pid, v["video_id"]) for v in p.videos],
             "spout": p.manifest.get("feature_config", {}).get("spout"),   # [x,y] arena landmark, shared across clips
             "spout_roi": p.manifest.get("feature_config", {}).get("spout_roi"),   # [[x,y],...] polygon region
@@ -1368,6 +1371,55 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def list_behaviors(pid: str):
         return _proj(pid).behaviors
 
+    # ---- objects: what an object-directed bout can be on (objects.py). The project's own list, like
+    # its behaviors: the HCM-outlined arena objects (feeder, cage wall, spout) plus any added by name
+    # (an enrichment item, a nest), which can be picked but, having no outline, not suggested.
+    @app.get("/api/projects/{pid}/objects")
+    def list_objects(pid: str):
+        return objects.project_objects(_proj(pid))
+
+    @app.post("/api/projects/{pid}/objects")
+    def add_object(pid: str, body: dict = Body(...)):
+        try:
+            obj = objects.add_object(_proj(pid), body.get("name"))
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        elog.log(pid, "object_add", object_id=obj["id"], name=obj["name"])
+        return obj
+
+    @app.delete("/api/projects/{pid}/objects/{oid}")
+    def delete_object(pid: str, oid: str):
+        """Remove an ADDED object (one with no outline). Bouts already labeled with it keep its id,
+        which the GUI then shows as is. The outlined arena objects stay: their outlines come from the
+        clips' ROIs."""
+        p = _proj(pid)
+        objs = objects.project_objects(p)
+        o = next((x for x in objs if x["id"] == oid), None)
+        if o is None:
+            raise HTTPException(404, "object not found")
+        if o.get("roi"):
+            raise HTTPException(409, f"{o['name']} is outlined by the clips' ROIs and can't be removed")
+        p.manifest["objects"] = [x for x in objs if x["id"] != oid]
+        p.save()
+        elog.log(pid, "object_delete", object_id=oid)
+        return {"deleted": oid}
+
+    @app.get("/api/projects/{pid}/videos/{vid}/object-suggest")
+    def object_suggest(pid: str, vid: str, track: int, start: int, end: int):
+        """Rank the project's objects for one bout by how near the acting animal's nose stays to each
+        outlined one (objects.suggest). Read-only."""
+        p = _video(pid, vid)
+        entry = p.video(vid) or {}
+        poses, nose = None, None
+        if entry.get("has_poses"):
+            try:
+                ov = vm._get(pid, vid)
+                poses = ov.poses()
+                nose = resolve_roles(ov.node_names, p.manifest.get("skeleton_roles")).get("nose")
+            except Exception:  # noqa: BLE001  -- no suggestion is fine; never fail the picker over it
+                poses, nose = None, None
+        return objects.suggest(p, entry, poses, nose, track, start, end)
+
     @app.post("/api/projects/{pid}/behaviors")
     def add_behavior(pid: str, body: NewBehavior):
         from .featurestore import suggest_feature_set
@@ -1466,6 +1518,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def put_labels(pid: str, vid: str, spans: list[LabelSpan]):
         p = _video(pid, vid)
         rows = [s.model_dump() for s in spans]
+        # an object must be on the project's list; ids already stored on this clip stay writable, so a
+        # removed object's old bouts can still be re-saved around an edit
+        known = objects.object_ids(p) | {str(o) for o in labels.stored_objects(pid, vid)}
+        bad = sorted({r["object"] for r in rows if r["object"] and r["object"] not in known})
+        if bad:
+            raise HTTPException(400, f"unknown object(s) {bad}; add them to the project first")
         # Hard backstop for the social window: even if a client bypasses the GUI's paint clamp (a
         # direct API call, an importer, a stale tab), a label can never land outside the window a
         # clip has set -- clip each span to the intersection, drop it if there is none. A clip with

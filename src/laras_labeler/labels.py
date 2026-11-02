@@ -2,9 +2,11 @@
 
 Per-frame tri-state, now per animal track:
     frame:int32, track:int16, behavior_id:int16, value:int8 (+1 pos / 0 neg), source:str,
-    target:int16 (recipient track for a DIRECTED behavior; -1 = self / undirected)
+    target:int16 (recipient track for a DIRECTED behavior; -1 = self / undirected),
+    obj:str (the arena object an OBJECT-DIRECTED bout is on, see objects.py; "" = none)
 Absent row => unlabeled. Ranges are half-open [start, end). Old parquets without a `track`
-column are migrated to track 0 on load; without a `target` column, to -1 (self/undirected).
+column are migrated to track 0 on load; without a `target` column, to -1 (self/undirected);
+without an `obj` column, to "" (no object).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 _COLS = {"frame": "int32", "track": "int16", "behavior_id": "int16", "value": "int8",
-         "source": "object", "target": "int16"}
+         "source": "object", "target": "int16", "obj": "object"}
 _NO_TARGET = -1   # sentinel: self-directed / undirected (a directed bout stores the recipient track)
 
 
@@ -44,29 +46,38 @@ def _rle(frames: np.ndarray, values: np.ndarray) -> list[list[int]]:
     return runs
 
 
+def _obj(o) -> str:
+    return o if isinstance(o, str) else ""          # None / NaN (pre-object rows) -> no object
+
+
 def _rle_src(frames: np.ndarray, values: np.ndarray, sources: np.ndarray,
-             targets: np.ndarray) -> list[list]:
-    """Like _rle but also splits on source AND target change so each run is one faithful span:
-    -> [[start, end, value, source, target], ...] (target = recipient track, -1 = self/undirected)."""
+             targets: np.ndarray, objs: np.ndarray | None = None) -> list[list]:
+    """Like _rle but also splits on source, target AND object change so each run is one faithful
+    span: -> [[start, end, value, source, target, obj], ...] (target = recipient track, -1 =
+    self/undirected; obj = the object an object-directed bout is on, "" = none)."""
     runs: list[list] = []
     if len(frames) == 0:
         return runs
+    if objs is None:
+        objs = np.full(len(frames), "", dtype=object)
     order = np.argsort(frames, kind="stable")
-    frames, values, sources, targets = frames[order], values[order], sources[order], targets[order]
+    frames, values, sources, targets, objs = (frames[order], values[order], sources[order],
+                                              targets[order], objs[order])
     s = prev = int(frames[0])
     val = int(values[0])
     src = sources[0] if sources[0] is not None and sources[0] == sources[0] else "manual"
     tgt = int(targets[0])
-    for f, v, sc, tg in zip(frames[1:], values[1:], sources[1:], targets[1:]):
-        f, v, tg = int(f), int(v), int(tg)
+    ob = _obj(objs[0])
+    for f, v, sc, tg, o in zip(frames[1:], values[1:], sources[1:], targets[1:], objs[1:]):
+        f, v, tg, o = int(f), int(v), int(tg), _obj(o)
         sc = sc if sc is not None and sc == sc else "manual"
-        if f == prev + 1 and v == val and sc == src and tg == tgt:
+        if f == prev + 1 and v == val and sc == src and tg == tgt and o == ob:
             prev = f
         else:
-            runs.append([s, prev + 1, val, str(src), tgt])
+            runs.append([s, prev + 1, val, str(src), tgt, ob])
             s = prev = f
-            val, src, tgt = v, sc, tg
-    runs.append([s, prev + 1, val, str(src), tgt])
+            val, src, tgt, ob = v, sc, tg, o
+    runs.append([s, prev + 1, val, str(src), tgt, ob])
     return runs
 
 
@@ -91,6 +102,9 @@ class LabelStore:
             if "target" not in df.columns:                # pre-directed rows -> self / undirected
                 df["target"] = np.int16(_NO_TARGET)
             df["target"] = df["target"].fillna(_NO_TARGET).astype("int16")
+            if "obj" not in df.columns:                   # pre-object rows -> no object
+                df["obj"] = ""
+            df["obj"] = df["obj"].map(_obj).astype(object)
             df = df[list(_COLS)]                           # canonical column order, once (all migrations done)
             self._cache[key] = df
         return self._cache[key]
@@ -116,8 +130,9 @@ class LabelStore:
         return out
 
     def get_runs_src(self, pid: str, vid: str, track: int, behavior_id: int | None = None) -> dict[int, list]:
-        """RLE runs for one track WITH provenance and target:
-        {behavior_id: [[start, end, value, source, target], ...]} (target = recipient track, -1 = self).
+        """RLE runs for one track WITH provenance, target and object:
+        {behavior_id: [[start, end, value, source, target, obj], ...]} (target = recipient track,
+        -1 = self; obj = object-directed bout's object, "" = none).
         Feeds the frontend so its per-frame source/target arrays stay exact across edits/undo, and the
         HiDRA export so directed bouts carry their real (agent -> target) pair."""
         df = self._df(pid, vid)
@@ -127,8 +142,12 @@ class LabelStore:
         for b in bids:
             sub = df[df["behavior_id"] == b]
             out[b] = _rle_src(sub["frame"].to_numpy(), sub["value"].to_numpy(),
-                              sub["source"].to_numpy(), sub["target"].to_numpy())
+                              sub["source"].to_numpy(), sub["target"].to_numpy(), sub["obj"].to_numpy())
         return out
+
+    def stored_objects(self, pid: str, vid: str) -> set[str]:
+        """The object ids this clip's labels already carry."""
+        return {o for o in self._df(pid, vid)["obj"].unique() if o}
 
     def rows_for_behavior(self, pid: str, vid: str, behavior_id: int) -> pd.DataFrame:
         """All (track, frame, value) rows for a behavior across every track — for training."""
@@ -137,13 +156,13 @@ class LabelStore:
 
     # Column order for the project-wide CSV export (see app.py /labels.csv). track/target are shown
     # 1-based to match the GUI's track chips; frames are half-open [start_frame, end_frame).
-    EXPORT_COLS = ["video_id", "video", "behavior", "behavior_id", "track", "target",
+    EXPORT_COLS = ["video_id", "video", "behavior", "behavior_id", "track", "target", "object",
                    "value", "value_label", "source", "start_frame", "end_frame", "n_frames",
                    "start_sec", "end_sec", "duration_sec"]
 
     def export_bouts(self, pid: str, positives_only: bool = True) -> list[dict]:
         """Every labeled bout across the project, flattened for CSV export: one row per contiguous
-        (video, track, behavior, value, source, target) run. Reads the CURRENT parquets, so the
+        (video, track, behavior, value, source, target, object) run. Reads the CURRENT parquets, so the
         `.parquet.bak` backups are never included. `positives_only` keeps only Happening bouts."""
         _VAL = {1: "Happening", 0: "Not-happening", 2: "Unknown"}
         proj = self.store.get(pid)
@@ -158,14 +177,15 @@ class LabelStore:
                 sub = df[df["track"] == tr]
                 for b in sorted(int(x) for x in sub["behavior_id"].unique()):
                     s2 = sub[sub["behavior_id"] == b]
-                    for st, en, val, src, tgt in _rle_src(
+                    for st, en, val, src, tgt, ob in _rle_src(
                             s2["frame"].to_numpy(), s2["value"].to_numpy(),
-                            s2["source"].to_numpy(), s2["target"].to_numpy()):
+                            s2["source"].to_numpy(), s2["target"].to_numpy(), s2["obj"].to_numpy()):
                         if positives_only and val != 1:
                             continue
                         row = {"video_id": vid, "video": vname, "behavior": bnames.get(b, str(b)),
                                "behavior_id": b, "track": tr + 1,                 # 1-based to match the GUI
                                "target": (tgt + 1) if tgt >= 0 else "",           # recipient (directed); blank = self/undirected
+                               "object": ob,                                      # object-directed bout's object; blank = none
                                "value": val, "value_label": _VAL.get(val, str(val)), "source": src,
                                "start_frame": st, "end_frame": en, "n_frames": en - st}
                         if fps:
@@ -187,6 +207,7 @@ class LabelStore:
             src = sp.get("source") or source
             tgt = sp.get("target")
             tgt = _NO_TARGET if tgt is None else int(tgt)   # recipient track for a directed bout; -1 = self
+            ob = _obj(sp.get("object"))                     # object-directed bout's object; "" = none
             # Overwrite is keyed on (behavior_id, track, frame) only — NOT target — so re-painting a
             # range replaces whatever target it had before (one row per frame). Correct: a frame has one
             # (value, target) for a given (behavior, actor).
@@ -199,6 +220,7 @@ class LabelStore:
                 "value": np.full(len(frames), val, dtype="int8"),
                 "source": src,
                 "target": np.full(len(frames), tgt, dtype="int16"),
+                "obj": np.full(len(frames), ob, dtype=object),
             })
             df = pd.concat([df[keep], add], ignore_index=True)
         self._cache[(pid, vid)] = df

@@ -236,7 +236,9 @@
     </div>
   </div>
   <aside id="behaviorRail" class="siderail">
-    <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div></div>
+    <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div>
+      <div class="row" id="objectBar" style="margin-top:8px"
+           title="Objects a bout can be ON, for behaviors marked 'on object'. The feeder, cage wall and spout are outlined by each clip's ROIs (filled from the HCM database), so the nearest one is suggested. Add anything else (an enrichment item, a nest) with ＋ object: it can be picked, not suggested."></div></div>
   </aside>
   <div id="reviewPanel" class="panel review-rail">
     <div id="reviewQ" class="rvq"></div>
@@ -330,6 +332,11 @@
            title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
       <input type="checkbox" id="dirToggle"> directed (actor→target)
     </label>
+    <label class="status" id="objGroup" style="display:none; align-items:center; gap:4px"
+           title="Mark this behavior as object-directed: each Happening bout records the object it is on (the feeder, the cage wall, the spout, or one you added under Objects). After you paint or select a bout, pick the object; the one nearest the animal's nose during the bout is suggested (⏎ takes it). Accepting a review candidate fills in the suggestion.">
+      <input type="checkbox" id="objToggle"> on object
+    </label>
+    <span id="objPick" style="display:none; align-items:center; gap:4px; flex-wrap:wrap"></span>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
          unchanged and nothing here depends on HiDRA being present. -->
     <span class="sep" id="hidraSep" style="display:none"></span>
@@ -652,6 +659,12 @@ let behaviors = [], activeBid = null, mode = "pos";
 let labelState = new Map(), predsByBeh = new Map(), sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
 const NO_TARGET = -1;                 // per-frame target sentinel: self / undirected
 let awaitTarget = null;               // {bid,s,e,k,actor} armed after a directed paint: next mouse-click / Shift+num picks the recipient track
+let objectState = new Map();          // per behavior: per-frame object code (OBJ_IDS index; 0 = none) for object-directed bouts
+const OBJ_CODES = new Map([["", 0]]), OBJ_IDS = [""];   // object id <-> per-frame code, grown as ids are seen
+function objCode(id) { id = id || ""; if (!OBJ_CODES.has(id)) { OBJ_CODES.set(id, OBJ_IDS.length); OBJ_IDS.push(id); } return OBJ_CODES.get(id); }
+const projObjects = () => (projMeta && projMeta.objects) || [];
+const objName = id => (projObjects().find(o => o.id === id) || {}).name || id;
+let awaitObject = null;               // {bid,s,e,track,current,suggested,rows}: the object picker is open for this bout
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: auto-stop frame (play a single bout), null = play to end
@@ -873,6 +886,7 @@ function clearStage() {
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
   predsByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
+  objectState = new Map(); closeObjPick();
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
@@ -991,15 +1005,16 @@ async function maybeUpload() {
 
 async function loadLabels() {
   selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
-  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target]
-  labelState = new Map(); sourceState = new Map(); targetState = new Map();
-  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); }
+  const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target, object]
+  labelState = new Map(); sourceState = new Map(); targetState = new Map(); objectState = new Map(); closeObjPick();
+  for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); objectState.set(b.id, new Int16Array(meta.n_frames)); }
   for (const [bid, rl] of Object.entries(runs)) {
-    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid));
-    if (arr) for (const [s, e, val, source, target] of rl) {
+    const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid)), oarr = objectState.get(Number(bid));
+    if (arr) for (const [s, e, val, source, target, obj] of rl) {
       arr.fill(val === 1 ? 1 : val === 0 ? 2 : 3, s, e);        // stored 1/0/2 -> state 1/2/3
       if (sarr) sarr.fill(SRC_CODES[source] ?? 0, s, e);         // provenance code (default manual)
       if (tarr) tarr.fill(target == null ? NO_TARGET : target, s, e);   // directed recipient track (-1 = self/undirected)
+      if (oarr && obj) oarr.fill(objCode(obj), s, e);            // object-directed bout's object ("" = none)
     }
   }
   for (const b of behaviors) recomputeBouts(b.id);   // keep the "new suggestion" bouts in sync with the freshly-loaded labels
@@ -1607,11 +1622,20 @@ function renderTimeline() {
       if (v === 1) { tctx.fillStyle = HAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }          // Happening = blue
       else if (v === 2) { tctx.fillStyle = NOTHAPPENING_COLOR; rRect(tctx, x0, ym + 3, w, MANUAL_H - 6, 3); tctx.fill(); }   // Not-happening = red
       else hatchRect(tctx, x0, ym + 3, w, MANUAL_H - 6, UNKNOWN_HATCH);                                                       // Unknown = gray hatch
-      if (v === 1 && w > 14 && isDirected(b.id)) {   // directed bout: overlay its recipient, "→N" ("→?" = not set yet)
-        const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET;
+      if (v === 1 && w > 14 && (isDirected(b.id) || isObjDirected(b.id))) {   // overlay the recipient "→N" and/or the object "@name" ("?" = not set yet)
+        const parts = [];
+        if (isDirected(b.id)) { const tg = targetState.get(b.id), tt = tg ? tg[s] : NO_TARGET; parts.push(tt >= 0 ? "→" + (tt + 1) : "→?"); }   // target as its 1-based track number, matching the chips
+        let objTxt = null;
+        if (isObjDirected(b.id)) { const ob = objectState.get(b.id), oid = ob ? OBJ_IDS[ob[s]] || "" : ""; objTxt = oid ? objName(oid) : "?"; }
         tctx.save();
         tctx.font = "10px system-ui"; tctx.textAlign = "center"; tctx.fillStyle = "#fff";
-        tctx.fillText(tt >= 0 ? "→" + (tt + 1) : "→?", x0 + w / 2, ym + MANUAL_H / 2);   // target shown as its 1-based track number, matching the chips
+        let txt = parts.join(" ");
+        if (objTxt != null) {                                   // the full name if it fits, else its initials
+          const full = (txt ? txt + " " : "") + "@" + objTxt;
+          const short = (txt ? txt + " " : "") + "@" + objTxt.split(/\s+/).map(w => w[0]).join("");
+          txt = tctx.measureText(full).width <= w - 4 ? full : short;
+        }
+        if (tctx.measureText(txt).width <= w - 2) tctx.fillText(txt, x0 + w / 2, ym + MANUAL_H / 2);
         tctx.restore();
       }
       if (selectedSeg && selectedSeg.bid === b.id && selectedSeg.s === s && selectedSeg.e === e) {
@@ -1913,24 +1937,24 @@ function overviewNav(clientX) {
 }
 
 // ---------- labeling ops ----------
-function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target) within [s,e), skipping unlabeled — for faithful re-sync
-  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid); if (!v) return [];
+function labeledRunsSrc(bid, s, e) {   // runs of same (value, source, target, object) within [s,e), skipping unlabeled — for faithful re-sync
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid); if (!v) return [];
   const out = []; let i = s;
   while (i < e) {
     if (!v[i]) { i++; continue; }
-    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET; let j = i + 1;
-    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt) j++;
-    out.push([i, j, v[i], sc, tt]); i = j;
+    const sc = src ? src[i] : 0, tt = tg ? tg[i] : NO_TARGET, oo = ob ? ob[i] : 0; let j = i + 1;
+    while (j < e && v[j] === v[i] && (src ? src[j] : 0) === sc && (tg ? tg[j] : NO_TARGET) === tt && (ob ? ob[j] : 0) === oo) j++;
+    out.push([i, j, v[i], sc, tt, oo]); i = j;
   }
   return out;
 }
 async function syncRange(bid, s, e) {   // reads per-frame value+source+target so each run persists with its own provenance & recipient
   await api(`/labels/${vid}?behavior=${bid}&track=${activeTrack}&start=${s}&end=${e}`, { method: "DELETE" });
-  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt }));  // state 1/2/3 -> stored 1/0/2
+  const spans = labeledRunsSrc(bid, s, e).map(([rs, re, v, sc, tt, oo]) => ({ behavior_id: bid, track: activeTrack, start: rs, end: re, value: v === 1 ? 1 : v === 2 ? 0 : 2, source: SRC_NAMES[sc] || "manual", target: tt, object: OBJ_IDS[oo] || "" }));  // state 1/2/3 -> stored 1/0/2
   if (spans.length) await api(`/labels/${vid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spans) });
   scheduleRemaining();                             // labeled frames leave the queue: refresh the per-animal counts
 }
-async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
+async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET, obj = "") {
   // Social window: every paint path (manual, drag, erase, candidate accept/trim/merge/split) funnels
   // through here, so clamping once here covers all of them rather than patching each call site. The
   // server clips again on write regardless (the authoritative guarantee — see put_labels); this just
@@ -1941,21 +1965,22 @@ async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET) {
     if (e <= s) { busy("outside the social window — nothing to label there"); return; }
   }
   clearSel();                                        // any label edit invalidates a highlighted selection
-  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), sc = SRC_CODES[source] ?? 0;
-  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e);   // snapshot value+provenance+target for a faithful undo
-  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e);
-  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e) }); redoStack.length = 0;
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid), sc = SRC_CODES[source] ?? 0;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e);   // snapshot value+provenance+target+object for a faithful undo
+  v.fill(k, s, e); src.fill(sc, s, e); tg.fill(target, s, e); ob.fill(k === 1 ? objCode(obj) : 0, s, e);
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
   recomputeBouts(bid);                               // labeling this range drops it from the "new suggestion" bouts
   renderTimeline(); await syncRange(bid, s, e);
 }
-async function applyOp(op, vSlice, sSlice, tSlice) {
-  clearSel();
+async function applyOp(op, vSlice, sSlice, tSlice, oSlice) {
+  clearSel(); closeObjPick();
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
   if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
+  if (oSlice && objectState.get(op.bid)) objectState.get(op.bid).set(oSlice, op.s);        // and the object
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT); }
-async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT); }
+async function undo() { const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT, op.beforeO); }
+async function redo() { const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT, op.afterO); }
 
 // ---------- directed (actor -> target) helpers ----------
 function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
@@ -1964,12 +1989,15 @@ function syncDirectedToggle() {   // reflect the active behavior's `directed` fl
   const b = behaviors.find(x => x.id === activeBid);
   grp.style.display = b ? "inline-flex" : "none";
   if (b) cb.checked = !!b.directed;
+  const og = el("objGroup"), oc = el("objToggle");
+  if (og && oc) { og.style.display = b ? "inline-flex" : "none"; if (b) oc.checked = !!b.object_directed; }
 }
 async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
   const a = awaitTarget; if (!a) return;
   if (track === a.actor) { busy("target can't be the acting track — press Shift + a different track number"); return; }
   awaitTarget = null;
-  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track);   // rewrite that span with its recipient (actor stays activeTrack)
+  const ob = objectState.get(a.bid), keepObj = ob ? OBJ_IDS[ob[a.s]] || "" : "";   // an object-directed bout keeps its object
+  await applyPaint(a.bid, a.s, a.e, a.k, "manual", track, keepObj);   // rewrite that span with its recipient (actor stays activeTrack)
   logEvent("bout_target", { behavior_id: a.bid, track: a.actor, target: track, start: a.s, end: a.e });
   busy(`${bname(a.bid)}: track ${a.actor + 1} → track ${track + 1}`);
 }
@@ -1979,6 +2007,103 @@ function setReviewTarget(track) {   // correct the recipient of the directed can
   reviewCurrent.target = track;
   updateReviewText(); renderTimeline();
   busy(`${bname(reviewCurrent.bid)}: track ${activeTrack + 1} → track ${track + 1} (accept to save)`);
+}
+// ---------- object-directed (bout -> object) helpers ----------
+function isObjDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && b.object_directed === true); }
+async function objectSuggest(bid, s, e, track = activeTrack) {   // the project's objects ranked for this bout (nearest first), or null
+  try { const r = await api(`/videos/${vid}/object-suggest?track=${track}&start=${s}&end=${e}`); return r.ok ? await r.json() : null; }
+  catch (err) { return null; }
+}
+async function armObjectPick(bid, s, e, current = "") {   // open the picker for one Happening bout
+  const forVid = vid, track = activeTrack, fromSel = !!selectedSeg;
+  awaitObject = { bid, s, e, track, current, suggested: null, fromSel,
+                  rows: projObjects().map(o => ({ id: o.id, name: o.name, outline: !!o.roi, distance_px: null })) };
+  renderObjPick();
+  const sug = await objectSuggest(bid, s, e, track);
+  if (!awaitObject || awaitObject.bid !== bid || awaitObject.s !== s || vid !== forVid) return;   // picker moved on meanwhile
+  if (sug) { awaitObject.rows = sug.objects; awaitObject.suggested = sug.suggested; }
+  renderObjPick();
+}
+function renderObjPick() {
+  const box = el("objPick"); if (!box) return;
+  box.innerHTML = "";
+  if (!awaitObject) { box.style.display = "none"; return; }
+  const a = awaitObject; box.style.display = "inline-flex";
+  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = `${bname(a.bid)} on:`; box.appendChild(lab);
+  for (const o of a.rows) {
+    const btn = document.createElement("button");
+    const near = o.id === a.suggested ? "★ " : "";
+    btn.textContent = near + o.name + (o.distance_px != null ? ` · ${Math.round(o.distance_px)}px` : "");
+    btn.title = o.outline ? (o.distance_px != null ? `median nose distance to the ${o.name} over the bout` : `${o.name}: nose not visible in this bout`)
+                          : `${o.name} has no outline on this clip, so it can't be suggested`;
+    if (o.id === a.current) btn.classList.add("primary");
+    btn.onclick = () => setBoutObject(o.id);
+    box.appendChild(btn);
+  }
+  const add = document.createElement("button"); add.textContent = "＋ new object…";
+  add.onclick = async () => { const o = await addObject(); if (o) setBoutObject(o.id); };
+  box.appendChild(add);
+  const none = document.createElement("button"); none.textContent = "none"; none.title = "no object for this bout";
+  none.onclick = () => setBoutObject(""); box.appendChild(none);
+  const hint = document.createElement("span"); hint.className = "status";
+  hint.textContent = a.suggested ? "⏎ nearest · Esc skip" : "Esc skip"; box.appendChild(hint);
+}
+function closeObjPick() { awaitObject = null; renderObjPick(); }
+async function applyObject(bid, s, e, id) {   // set the object on the Happening frames of [s,e) only — value, source and target untouched; undoable
+  const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid);
+  if (!v || !ob) return;
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e), oc = objCode(id);
+  for (let i = s; i < e; i++) if (v[i] === 1) ob[i] = oc;
+  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
+  renderTimeline(); await syncRange(bid, s, e);
+}
+async function setBoutObject(id) {
+  const a = awaitObject; if (!a) return;
+  closeObjPick();
+  if (a.track !== activeTrack) { busy("the track changed — select the bout again to set its object"); return; }
+  await applyObject(a.bid, a.s, a.e, id);
+  logEvent("bout_object", { behavior_id: a.bid, track: a.track, object: id, suggested: a.suggested, start: a.s, end: a.e,
+                            via: a.fromSel ? "select" : "paint" });
+  busy(id ? `${bname(a.bid)}: frames ${a.s}–${a.e} on ${objName(id)}` : `${bname(a.bid)}: frames ${a.s}–${a.e}, no object`);
+}
+async function fillSuggestedObject(bid, s, e) {   // review accept: take the nearest object without asking
+  const sug = await objectSuggest(bid, s, e);
+  if (!sug || !sug.suggested) return;
+  await applyObject(bid, s, e, sug.suggested);
+  logEvent("bout_object", { behavior_id: bid, track: activeTrack, object: sug.suggested, suggested: sug.suggested, start: s, end: e, via: "accept" });
+}
+async function addObject() {   // ＋ object: a project object by name (an enrichment item, a nest) — picked, not suggested (no outline)
+  const name = (prompt("New object (e.g. running wheel, nest, toy):") || "").trim();
+  if (!name) return null;
+  const r = await api(`/objects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!r.ok) { alert("Could not add: " + ((await r.json().catch(() => ({}))).detail || r.status)); return null; }
+  const o = await r.json();
+  if (projMeta) projMeta.objects = [...projObjects(), o];
+  logEvent("object_add", { object_id: o.id, name: o.name });
+  renderObjectBar(); if (awaitObject) renderObjPick();
+  return o;
+}
+function renderObjectBar() {
+  const bar = el("objectBar"); if (!bar) return; bar.innerHTML = "";
+  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Objects:"; bar.appendChild(lab);
+  for (const o of projObjects()) {
+    const chip = document.createElement("span"); chip.className = "chip";
+    chip.title = o.roi ? `${o.name}: outlined by each clip's ${o.roi} (HCM database or drawn), so it can be suggested`
+                       : `${o.name}: added by hand — picked, not suggested`;
+    chip.innerHTML = `<span class="bname">${esc(o.name)}</span>` + (o.roi ? `<span class="k" title="outlined">◇</span>` : `<span class="x" title="remove">✕</span>`);
+    const x = chip.querySelector(".x");
+    if (x) x.onclick = async ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (!confirm(`Remove object "${o.name}"? Bouts already labeled with it keep it.`)) return;
+      const r = await api(`/objects/${encodeURIComponent(o.id)}`, { method: "DELETE" });
+      if (!r.ok) { busy("could not remove: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+      projMeta.objects = projObjects().filter(y => y.id !== o.id);
+      logEvent("object_delete", { object_id: o.id });
+      renderObjectBar();
+    };
+    bar.appendChild(chip);
+  }
+  const add = document.createElement("button"); add.textContent = "＋ object"; add.onclick = addObject; bar.appendChild(add);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
@@ -2027,9 +2152,15 @@ function updateSelStatus() {
       const tg = targetState.get(selectedSeg.bid), tt = tg ? tg[selectedSeg.s] : NO_TARGET;
       dir = tt >= 0 ? ` · → track ${tt + 1}` : ` · no target yet (Shift + track number)`;
     }
+    if (selectedSeg.val === 1 && isObjDirected(selectedSeg.bid)) {
+      const ob = objectState.get(selectedSeg.bid), oid = ob ? OBJ_IDS[ob[selectedSeg.s]] || "" : "";
+      dir += oid ? ` · on ${objName(oid)}` : " · no object yet";
+      if (!awaitObject || awaitObject.s !== selectedSeg.s || awaitObject.bid !== selectedSeg.bid)
+        armObjectPick(selectedSeg.bid, selectedSeg.s, selectedSeg.e, oid);
+    }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack + 1}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
-  } else { btn.disabled = true; busy(""); }              // nothing selected -> drop the stale "Selected …" message
+  } else { btn.disabled = true; busy(""); if (awaitObject && awaitObject.fromSel) closeObjPick(); }   // nothing selected -> drop the stale "Selected …" message
 }
 async function deleteSelectedSeg() {
   if (!selectedSeg) return;
@@ -2087,6 +2218,7 @@ function renderBehaviorBar() {
     bar.appendChild(chip);
   }
   const add = document.createElement("button"); add.textContent = "＋ behavior"; add.onclick = addBehavior; bar.appendChild(add);
+  renderObjectBar();
   if (activeBid != null) {
     const cSame = document.createElement("button");
     cSame.textContent = "⎘ clone (seed labels)";
@@ -2439,6 +2571,17 @@ async function hidraInit() {
   el("hidraTrainOn").onchange = hidraSaveTrainOn;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
+  el("objToggle").onchange = async () => {   // mark this behavior object-directed: each Happening bout records its object
+    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("objToggle").checked = false; return; }
+    const val = el("objToggle").checked;
+    b.object_directed = val;                           // optimistic; roll back on failure
+    const r = await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object_directed: val }) }).catch(() => null);
+    if (!r || !r.ok) { b.object_directed = !val; el("objToggle").checked = !val; busy("couldn't save the 'on object' flag"); return; }
+    logEvent("behavior_object_directed", { behavior_id: activeBid, object_directed: val });
+    if (!val) closeObjPick();
+    busy(val ? `${bname(activeBid)} is on an object — paint or select a bout, then pick the object (⏎ takes the nearest)` : `${bname(activeBid)} no longer records an object`);
+    renderTimeline();
+  };
   el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
     const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
     const val = el("dirToggle").checked;
@@ -3654,6 +3797,7 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");     // trimmed edges are Not-happening (no target)
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
   if (isDirected(bid) && at >= 0) logEvent("bout_target", { behavior_id: bid, track: activeTrack, target: at, start: t.s, end: t.e, via: "accept" });
+  if (isObjDirected(bid)) await fillSuggestedObject(bid, t.s, t.e);   // on object: the nearest one, correctable later
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
@@ -3853,6 +3997,7 @@ function commitPaint() {
   painting = null;
   if (k === 1 && isDirected(bid) && nTracks() >= 2) armTargetPick(bid, s, e, k);   // directed: ask for the recipient
   else busy(`marked ${bname(bid)}: ${s}–${e}`);
+  if (k === 1 && isObjDirected(bid)) armObjectPick(bid, s, e);                       // on object: ask which
 }
 function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   if (drag) return;           // ignore while a timeline lane drag is live (avoids a concurrent anchor-paint)
@@ -3894,11 +4039,12 @@ async function commitSegTrim() {   // apply the edited bounds of the selected la
   const { bid, s, e, val } = selectedSeg, ns = segTrim.s, ne = segTrim.e;
   if (ns === s && ne === e) return;                        // unchanged
   const tg = targetState.get(bid), keepTgt = (val === 1 && tg) ? tg[s] : NO_TARGET;   // preserve a directed bout's recipient across the trim
+  const ob = objectState.get(bid), keepObj = (val === 1 && ob) ? OBJ_IDS[ob[s]] || "" : "";   // and an object-directed bout's object
   logEvent("label_trim", { behavior_id: bid, name: bname(bid), from_start: s, from_end: e,
                            start: ns, end: ne, n_frames: ne - ns, delta_frames: (ne - ns) - (e - s), value: val });
   if (ns > s) await applyPaint(bid, s, ns, 0);             // trimmed on the left -> unlabel [s, ns)
   if (ne < e) await applyPaint(bid, ne, e, 0);             // trimmed on the right -> unlabel [ne, e)
-  await applyPaint(bid, ns, ne, val, "manual", keepTgt);   // (re)label the new range (covers extensions), same value + target
+  await applyPaint(bid, ns, ne, val, "manual", keepTgt, keepObj);   // (re)label the new range (covers extensions), same value + target + object
   selectRunAt(bid, ns);                                    // re-select the edited bout so you can keep adjusting
   busy(`bout → frames ${ns}–${ne}`);
 }
@@ -4031,6 +4177,7 @@ tl.addEventListener("pointerup", () => {
                                  mode, value: dk, start: s, end: e, n_frames: e - s, source: "manual", target: NO_TARGET });
       applyPaint(dbid, s, e, dk); show(drag.curFrame);
       if (dk === 1 && isDirected(dbid) && nTracks() >= 2) armTargetPick(dbid, s, e, dk);   // directed: ask for the recipient
+      if (dk === 1 && isObjDirected(dbid)) armObjectPick(dbid, s, e);                       // on object: ask which
     }
   }
   drag = null;
@@ -4222,6 +4369,8 @@ stageInner.addEventListener("dblclick", ev => {   // double-click to zoom in on 
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   const reviewing = el("reviewPanel").classList.contains("on");
+  if (awaitObject && !reviewing && e.key === "Enter") { e.preventDefault(); return setBoutObject(awaitObject.suggested || awaitObject.current || ""); }
+  if (awaitObject && !reviewing && e.key === "Escape") { e.preventDefault(); closeObjPick(); busy("object skipped — select the bout to set it later"); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }
