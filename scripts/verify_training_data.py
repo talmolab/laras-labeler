@@ -6,13 +6,14 @@ On a throwaway project (one 3-mouse clip with poses, one clip without), with the
   native     the bouts listed as used are exactly Trainer.gather's training bouts; Unknown-only
              and unlabeled mice are not used; a clip without poses is not used
   hidra      the Happening spans listed as sent are exactly what export_bouts writes; a mouse with
-             only Not-happening labels is not used; a clip whose .slp is missing is a blocker; "trains as Not-happening" = every other frame of
+             only Not-happening labels is not used; a clip with no .slp is skipped (only staged clips are exported); "trains as Not-happening" = every other frame of
              a used mouse, and "never reviewed" = those minus its reviewed Not-happening frames
              (Unknown counts as never reviewed: the fine-tune sends Happening only)
   directed   a bout with a picked partner is sent to that partner; one without, in a 3-mouse clip,
              is listed as skipped
   queue      unreviewed proposals left on a used mouse are counted
-  refactor   export_bouts writes byte-identical CSV to the pre-refactor version (main @ e1ffbe9)
+  refactor   export_bouts writes the same CSV as the pre-refactor version (main @ e1ffbe9), up to the
+             staged file names, which are keyed on video_id since #23 (hidra.staged_stem)
   read-only  no event logged, no project file changed; unknown behavior -> 404
 
     PYTHONPATH=src python scripts/verify_training_data.py
@@ -187,14 +188,14 @@ def main() -> int:
               str(e1["never_reviewed_frames"]))
         check([x["value"] for x in e1["bouts"] if not x["sent"]] == [0], "reviewed Not-happening listed, not sent")
         check(not e2["used"] and "no Happening" in e2["note"], "Not-happening-only mouse not used", json.dumps(e2))
-        check(not eb["used"] and eb["blocker"] and ".slp" in eb["note"] and j["totals"]["blockers"] == [B],
-              "clip without an .slp flagged as a blocker: the fine-tune stops on it", json.dumps(eb))
+        check(not eb["used"] and not eb["blocker"] and ".slp" in eb["note"] and j["totals"]["blockers"] == [],
+              "clip without an .slp is skipped, not a blocker (only staged clips are exported)", json.dumps(eb))
         check(j["totals"]["unknown_on_used"] == 10, "Unknown frames on a used mouse counted (they train as Not-happening)",
               json.dumps(j["totals"]))
         check(e1["remaining"] == 1 and j["totals"]["remaining_on_used"] == 1, "1 unreviewed proposal left on mouse 1",
               json.dumps(j["totals"]))
         n_by = {A: T}
-        rows, _ = hidra.finetune_bouts(store, LabelStore(store), PID, EAT, j["head"], n_by)
+        rows, _ = hidra.finetune_bouts(store, LabelStore(store), PID, EAT, j["head"], n_by, only={A})   # A: the clip with an .slp
         sent = sorted((x["video_id"], x["track"], x["start_frame"], x["stop_frame"]) for x in rows)
         shown = sorted((cl["video_id"], t["track"], x["start"], x["end"])
                        for cl in j["clips"] for t in cl["tracks"] for x in t["bouts"] if x["sent"])
@@ -219,8 +220,39 @@ def main() -> int:
             ro = old(store, LabelStore(store), PID, bid, head, o, n_by)
             rn = hidra.export_bouts(store, LabelStore(store), PID, bid, head, n, n_by)
             rn.pop("path"), ro.pop("path")
-            check(o.read_bytes() == n.read_bytes() and ro == rn, f"behavior {bid}: identical CSV and counts",
+            old_csv = o.read_text()
+            for v in store.get(PID).videos:      # e1ffbe9 named staged files by file stem; now by video_id
+                vp = v.get("video_path")
+                old_csv = old_csv.replace(f"{Path(str(vp or v['video_id'])).stem}.parquet,",
+                                          f"{hidra.staged_stem(v['video_id'], vp)}.parquet,")
+            check(old_csv == n.read_text() and ro == rn, f"behavior {bid}: same CSV (up to staged names) and counts",
                   f"{ro} vs {rn}")
+
+        print("hidra train on: reviewed frames only / inside the social window")
+        c.put(f"{base}/behaviors/{EAT}/hidra/options", json={"train_on": "reviewed"})
+        j = c.get(f"{base}/behaviors/{EAT}/training-data").json()
+        r1, r2 = row(j, A, 0), row(j, A, 1)
+        check(j["train_on"] == "reviewed", "table reports the behavior's train-on setting", str(j.get("train_on")))
+        check(r1["used"] and r1["trained_neg_frames"] == 100 and r1["never_reviewed_frames"] == 0
+              and r1["left_out_frames"] == F - 150, "reviewed: only answered Not-happening trains; the rest is left out",
+              json.dumps(r1))
+        check(r2["used"] and r2["trained_neg_frames"] == 10, "reviewed: a Not-happening-only mouse is used", json.dumps(r2))
+        negs, _ = hidra.finetune_bouts(store, LabelStore(store), PID, EAT, j["head"], n_by, values={0}, only={A})
+        shown = sorted((cl["video_id"], t["track"], x["start"], x["end"]) for cl in j["clips"] for t in cl["tracks"]
+                       for x in t["bouts"] if x["sent"] and x["value"] == 0)
+        check(shown == sorted((x["video_id"], x["track"], x["start_frame"], x["stop_frame"]) for x in negs),
+              "reviewed: Not-happening spans shown as sent == what export_reviewed writes", f"{shown} vs {negs}")
+        c.put(f"{base}/videos/{A}/social-window", json={"start_frame": 80, "end_frame": 650})
+        c.put(f"{base}/behaviors/{EAT}/hidra/options", json={"train_on": "window"})
+        j = c.get(f"{base}/behaviors/{EAT}/training-data").json()
+        r1, r2 = row(j, A, 0), row(j, A, 1)
+        W = 650 - 80
+        check(r1["used"] and r1["trained_neg_frames"] == W - 50 and r1["never_reviewed_frames"] == W - 150
+              and r1["left_out_frames"] == F - W, "window: unmarked frames inside the window train as Not-happening",
+              json.dumps(r1))
+        check(not r2["used"], "window: a mouse with no Happening bout is not used", json.dumps(r2))
+        c.put(f"{base}/behaviors/{EAT}/hidra/options", json={"train_on": "all"})
+        c.put(f"{base}/videos/{A}/social-window", json={"start_frame": None, "end_frame": None})
 
         print("read-only")
         snap = lambda: {q.relative_to(d).as_posix(): sha(q) for q in d.rglob("*") if q.is_file()}  # noqa: E731

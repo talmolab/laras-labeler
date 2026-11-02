@@ -342,6 +342,17 @@ class Predictor:
         proba = self.get_proba(pid, vid, bid, track)
         if proba is None:
             return []
+        # Social window: 'new'/'dropped' candidates never propose anything outside it (disagree/
+        # mislabel modes already only look at labeled bouts, which put_labels/gather already keep
+        # inside the window, so they need no separate mask). NaN reads as "not happening" to
+        # bouts_from_proba (nan_to_num -> 0, well below its hysteresis floor), so this is a pure
+        # subtraction, not a new code path. No-op for a clip with no window set.
+        entry = self.store.get(pid).video(vid) or {}
+        ws, we = entry.get("social_start"), entry.get("social_end")
+        if ws is not None and we is not None:
+            proba = proba.copy()
+            proba[:ws] = np.nan
+            proba[we:] = np.nan
         beh = next((b for b in self.store.get(pid).behaviors if b["id"] == bid), {})
         pp = {**DEFAULT_POSTPROC, **(beh.get("postproc") or {})}
         F = len(proba)
