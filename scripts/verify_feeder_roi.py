@@ -253,6 +253,22 @@ def unit(root: Path) -> None:
                      "postgresql://u:p@h:5432/hcm"] and hcm_roi.engine_url("sqlite://") == "sqlite://",
           "a driverless postgresql:// URL gets the installed driver (SQLAlchemy 2.1 changed its default)", str(picked))
 
+    named = []
+    for installed, url_in in ((("psycopg",), "postgresql+psycopg2://u:p@h:5432/hcm"),   # the db-query skill's URL, psycopg 3 installed
+                              (("psycopg", "psycopg2"), "postgresql+psycopg2://u:p@h:5432/hcm"),
+                              (("psycopg2",), "postgresql+psycopg://u:p@h:5432/hcm")):
+        for m in ("psycopg", "psycopg2"):
+            sys.modules[m] = types.ModuleType(m) if m in installed else None
+        named.append(hcm_roi.engine_url(url_in))
+    for m, mod in real.items():
+        if mod is None:
+            sys.modules.pop(m, None)
+        else:
+            sys.modules[m] = mod
+    check(named == ["postgresql+psycopg://u:p@h:5432/hcm", "postgresql+psycopg2://u:p@h:5432/hcm",
+                    "postgresql+psycopg2://u:p@h:5432/hcm"],
+          "a URL naming a driver that isn't installed gets the installed one; one that is installed is kept", str(named))
+
     url, hcm_roi.DATABASE_URL = hcm_roi.DATABASE_URL, ""
     check(hcm_roi.fetch_rois("x", source_video=MAC) == {}, "no HCM_DATABASE_URL: {} (unchanged)")
     hcm_roi.DATABASE_URL = url

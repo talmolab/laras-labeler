@@ -78,9 +78,10 @@ When a clip opens, its cage, spout and feeder outlines are filled from the HCM d
 uses the clip's own recording and falls back to the camera's typical outline (never for the feeder).
 This needs two things:
 
-- the Salk network or VPN
-- `HCM_DATABASE_URL`, set in the terminal before you start the labeler (ask the lab for the value,
-  and never commit it):
+- the Salk network (on site, the VPN, or Tailscale)
+- `HCM_DATABASE_URL`, set in the terminal before you start the labeler. Use the URL from the
+  `DATABASE_URL` line of the lab's db-query skill (talmolab/pheno-claude-plugins,
+  `plugins/pheno/skills/db-query/SKILL.md`). Either driver name in it works. Never commit it here:
 
   ```bash
   export HCM_DATABASE_URL='postgresql://…'

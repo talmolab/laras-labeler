@@ -204,11 +204,16 @@ def _outer_ring(g) -> list[list[float]]:
 def engine_url(url: str) -> str:
     """A `postgresql://` URL names no driver, and SQLAlchemy's default changed under it: psycopg2
     before 2.1, psycopg (3) from 2.1. With only the other one installed, every lookup failed -- and
-    silently, since a DB error returns {}. Name whichever driver is installed (psycopg first)."""
-    m = re.match(r"postgres(?:ql)?://", url)
+    silently, since a DB error returns {}. Name whichever driver is installed (psycopg first).
+
+    A URL that names a driver which is not installed gets the installed one too. The lab's HCM URL
+    (the pheno db-query skill's) says `postgresql+psycopg2://`, while the labeler installs psycopg 3:
+    the user/password/host part is the same for both."""
+    m = re.match(r"postgres(?:ql)?(?:\+(psycopg2|psycopg))?://", url)
     if not m:
         return url
-    for mod in ("psycopg", "psycopg2"):
+    named = m.group(1)
+    for mod in ((named,) if named else ()) + ("psycopg", "psycopg2"):
         try:
             __import__(mod)
         except ImportError:

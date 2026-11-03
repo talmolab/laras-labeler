@@ -727,7 +727,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # name with no camera), or that it didn't answer. None when it answered. The GUI says so instead
         # of silently showing a clip with no outlines.
         unavailable = None if got else (hcm_roi.unavailable_reason(vid, entry.get("source_video"))
-                                        or "the HCM database didn't answer: are you on the Salk network or VPN?")
+                                        or "the HCM database didn't answer: are you on the Salk network (on site, VPN or Tailscale)?")
         return {"camera": got.get("camera"), "source": got.get("source", {}), "set": set_fields,
                 "rois": {k: entry.get(k) for k in hcm_roi.ROI_FIELDS},
                 "recording_status": got.get("recording_status"), "checked": "recording_status" in got,
