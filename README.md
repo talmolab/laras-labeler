@@ -72,6 +72,25 @@ Those are saved to `<your projects folder>/settings.json`, so they survive a res
 the projects folder. `HIDRA_HOME` / `HIDRA_PYTHON` still work and apply when nothing is set in the
 GUI. `GET /api/hidra/status` reports which source is in effect and, when inference cannot run, why.
 
+## Arena outlines from the HCM database (Salk)
+
+When a clip opens, its cage, spout and feeder outlines are filled from the HCM database. The labeler
+uses the clip's own recording and falls back to the camera's typical outline (never for the feeder).
+This needs two things:
+
+- the Salk network or VPN
+- `HCM_DATABASE_URL`, set in the terminal before you start the labeler (ask the lab for the value,
+  and never commit it):
+
+  ```bash
+  export HCM_DATABASE_URL='postgresql://…'
+  uv run hidra-in-the-loop
+  ```
+
+When it can't load them, the video toolbar shows **⚠ outlines not loaded from HCM**. Hover over it
+to see why. `uv run python scripts/check_hcm_roi.py --clip <part of the clip name>` walks the lookup
+one step at a time for that clip.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement

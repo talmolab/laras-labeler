@@ -14,7 +14,7 @@ outlines don't appear nothing says why. This prints each step for the clips whos
 Read-only, except --repair: a project.json torn by two saves at once (project.save is atomic now)
 still holds the newest complete manifest at its start; --repair backs the file up and writes that.
 
-    uv run --with sqlalchemy --with "psycopg[binary]" python scripts/check_hcm_roi.py --clip b21
+    uv run python scripts/check_hcm_roi.py --clip b21
 """
 from __future__ import annotations
 

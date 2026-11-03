@@ -217,6 +217,31 @@ def engine_url(url: str) -> str:
     return url
 
 
+def unavailable_reason(video_id: str, source_video: str | None = None) -> str | None:
+    """Why fetch_rois can't even ask the database for this clip, as a sentence for the GUI, or None when
+    the setup is complete (then an empty fetch means the database itself didn't answer). Checks only
+    what can be checked without a connection."""
+    if not (camera_of(source_video or "") or camera_of(video_id)):
+        return "the clip's name doesn't say which camera it is from (cam_NN), so its recording can't be looked up"
+    try:
+        import sqlalchemy  # noqa: F401
+    except Exception:
+        return "the database package (sqlalchemy) isn't installed: update the labeler (git pull) and start it with uv run"
+    if not any(_importable(m) for m in ("psycopg", "psycopg2")):
+        return "no Postgres driver (psycopg) is installed: update the labeler (git pull) and start it with uv run"
+    if not DATABASE_URL:
+        return "HCM_DATABASE_URL isn't set: set it in the terminal before you start the labeler"
+    return None
+
+
+def _importable(mod: str) -> bool:
+    try:
+        __import__(mod)
+    except Exception:
+        return False
+    return True
+
+
 def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
                source_video: str | None = None) -> dict:
     """Best-effort: {roi_field: polygon} for a clip, e.g. {'cage_roi': [[x,y],...]}, plus

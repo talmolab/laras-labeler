@@ -149,3 +149,70 @@ def test_api_validates_objects_and_keeps_removed_ones_writable():
     assert c.get(f"/api/projects/{pid}/labels/v?track=0&behavior=0").json()["0"][0][5] == "nest"
     sug = c.get(f"/api/projects/{pid}/videos/v/object-suggest?track=0&start=0&end=10").json()
     assert sug["suggested"] is None and {o["id"] for o in sug["objects"]} >= {"feeder_top", "cage", "spout"}
+
+
+def test_several_objects_per_bout_stored_sorted_and_exported():
+    """A bout on several objects stores one sorted "+"-joined value; a list or any order normalizes to it."""
+    from laras_labeler.labels import _obj, obj_ids
+    assert _obj(["spout", "cage", "spout", " "]) == "cage+spout" == _obj("spout+cage")
+    assert _obj(None) == "" and obj_ids("") == [] and obj_ids("cage+spout") == ["cage", "spout"]
+    store, pid = _store()
+    proj = store.get(pid)
+    proj.manifest.setdefault("videos", []).append({"video_id": "v", "video_path": "/x/v.mp4", "fps": 10.0})
+    proj.save()
+    ls = LabelStore(store)
+    ls.put_spans(pid, "v", [{"behavior_id": 0, "track": 0, "start": 0, "end": 10, "value": 1, "object": "spout+cage"},
+                            {"behavior_id": 0, "track": 0, "start": 10, "end": 20, "value": 1, "object": "cage"}])
+    runs = LabelStore(store).get_runs_src(pid, "v", 0, 0)[0]
+    assert [(r[0], r[1], r[5]) for r in runs] == [(0, 10, "cage+spout"), (10, 20, "cage")]
+    assert LabelStore(store).stored_objects(pid, "v") == {"cage", "spout"}
+    assert [r["object"] for r in ls.export_bouts(pid)] == ["cage+spout", "cage"]
+
+
+def test_api_checks_every_object_of_a_multi_object_bout():
+    from fastapi.testclient import TestClient
+    from laras_labeler.app import create_app
+    from laras_labeler.config import Settings
+    root = Path(tempfile.mkdtemp())
+    store = ProjectStore(root)
+    c = TestClient(create_app(Settings(projects_root=root), store))
+    pid = c.post("/api/projects", json={"name": "t"}).json()["pid"]
+    proj = store.get(pid)
+    proj.manifest.setdefault("videos", []).append({"video_id": "v", "video_path": "/x/v.mp4", "n_frames": 100,
+                                                   "fps": 10.0, "width": 10, "height": 10, "has_poses": False})
+    proj.save()
+    span = lambda o: [{"behavior_id": 0, "track": 0, "start": 0, "end": 10, "value": 1, "object": o}]  # noqa: E731
+    r = c.put(f"/api/projects/{pid}/labels/v", json=span("cage+nest"))
+    assert r.status_code == 400 and "nest" in r.json()["detail"] and "cage'" not in r.json()["detail"]
+    assert c.put(f"/api/projects/{pid}/labels/v", json=span("spout+cage")).status_code == 200
+    assert c.get(f"/api/projects/{pid}/labels/v?track=0&behavior=0").json()["0"][0][5] == "cage+spout"
+
+
+def test_autoload_says_why_outlines_did_not_load(monkeypatch):
+    """No database answer -> the GUI is told why (here: no camera in the clip name, then no HCM_DATABASE_URL)."""
+    from fastapi.testclient import TestClient
+    from laras_labeler import hcm_roi
+    from laras_labeler.app import create_app
+    from laras_labeler.config import Settings
+    root = Path(tempfile.mkdtemp())
+    store = ProjectStore(root)
+    c = TestClient(create_app(Settings(projects_root=root), store))
+    pid = c.post("/api/projects", json={"name": "t"}).json()["pid"]
+    proj = store.get(pid)
+    for v in ("plainclip", "rec_cam_06.17"):
+        proj.manifest.setdefault("videos", []).append({"video_id": v, "video_path": f"/x/{v}.mp4", "n_frames": 100,
+                                                       "fps": 10.0, "width": 10, "height": 10, "has_poses": False})
+    proj.save()
+    monkeypatch.setattr(hcm_roi, "DATABASE_URL", "")
+    r = c.post(f"/api/projects/{pid}/videos/plainclip/autoload-roi").json()
+    assert "camera" in r["unavailable"]
+    r = c.post(f"/api/projects/{pid}/videos/rec_cam_06.17/autoload-roi").json()
+    assert "HCM_DATABASE_URL" in r["unavailable"]
+    monkeypatch.setattr(hcm_roi, "DATABASE_URL", "postgresql://u:p@127.0.0.1:1/none")   # nothing listening there
+    monkeypatch.setattr(hcm_roi, "fetch_rois", lambda *a, **k: {})
+    r = c.post(f"/api/projects/{pid}/videos/rec_cam_06.17/autoload-roi").json()
+    assert "Salk network" in r["unavailable"]
+    monkeypatch.setattr(hcm_roi, "fetch_rois", lambda *a, **k: {"camera": "cam_06", "recording_status": "valid", "source": {},
+                                                               "cage_roi": [[0, 0], [9, 0], [9, 9]]})
+    r = c.post(f"/api/projects/{pid}/videos/rec_cam_06.17/autoload-roi").json()
+    assert r["unavailable"] is None and r["set"] == {"cage_roi": [[0, 0], [9, 0], [9, 9]]}
