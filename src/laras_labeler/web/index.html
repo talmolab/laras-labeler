@@ -2892,6 +2892,9 @@ function renderClipBar() {
     bar.appendChild(tb);
   }
 }
+// The open clip is the held-out test clip (🧪 "use as test clip"). Read from the project, not the clip's
+// meta, so it is current right after the button is toggled.
+function isTestClip() { return (((projMeta && projMeta.videos) || []).find(v => v.video_id === vid) || {}).role === "test"; }
 async function setClipRole(vidId, role) {
   if (role === "test" && !confirm("Use this clip as the TEST clip?\n\nIts labels will no longer be used to train any model (HiDRA fine-tunes or the project model) — "
       + "they are only used to score models fairly. A model that already trained on this clip will be marked in-sample here until you train it again.")) return;
@@ -4433,7 +4436,7 @@ async function browseStart() {                    // the Browse button, and a re
   browse = { bid, track, which, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
              srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
   logEvent("browse_start", { behavior_id: bid, name: bname(bid), which, order, threshold: browse.thr, labels_from: src || "this project",
-                             min_bout: browse.minBout, n: items.length, held_out: !!meta.exclude_from_training });
+                             min_bout: browse.minBout, n: items.length, held_out: isTestClip() });
   if (fresh) { el("browsePanel").classList.add("on"); setBrowseLock(true); setReviewLayout(true); }
   browseShow(0);
   if (hint) busy(hint.trim());
@@ -4456,7 +4459,7 @@ function browseText() {
   else if (it.yes) match = `<b style="color:${HAPPENING_COLOR}">✓ On your Happening label</b> (${pct(it.yes)}% of its frames)`;
   else if (it.no) match = `<b style="color:${NOTHAPPENING_COLOR}">✗ No Happening label here</b> (${pct(it.no)}% labeled Not-happening)`;
   else match = `<b>✗ No label here</b> (unlabeled frames)`;
-  const held = meta.exclude_from_training ? ` · <span style="color:#4ad0ff">held-out clip</span>` : "";
+  const held = isTestClip() ? ` · <span style="color:#4ad0ff">🧪 test clip</span>` : "";
   el("browseQ").innerHTML = `${it.missed ? "Missed bout" : "Detection"} <b>${browse.idx + 1}/${browse.items.length}</b> · track ${browse.track + 1}`
     + ` · <b style="color:${b.color}">${esc(b.name)}</b>${held} · frames <b>${it.s}–${it.e}</b> (${n}f, ${(n / (meta.fps || 30)).toFixed(1)} s)`
     + (it.missed ? "" : ` · mean score ${it.p.toFixed(2)}`) + `<br>${match}<br><span style="color:#8b93a2">📍 ${locStr(it.s)}</span>`;
