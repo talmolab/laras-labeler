@@ -19,6 +19,10 @@ dependencies = [
   "joblib>=1.4",
   "pydantic>=2",
   "python-multipart>=0.0.9",
+  # The HCM database lookup that fills each clip's cage, spout and feeder outlines on open (hcm_roi).
+  # Without these it silently did nothing. It still needs HCM_DATABASE_URL and the Salk network.
+  "sqlalchemy>=2",
+  "psycopg[binary]>=3.1",
   #
   # INTEL-macOS WHEEL FLOOR. Several of movement's transitive dependencies stopped publishing
   # x86_64 macOS wheels, so a plain `uvx --from git+...` there tries to build LLVM, PROJ and

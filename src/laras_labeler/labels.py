@@ -46,8 +46,25 @@ def _rle(frames: np.ndarray, values: np.ndarray) -> list[list[int]]:
     return runs
 
 
+OBJ_SEP = "+"     # a bout ON several objects stores them as one sorted, "+"-joined value: "cage+feeder_top"
+
+
 def _obj(o) -> str:
-    return o if isinstance(o, str) else ""          # None / NaN (pre-object rows) -> no object
+    """The stored object value of a span: "" (none, also None / NaN pre-object rows), one object id, or
+    several ids sorted and joined with OBJ_SEP. Accepts a list of ids or an already-joined string."""
+    if isinstance(o, (list, tuple, set)):
+        ids = o
+    elif isinstance(o, str):
+        ids = o.split(OBJ_SEP)
+    else:
+        return ""
+    return OBJ_SEP.join(sorted({str(i).strip() for i in ids if str(i).strip()}))
+
+
+def obj_ids(o) -> list[str]:
+    """The object ids in one stored value ("" -> [])."""
+    v = _obj(o)
+    return v.split(OBJ_SEP) if v else []
 
 
 def _rle_src(frames: np.ndarray, values: np.ndarray, sources: np.ndarray,
@@ -147,7 +164,7 @@ class LabelStore:
 
     def stored_objects(self, pid: str, vid: str) -> set[str]:
         """The object ids this clip's labels already carry."""
-        return {o for o in self._df(pid, vid)["obj"].unique() if o}
+        return {i for o in self._df(pid, vid)["obj"].unique() for i in obj_ids(o)}
 
     def rows_for_behavior(self, pid: str, vid: str, behavior_id: int) -> pd.DataFrame:
         """All (track, frame, value) rows for a behavior across every track — for training."""
@@ -185,7 +202,7 @@ class LabelStore:
                         row = {"video_id": vid, "video": vname, "behavior": bnames.get(b, str(b)),
                                "behavior_id": b, "track": tr + 1,                 # 1-based to match the GUI
                                "target": (tgt + 1) if tgt >= 0 else "",           # recipient (directed); blank = self/undirected
-                               "object": ob,                                      # object-directed bout's object; blank = none
+                               "object": ob,                                      # object-directed bout's object(s), "+"-joined; blank = none
                                "value": val, "value_label": _VAL.get(val, str(val)), "source": src,
                                "start_frame": st, "end_frame": en, "n_frames": en - st}
                         if fps:

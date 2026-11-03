@@ -28,7 +28,7 @@ from .features import quick_series, resolve_roles
 from .featurestore import FeatureStore
 from .importers import Importer
 from .jobs import JobManager
-from .labels import LabelStore
+from .labels import LabelStore, obj_ids
 from .predict import CANDIDATE_ORDERS, Predictor
 from .project import DEFAULT_FEATURE_CONFIG, ProjectStore
 from .training import Trainer
@@ -108,7 +108,7 @@ class LabelSpan(BaseModel):
     value: int = Field(ge=0, le=2)  # 1 = Happening, 0 = Not-happening, 2 = Unknown (saved, excluded from training)
     source: str = "manual"          # provenance: 'manual' (painted) | 'candidate' (accepted from review) | 'imported'
     target: int = -1                # recipient track for a DIRECTED bout; -1 = self / undirected (default keeps old clients working)
-    object: str = ""                # the object an OBJECT-DIRECTED bout is on (a project object id, objects.py); "" = none
+    object: str = ""                # what an OBJECT-DIRECTED bout is on: object ids (objects.py) joined with "+"; "" = none
 
 
 class ImportRequest(BaseModel):
@@ -723,9 +723,15 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             p.save()
         # `rois`: the clip's outlines as saved now. The background fetch on project open can fill them
         # before this request runs; `set` is then empty, but the GUI still has to draw them.
+        # `unavailable`: why the database couldn't be asked at all (no driver, no HCM_DATABASE_URL, a clip
+        # name with no camera), or that it didn't answer. None when it answered. The GUI says so instead
+        # of silently showing a clip with no outlines.
+        unavailable = None if got else (hcm_roi.unavailable_reason(vid, entry.get("source_video"))
+                                        or "the HCM database didn't answer: are you on the Salk network (on site, VPN or Tailscale)?")
         return {"camera": got.get("camera"), "source": got.get("source", {}), "set": set_fields,
                 "rois": {k: entry.get(k) for k in hcm_roi.ROI_FIELDS},
-                "recording_status": got.get("recording_status"), "checked": "recording_status" in got}
+                "recording_status": got.get("recording_status"), "checked": "recording_status" in got,
+                "unavailable": unavailable}
 
     @app.post("/api/projects/{pid}/videos")
     def add_video(pid: str, body: NewVideo):
@@ -1635,7 +1641,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         # an object must be on the project's list; ids already stored on this clip stay writable, so a
         # removed object's old bouts can still be re-saved around an edit
         known = objects.object_ids(p) | {str(o) for o in labels.stored_objects(pid, vid)}
-        bad = sorted({r["object"] for r in rows if r["object"] and r["object"] not in known})
+        bad = sorted({i for r in rows for i in obj_ids(r["object"]) if i not in known})
         if bad:
             raise HTTPException(400, f"unknown object(s) {bad}; add them to the project first")
         # Hard backstop for the social window: even if a client bypasses the GUI's paint clamp (a

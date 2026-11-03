@@ -142,6 +142,12 @@
   .railcard { margin-top: 0; }
   .railcard .row { flex-direction: column; align-items: stretch; gap: 5px; margin: 0; }
   .railcard .chip { justify-content: flex-start; padding: 4px 9px; font-size: 12px; }
+  .objhead { font-size: 11.5px; line-height: 1.35; }
+  .objrow { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .objrow:hover { background: var(--surface); }
+  .objrow.off { opacity: 0.55; cursor: default; }
+  .objrow .od { margin-left: auto; color: #8b93a2; font-size: 11px; white-space: nowrap; }
+  .objrow .x { cursor: pointer; color: #8b93a2; }
   /* condense the track/behavior rails: scroll internally past ~video height instead of stretching the
      stage row and pushing the rest of the GUI down as more behaviors are added */
   #behaviorCard, #trackCard { max-height: 56vh; overflow-y: auto; }
@@ -261,6 +267,7 @@
         <button id="setCageRoi" title="Click to draw the cage-boundary ROI polygon for THIS clip — enables cage-ROI features (distance-to-wall + cage position). Enter to finish, Esc to cancel, right-click removes the last point (or clears the ROI).">▢ Set cage ROI</button>
       </span>
       <span id="cageSet" style="display:none; color:#8b93a2; font-size:12px">▢ cage set · right-click the video to change</span>
+      <span id="hcmNote" style="display:none; color:#ffb347; font-size:12px; cursor:help"></span>
       <button id="showApproaches" title="Overlay each confirmed-positive bout's nose approach path to the spout for the active behavior — all tracks, colored by track (○ = start of approach, ★ = at spout). Needs a spout/ROI set. Toggle off to hide.">→ Approaches</button>
     </div>
     <div id="zoomCtl">
@@ -301,7 +308,7 @@
   <aside id="behaviorRail" class="siderail">
     <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div>
       <div class="row" id="objectBar" style="margin-top:8px"
-           title="Objects a bout can be ON, for behaviors marked 'on object'. The feeder, cage wall and spout are outlined by each clip's ROIs (filled from the HCM database), so the nearest one is suggested. Add anything else (an enrichment item, a nest) with ＋ object: it can be picked, not suggested."></div></div>
+           title="What a bout is ON, for behaviors marked 'on object': tick one or several for the bout under the playhead, the selected bout, or the candidate under review. The feeder, cage wall and spout are outlined by each clip's ROIs (filled from the HCM database), so the nearest one is suggested (★). Add anything else (an enrichment item, a nest) with ＋ object: it can be ticked, not suggested."></div></div>
   </aside>
   <div id="reviewPanel" class="panel review-rail">
     <div id="reviewQ" class="rvq"></div>
@@ -322,6 +329,8 @@
     <div class="row" id="rvMergeRow" style="margin-top:8px; display:none">
       <button id="rvMerge" title="Bridges the gap so this doesn't stay split into two bouts (m)">⛓ Merge with adjacent bout (m)</button>
     </div>
+    <div id="rvObjects" style="margin-top:8px; display:none"
+         title="What this candidate is on (its behavior is marked 'on object'): tick one or several. Saved when you accept it. ★ = nearest the nose."></div>
     <div class="status" id="rvLeft" style="margin-top:8px; font-variant-numeric:tabular-nums"
          title="New detections still unlabeled on this clip for this behavior, per animal. The queue is worked until the active animal reads 0."></div>
     <div class="row" style="margin-top:8px">
@@ -409,10 +418,9 @@
       <input type="checkbox" id="dirToggle"> directed (actor→target)
     </label>
     <label class="status" id="objGroup" style="display:none; align-items:center; gap:4px"
-           title="Mark this behavior as object-directed: each Happening bout records the object it is on (the feeder, the cage wall, the spout, or one you added under Objects). After you paint or select a bout, pick the object; the one nearest the animal's nose during the bout is suggested (⏎ takes it). Accepting a review candidate fills in the suggestion.">
+           title="Mark this behavior as object-directed: each Happening bout records what it is on (the feeder, the cage wall, the spout, or anything you added), one or several. Tick them in the Objects card on the right, for the bout under the playhead, the selected bout, or the candidate under review. A new bout starts with the object nearest the animal's nose (★).">
       <input type="checkbox" id="objToggle"> on object
     </label>
-    <span id="objPick" style="display:none; align-items:center; gap:4px; flex-wrap:wrap"></span>
     <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
          unchanged and nothing here depends on HiDRA being present. -->
     <span class="sep" id="hidraSep" style="display:none"></span>
@@ -759,8 +767,13 @@ let objectState = new Map();          // per behavior: per-frame object code (OB
 const OBJ_CODES = new Map([["", 0]]), OBJ_IDS = [""];   // object id <-> per-frame code, grown as ids are seen
 function objCode(id) { id = id || ""; if (!OBJ_CODES.has(id)) { OBJ_CODES.set(id, OBJ_IDS.length); OBJ_IDS.push(id); } return OBJ_CODES.get(id); }
 const projObjects = () => (projMeta && projMeta.objects) || [];
-const objName = id => (projObjects().find(o => o.id === id) || {}).name || id;
-let awaitObject = null;               // {bid,s,e,track,current,suggested,rows}: the object picker is open for this bout
+// A bout can be on several objects: they are stored as one sorted "+"-joined value ("cage+feeder_top"),
+// which is also the per-frame code's OBJ_IDS entry.
+const objIdsOf = key => (key || "").split("+").filter(Boolean);
+const objKey = ids => [...new Set(ids.filter(Boolean))].sort().join("+");
+const objName = key => objIdsOf(key).map(id => (projObjects().find(o => o.id === id) || {}).name || id).join(" + ");
+let objSug = { key: null, rows: [], suggested: null };   // the nearest-object ranking for the bout the Objects card shows
+let objShownKey = null;                                   // what the Objects card last drew (re-drawn only when it changes)
 const SRC_CODES = { manual: 0, candidate: 1, imported: 2 }, SRC_NAMES = ["manual", "candidate", "imported"];
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 let cur = 0, playing = false, showSeq = 0, playStopAt = null;   // playStopAt: auto-stop frame (play a single bout), null = play to end
@@ -999,7 +1012,7 @@ function clearStage() {
   vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
   predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
-  objectState = new Map(); closeObjPick();
+  objectState = new Map(); refreshObjects(true);
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
@@ -1062,13 +1075,25 @@ async function openVideo(vidId) {
   autoloadCageRoi();                                   // best-effort: fill a missing cage ROI from the HCM DB
   browseRefreshSources();                              // best-effort: other projects with this clip, for Browse labels
 }
+// Why this clip's outlines didn't come from the HCM database (no driver, no HCM_DATABASE_URL, off the Salk
+// network, ...): a note by the ROI buttons for the open clip, and once per session in the status line.
+const hcmToldOnce = new Set();
+function showHcmNote(why) {
+  const n = el("hcmNote"); if (!n) return;
+  n.style.display = why ? "" : "none";
+  n.textContent = why ? "⚠ outlines not loaded from HCM" : "";
+  n.title = why ? `Cage, spout and feeder outlines are filled from the HCM database when a clip opens, but not this time: ${why}.` : "";
+  if (why && !hcmToldOnce.has(why)) { hcmToldOnce.add(why); busy(`HCM outlines not loaded: ${why}`); }
+}
 async function autoloadCageRoi() {   // fill a clip's missing cage / spout / feeder outlines from this recording in the HCM DB (no-op off-VPN)
   // already set, or the feeder already looked for in this clip's recording — don't clobber or re-hit the DB
+  showHcmNote(null);
   if (cageRoi && (meta.roi_checked || (meta.feeder_top_roi && meta.feeder_side_roi))) return;
   const reqVid = vid, reqMeta = meta;                  // guard against a clip switch mid-request
   let d; try { const r = await api(`/videos/${vid}/autoload-roi`, { method: "POST" }); if (!r.ok) return; d = await r.json(); }
   catch (e) { return; }
   if (!d || !d.set) return;
+  if (vid === reqVid) showHcmNote(d.unavailable);
   if (d.checked) { reqMeta.roi_checked = true; reqMeta.roi_recording_status = d.recording_status; }
   // Keep this clip's meta current, so reopening it shows them. A newly set ROI is this clip's own and now
   // overrides any project-wide default (it is what Train uses), so it replaces what's drawn. d.rois = the
@@ -1123,7 +1148,7 @@ async function maybeUpload() {
 async function loadLabels() {
   selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
   const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target, object]
-  labelState = new Map(); sourceState = new Map(); targetState = new Map(); objectState = new Map(); closeObjPick();
+  labelState = new Map(); sourceState = new Map(); targetState = new Map(); objectState = new Map(); objSug = { key: null, rows: [], suggested: null };
   for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); objectState.set(b.id, new Int16Array(meta.n_frames)); }
   for (const [bid, rl] of Object.entries(runs)) {
     const arr = labelState.get(Number(bid)), sarr = sourceState.get(Number(bid)), tarr = targetState.get(Number(bid)), oarr = objectState.get(Number(bid));
@@ -1652,6 +1677,7 @@ async function show(i) {
   const seq = ++showSeq, target = cur;
   // UI chrome (playhead, counter) tracks the request immediately — responsive while the frame decodes.
   scrub.value = cur; counter.textContent = `${cur} / ${meta.n_frames - 1}`;
+  refreshObjects();                        // the Objects card shows the bout under the playhead
   if (document.activeElement !== el("frameInput")) el("frameInput").value = cur;
   // While playing zoomed-in, keep the playhead in view: PAGE the zoom window forward when it nears an
   // edge (jump the window, not scroll it every frame — a per-frame view change would force a full
@@ -1843,7 +1869,7 @@ function renderTimeline() {
         let txt = parts.join(" ");
         if (objTxt != null) {                                   // the full name if it fits, else its initials
           const full = (txt ? txt + " " : "") + "@" + objTxt;
-          const short = (txt ? txt + " " : "") + "@" + objTxt.split(/\s+/).map(w => w[0]).join("");
+          const short = (txt ? txt + " " : "") + "@" + objTxt.split(" + ").map(n => n.split(/\s+/).map(w => w[0]).join("")).join("+");
           txt = tctx.measureText(full).width <= w - 4 ? full : short;
         }
         if (tctx.measureText(txt).width <= w - 2) tctx.fillText(txt, x0 + w / 2, ym + MANUAL_H / 2);
@@ -1934,6 +1960,7 @@ function renderTimeline() {
     if (wx1 < W) tctx.fillRect(wx1, RULER, W - wx1, H - RULER);
   }
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
+  refreshObjects();                        // labels, selection or review changed: the Objects card follows
   drawTimelineOverlay(W, H, rh);
   drawFeatures(W, dpr);
   renderOverview();
@@ -2204,14 +2231,16 @@ async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET, o
   renderTimeline(); await syncRange(bid, s, e);
 }
 async function applyOp(op, vSlice, sSlice, tSlice, oSlice) {
-  clearSel(); closeObjPick();
+  clearSel();
   labelState.get(op.bid).set(vSlice, op.s); sourceState.get(op.bid).set(sSlice, op.s);   // restore value AND source
   if (tSlice && targetState.get(op.bid)) targetState.get(op.bid).set(tSlice, op.s);        // restore target too
   if (oSlice && objectState.get(op.bid)) objectState.get(op.bid).set(oSlice, op.s);        // and the object
   recomputeBouts(op.bid); renderTimeline(); await syncRange(op.bid, op.s, op.e);
 }
-async function undo() { if (browseBlocked()) return; const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT, op.beforeO); }
-async function redo() { if (browseBlocked()) return; const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT, op.afterO); }
+// An op marked `chain` (the nearest object filled in after a paint) goes with the op before it: one
+// Ctrl+Z undoes both, one redo redoes both.
+async function undo() { if (browseBlocked()) return; const op = undoStack.pop(); if (!op) return; redoStack.push(op); logEvent("label_undo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.beforeV, op.beforeS, op.beforeT, op.beforeO); if (op.chain) await undo(); }
+async function redo() { if (browseBlocked()) return; const op = redoStack.pop(); if (!op) return; undoStack.push(op); logEvent("label_redo", { behavior_id: op.bid, start: op.s, end: op.e }); await applyOp(op, op.afterV, op.afterS, op.afterT, op.afterO); const nx = redoStack[redoStack.length - 1]; if (nx && nx.chain) await redo(); }
 
 // ---------- directed (actor -> target) helpers ----------
 function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
@@ -2245,64 +2274,99 @@ async function objectSuggest(bid, s, e, track = activeTrack) {   // the project'
   try { const r = await api(`/videos/${vid}/object-suggest?track=${track}&start=${s}&end=${e}`); return r.ok ? await r.json() : null; }
   catch (err) { return null; }
 }
-async function armObjectPick(bid, s, e, current = "") {   // open the picker for one Happening bout
-  const forVid = vid, track = activeTrack, fromSel = !!selectedSeg;
-  awaitObject = { bid, s, e, track, current, suggested: null, fromSel,
-                  rows: projObjects().map(o => ({ id: o.id, name: o.name, outline: !!o.roi, distance_px: null })) };
-  renderObjPick();
-  const sug = await objectSuggest(bid, s, e, track);
-  if (!awaitObject || awaitObject.bid !== bid || awaitObject.s !== s || vid !== forVid) return;   // picker moved on meanwhile
-  if (sug) { awaitObject.rows = sug.objects; awaitObject.suggested = sug.suggested; }
-  renderObjPick();
-}
-function renderObjPick() {
-  const box = el("objPick"); if (!box) return;
-  box.innerHTML = "";
-  if (!awaitObject) { box.style.display = "none"; return; }
-  const a = awaitObject; box.style.display = "inline-flex";
-  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = `${bname(a.bid)} on:`; box.appendChild(lab);
-  for (const o of a.rows) {
-    const btn = document.createElement("button");
-    const near = o.id === a.suggested ? "★ " : "";
-    btn.textContent = near + o.name + (o.distance_px != null ? ` · ${Math.round(o.distance_px)}px` : "");
-    btn.title = o.outline ? (o.distance_px != null ? `median nose distance to the ${o.name} over the bout` : `${o.name}: nose not visible in this bout`)
-                          : `${o.name} has no outline on this clip, so it can't be suggested`;
-    if (o.id === a.current) btn.classList.add("primary");
-    btn.onclick = () => setBoutObject(o.id);
-    box.appendChild(btn);
+function objBoutKey(t) { return t ? `${vid}|${activeTrack}|${t.bid}|${t.s}|${t.e}` : null; }
+// The bout the Objects checkboxes edit: the candidate under review (saved when you accept it), else the
+// selected Happening bout, else the Happening bout of the active behavior under the playhead. Only for
+// behaviors marked "on object". null = nothing to tick right now.
+function objTarget() {
+  if (!meta) return null;
+  if (reviewCurrent) {
+    const r = reviewCurrent, t = reviewTrim || r;
+    if (!isObjDirected(r.bid) || r.mode !== "new") return null;
+    const tgt = { kind: "review", bid: r.bid, s: t.s, e: t.e };
+    const k = objBoutKey(tgt);
+    tgt.ids = r.objectsTouched ? r.objects : (objSug.key === k && objSug.suggested ? [objSug.suggested] : []);
+    return tgt;
   }
-  const add = document.createElement("button"); add.textContent = "＋ new object…";
-  add.onclick = async () => { const o = await addObject(); if (o) setBoutObject(o.id); };
-  box.appendChild(add);
-  const none = document.createElement("button"); none.textContent = "none"; none.title = "no object for this bout";
-  none.onclick = () => setBoutObject(""); box.appendChild(none);
-  const hint = document.createElement("span"); hint.className = "status";
-  hint.textContent = a.suggested ? "⏎ nearest · Esc skip" : "Esc skip"; box.appendChild(hint);
+  let run = null;
+  if (selectedSeg && selectedSeg.val === 1 && isObjDirected(selectedSeg.bid)) run = selectedSeg;
+  else if (activeBid != null && isObjDirected(activeBid)) {
+    const v = labelState.get(activeBid);
+    if (v && v[cur] === 1) run = runAt(activeBid, cur);
+  }
+  if (!run) return null;
+  const ob = objectState.get(run.bid);
+  return { kind: "bout", bid: run.bid, s: run.s, e: run.e, ids: objIdsOf(ob ? OBJ_IDS[ob[run.s]] : "") };
 }
-function closeObjPick() { awaitObject = null; renderObjPick(); }
-async function applyObject(bid, s, e, id) {   // set the object on the Happening frames of [s,e) only — value, source and target untouched; undoable
+// Re-draw the Objects card when what it shows changed (cheap to call per frame: it compares a key).
+function refreshObjects(force = false) {
+  const t = objTarget();
+  const key = (t ? objBoutKey(t) + "|" + t.ids.join("+") : "none") + "|" + activeBid + "|" + projObjects().length + "|" + (browse ? 1 : 0)
+    + "|" + (objSug.suggested || "");
+  if (!force && key === objShownKey) return;
+  objShownKey = key;
+  renderObjectBar(t);
+}
+async function applyObject(bid, s, e, key, chain = false) {   // set the object(s) on the Happening frames of [s,e) only — value, source and target untouched; undoable
   if (browseBlocked()) return;                       // browsing detections is read only
   const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid);
   if (!v || !ob) return;
-  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e), oc = objCode(id);
+  const beforeV = v.slice(s, e), beforeS = src.slice(s, e), beforeT = tg.slice(s, e), beforeO = ob.slice(s, e), oc = objCode(objKey(objIdsOf(key)));
   for (let i = s; i < e; i++) if (v[i] === 1) ob[i] = oc;
-  undoStack.push({ bid, s, e, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
+  undoStack.push({ bid, s, e, chain, beforeV, beforeS, beforeT, beforeO, afterV: v.slice(s, e), afterS: src.slice(s, e), afterT: tg.slice(s, e), afterO: ob.slice(s, e) }); redoStack.length = 0;
   renderTimeline(); await syncRange(bid, s, e);
 }
-async function setBoutObject(id) {
-  const a = awaitObject; if (!a) return;
-  closeObjPick();
-  if (a.track !== activeTrack) { busy("the track changed — select the bout again to set its object"); return; }
-  await applyObject(a.bid, a.s, a.e, id);
-  logEvent("bout_object", { behavior_id: a.bid, track: a.track, object: id, suggested: a.suggested, start: a.s, end: a.e,
-                            via: a.fromSel ? "select" : "paint" });
-  busy(id ? `${bname(a.bid)}: frames ${a.s}–${a.e} on ${objName(id)}` : `${bname(a.bid)}: frames ${a.s}–${a.e}, no object`);
+// A checkbox in the Objects card: add or remove one object on the bout it shows (the whole bout).
+async function toggleObject(id, on) {
+  const t = objTarget();
+  if (!t || browseBlocked()) { refreshObjects(true); return; }
+  const ids = objIdsOf(objKey(on ? [...t.ids, id] : t.ids.filter(x => x !== id))), key = objKey(ids);
+  if (t.kind === "review") {                         // saved with the candidate when you accept it
+    reviewCurrent.objects = ids; reviewCurrent.objectsTouched = true;
+    refreshObjects(true);
+    busy(key ? `${bname(t.bid)} candidate on ${objName(key)} — accept (y) to save` : `${bname(t.bid)} candidate: no object`);
+    return;
+  }
+  await applyObject(t.bid, t.s, t.e, key);
+  logEvent("bout_object", { behavior_id: t.bid, track: activeTrack, object: key, objects: ids, suggested: objSug.suggested,
+                            start: t.s, end: t.e, via: "checkbox" });
+  busy(key ? `${bname(t.bid)}: frames ${t.s}–${t.e} on ${objName(key)}` : `${bname(t.bid)}: frames ${t.s}–${t.e}, no object`);
 }
-async function fillSuggestedObject(bid, s, e) {   // review accept: take the nearest object without asking
-  const sug = await objectSuggest(bid, s, e);
-  if (!sug || !sug.suggested) return;
-  await applyObject(bid, s, e, sug.suggested);
-  logEvent("bout_object", { behavior_id: bid, track: activeTrack, object: sug.suggested, suggested: sug.suggested, start: s, end: e, via: "accept" });
+// After a Happening paint on an "on object" behavior: the bout keeps the objects it already had (you
+// extended it), else gets the one nearest the nose (★), chained to the paint so one undo takes both.
+async function objectsAfterPaint(bid, s, e, paintOp = null, via = "paint") {
+  const run = runAt(bid, s), ob = objectState.get(bid);
+  if (!run || run.val !== 1 || !ob) return;
+  const chainable = () => !!paintOp && undoStack[undoStack.length - 1] === paintOp;
+  let code = 0;
+  for (let i = run.s; i < run.e; i++) if (ob[i]) { code = ob[i]; break; }
+  if (code) {                                        // extending a bout: the new frames take its objects
+    let mixed = false; for (let i = run.s; i < run.e; i++) if (ob[i] !== code) { mixed = true; break; }
+    if (mixed) await applyObject(bid, run.s, run.e, OBJ_IDS[code], chainable());
+    return;
+  }
+  const forVid = vid, sug = await objectSuggest(bid, run.s, run.e);
+  const now = runAt(bid, s);
+  if (vid !== forVid || !now || now.s !== run.s || now.e !== run.e || ob[run.s]) { refreshObjects(true); return; }   // the bout changed meanwhile
+  if (!sug || !sug.suggested) { refreshObjects(true); busy(`${bname(bid)}: frames ${run.s}–${run.e} — tick what it's on under Objects`); return; }
+  objSug = { key: objBoutKey({ bid, s: run.s, e: run.e }), rows: sug.objects || [], suggested: sug.suggested };
+  await applyObject(bid, run.s, run.e, sug.suggested, chainable());
+  logEvent("bout_object", { behavior_id: bid, track: activeTrack, object: sug.suggested, objects: [sug.suggested], suggested: sug.suggested,
+                            start: run.s, end: run.e, via });
+  busy(`${bname(bid)}: frames ${run.s}–${run.e} on ${objName(sug.suggested)} (nearest) — change it under Objects`);
+}
+// Review accept / merge / split painted [s,e) Happening: save the ticked objects, or (none ticked by
+// hand) the bout's own / the nearest one, as for a paint.
+async function commitReviewObjects(rc, bid, s, e) {
+  if (!isObjDirected(bid)) return;
+  if (rc && rc.objectsTouched) {
+    const run = runAt(bid, s) || { s, e };
+    await applyObject(bid, run.s, run.e, objKey(rc.objects || []));
+    logEvent("bout_object", { behavior_id: bid, track: activeTrack, object: objKey(rc.objects || []), objects: rc.objects || [],
+                              start: run.s, end: run.e, via: "review" });
+    return;
+  }
+  await objectsAfterPaint(bid, s, e, null, "accept");
 }
 async function addObject() {   // ＋ object: a project object by name (an enrichment item, a nest) — picked, not suggested (no outline)
   if (browseBlocked()) return null;
@@ -2313,30 +2377,72 @@ async function addObject() {   // ＋ object: a project object by name (an enric
   const o = await r.json();
   if (projMeta) projMeta.objects = [...projObjects(), o];
   logEvent("object_add", { object_id: o.id, name: o.name });
-  renderObjectBar(); if (awaitObject) renderObjPick();
+  refreshObjects(true);
   return o;
 }
-function renderObjectBar() {
-  const bar = el("objectBar"); if (!bar) return; bar.innerHTML = "";
-  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Objects:"; bar.appendChild(lab);
-  for (const o of projObjects()) {
-    const chip = document.createElement("span"); chip.className = "chip";
-    chip.title = o.roi ? `${o.name}: outlined by each clip's ${o.roi} (HCM database or drawn), so it can be suggested`
-                       : `${o.name}: added by hand — picked, not suggested`;
-    chip.innerHTML = `<span class="bname">${esc(o.name)}</span>` + (o.roi ? `<span class="k" title="outlined">◇</span>` : `<span class="x" title="remove">✕</span>`);
-    const x = chip.querySelector(".x");
-    if (x) x.onclick = async ev => {
-      ev.preventDefault(); ev.stopPropagation();
-      if (!confirm(`Remove object "${o.name}"? Bouts already labeled with it keep it.`)) return;
-      const r = await api(`/objects/${encodeURIComponent(o.id)}`, { method: "DELETE" });
-      if (!r.ok) { busy("could not remove: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
-      projMeta.objects = projObjects().filter(y => y.id !== o.id);
-      logEvent("object_delete", { object_id: o.id });
-      renderObjectBar();
-    };
-    bar.appendChild(chip);
+// The Objects card in the right rail, and the same checkboxes in the review panel while a candidate of
+// an "on object" behavior is under review (the rail is hidden then).
+function renderObjectBar(t = objTarget()) {
+  const bar = el("objectBar"), rv = el("rvObjects");
+  if (bar) fillObjectList(bar, t);
+  if (rv) {
+    const on = !!t && t.kind === "review";
+    rv.style.display = on ? "" : "none";
+    if (on) fillObjectList(rv, t); else rv.innerHTML = "";
   }
-  const add = document.createElement("button"); add.textContent = "＋ object"; add.onclick = addObject; bar.appendChild(add);
+  const k = objBoutKey(t);
+  if (t && objSug.key !== k && objSug.pending !== k) {   // rank the objects for this bout (★ nearest + distances), once per bout
+    objSug = { key: null, pending: k, rows: [], suggested: null };
+    objectSuggest(t.bid, t.s, t.e).then(r => {
+      if (objBoutKey(objTarget()) !== k) return;
+      objSug = { key: k, rows: (r && r.objects) || [], suggested: (r && r.suggested) || null };
+      refreshObjects(true);
+    });
+  }
+}
+function fillObjectList(bar, t) {
+  bar.innerHTML = "";
+  const head = document.createElement("div"); head.className = "status objhead";
+  const ab = behaviors.find(x => x.id === activeBid);
+  head.innerHTML = t ? `<b>Objects</b> · ${esc(bname(t.bid))} ${t.kind === "review" ? "candidate" : "bout"} ${t.s}–${t.e} is on:`
+    : !ab ? "<b>Objects</b>"
+    : !isObjDirected(activeBid) ? `<b>Objects</b> · tick "on object" to record what ${esc(ab.name)} bouts are on`
+    : `<b>Objects</b> · put the playhead on a ${esc(ab.name)} bout (or select one) to tick what it's on`;
+  bar.appendChild(head);
+  const k = objBoutKey(t), sug = t && objSug.key === k ? objSug : null;
+  const dist = new Map(((sug && sug.rows) || []).map(r => [r.id, r]));
+  const locked = !t || !!browse;
+  for (const o of projObjects()) {
+    const row = document.createElement("label"); row.className = "objrow" + (locked ? " off" : "");
+    row.title = o.roi ? `${o.name}: outlined by each clip's ${o.roi} (HCM database or drawn), so it can be suggested`
+                      : `${o.name}: added by hand — ticked, not suggested`;
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.dataset.oid = o.id;
+    cb.checked = !!t && t.ids.includes(o.id); cb.disabled = locked;
+    cb.onchange = () => { cb.blur(); toggleObject(o.id, cb.checked); };   // blur: hotkeys ignore a focused input
+    row.appendChild(cb);
+    const nm = document.createElement("span"); nm.textContent = (sug && sug.suggested === o.id ? "★ " : "") + o.name; row.appendChild(nm);
+    const d = dist.get(o.id), od = document.createElement("span"); od.className = "od";
+    od.textContent = (d && d.distance_px != null ? `${Math.round(d.distance_px)}px ` : "") + (o.roi ? "◇" : "");
+    if (!o.roi) {                                    // an added object can be removed (its old bouts keep it)
+      const x = document.createElement("span"); x.className = "x"; x.textContent = "✕"; x.title = "remove this object";
+      x.onclick = async ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        if (!confirm(`Remove object "${o.name}"? Bouts already labeled with it keep it.`)) return;
+        const r = await api(`/objects/${encodeURIComponent(o.id)}`, { method: "DELETE" });
+        if (!r.ok) { busy("could not remove: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+        projMeta.objects = projObjects().filter(y => y.id !== o.id);
+        logEvent("object_delete", { object_id: o.id });
+        refreshObjects(true);
+      };
+      od.appendChild(x);
+    }
+    row.appendChild(od);
+    bar.appendChild(row);
+  }
+  const add = document.createElement("button"); add.textContent = "＋ object";
+  add.title = "Add an object to this project (an enrichment item, a nest, a toy). With a bout shown above, it is ticked for that bout.";
+  add.onclick = async () => { add.blur(); const t0 = objTarget(), o = await addObject(); if (o && t0 && objBoutKey(objTarget()) === objBoutKey(t0)) toggleObject(o.id, true); };
+  bar.appendChild(add);
 }
 function armTargetPick(bid, s, e, k) {   // after a directed positive paint, ask for the recipient
   if (k !== 1 || !isDirected(bid) || nTracks() < 2) { awaitTarget = null; return; }
@@ -2387,13 +2493,12 @@ function updateSelStatus() {
     }
     if (selectedSeg.val === 1 && isObjDirected(selectedSeg.bid)) {
       const ob = objectState.get(selectedSeg.bid), oid = ob ? OBJ_IDS[ob[selectedSeg.s]] || "" : "";
-      dir += oid ? ` · on ${objName(oid)}` : " · no object yet";
-      if (!awaitObject || awaitObject.s !== selectedSeg.s || awaitObject.bid !== selectedSeg.bid)
-        armObjectPick(selectedSeg.bid, selectedSeg.s, selectedSeg.e, oid);
+      dir += oid ? ` · on ${objName(oid)}` : " · no object yet (tick it under Objects)";
     }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack + 1}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
     btn.disabled = false;
-  } else { btn.disabled = true; busy(""); if (awaitObject && awaitObject.fromSel) closeObjPick(); }   // nothing selected -> drop the stale "Selected …" message
+  } else { btn.disabled = true; busy(""); }   // nothing selected -> drop the stale "Selected …" message
+  refreshObjects();
 }
 async function deleteSelectedSeg() {
   if (!selectedSeg || browseBlocked()) return;
@@ -2451,7 +2556,7 @@ function renderBehaviorBar() {
     bar.appendChild(chip);
   }
   const add = document.createElement("button"); add.textContent = "＋ behavior"; add.onclick = addBehavior; bar.appendChild(add);
-  renderObjectBar();
+  refreshObjects(true);
   if (activeBid != null) {
     const cSame = document.createElement("button");
     cSame.textContent = "⎘ clone (seed labels)";
@@ -2757,6 +2862,31 @@ async function hidraSaveSetup() {
   } catch (e) { note.textContent = "could not save: " + e.message; }
 }
 
+// "on object" and "directed" are labeling options, not HiDRA ones: wired at page start. (They used to be
+// wired inside hidraInit, after the HiDRA heads load, so without HiDRA set up ticking them did nothing.)
+el("objToggle").onchange = async () => {   // mark this behavior object-directed: each Happening bout records its object
+  const b = behaviors.find(x => x.id === activeBid); if (!b) { el("objToggle").checked = false; return; }
+  const val = el("objToggle").checked;
+  b.object_directed = val;                           // optimistic; roll back on failure
+  const r = await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object_directed: val }) }).catch(() => null);
+  if (!r || !r.ok) { b.object_directed = !val; el("objToggle").checked = !val; busy("couldn't save the 'on object' flag"); return; }
+  logEvent("behavior_object_directed", { behavior_id: activeBid, object_directed: val });
+  busy(val ? `${bname(activeBid)} is on an object — tick what each bout is on under Objects (a new bout starts with the nearest ★)` : `${bname(activeBid)} no longer records an object`);
+  renderTimeline(); refreshObjects(true);
+};
+el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
+  const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
+  const val = el("dirToggle").checked;
+  b.directed = val;                                  // optimistic; roll back on failure
+  try {
+    await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directed: val }) });
+  } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
+  logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
+  if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
+  busy(val ? `${bname(activeBid)} is directed — paint a bout, then press Shift + the target's track number` : `${bname(activeBid)} is no longer directed`);
+  renderTimeline();
+};
+
 async function hidraInit() {
   let st = null;
   try {
@@ -2817,30 +2947,6 @@ async function hidraInit() {
   el("hidraTrainOn").onchange = hidraSaveTrainOn;
   el("hidraPpc").onchange = hidraSaveScale;
   el("hidraFps").onchange = hidraSaveFps;
-  el("objToggle").onchange = async () => {   // mark this behavior object-directed: each Happening bout records its object
-    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("objToggle").checked = false; return; }
-    const val = el("objToggle").checked;
-    b.object_directed = val;                           // optimistic; roll back on failure
-    const r = await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object_directed: val }) }).catch(() => null);
-    if (!r || !r.ok) { b.object_directed = !val; el("objToggle").checked = !val; busy("couldn't save the 'on object' flag"); return; }
-    logEvent("behavior_object_directed", { behavior_id: activeBid, object_directed: val });
-    if (!val) closeObjPick();
-    busy(val ? `${bname(activeBid)} is on an object — paint or select a bout, then pick the object (⏎ takes the nearest)` : `${bname(activeBid)} no longer records an object`);
-    renderTimeline();
-  };
-  el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
-    const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
-    const val = el("dirToggle").checked;
-    b.directed = val;                                  // optimistic; roll back on failure
-    try {
-      await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directed: val }) });
-    } catch (e) { b.directed = !val; el("dirToggle").checked = !val; busy("couldn't save directed flag: " + e.message); return; }
-    logEvent("behavior_directed", { behavior_id: activeBid, directed: val });
-    if (!val) awaitTarget = null;                      // leaving directed mode disarms any pending target pick
-    busy(val ? `${bname(activeBid)} is directed — paint a bout, then press Shift + the target's track number` : `${bname(activeBid)} is no longer directed`);
-    renderTimeline();
-  };
-
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns
   // early above and never reaches here.
@@ -4133,7 +4239,7 @@ async function reclassifyAsNewBehavior() {
   const b = await r.json();
   behaviors.push(b);
   labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames));   // same per-frame state loadLabels builds
-  targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); recomputeBouts(b.id);
+  targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); objectState.set(b.id, new Int16Array(meta.n_frames)); recomputeBouts(b.id);
   renderBehaviorBar();
   logEvent("behavior_add", { behavior_id: b.id, name: b.name, from: "reclassify" });
   await reclassifyCandidate(b.id);                  // advances the queue, like picking an existing behavior
@@ -4177,7 +4283,7 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
   if (!reviewCurrent || browseBlocked()) return;
   logDecision("accept");
   snapReview();
-  const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
+  const rc = reviewCurrent, { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   if (reviewCurrent.mode === "disagree") {
     if (candidateMode === "mislabel") await markReviewedCurrent();   // resolved -> stop resurfacing it
     await applyPaint(bid, t.s, t.e, reviewCurrent.suggestVal === 1 ? 1 : 2, "candidate");   // correct the label to what the model sees
@@ -4188,14 +4294,14 @@ async function acceptCandidate() {   // "y": accept the model. new: label inner 
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");     // trimmed edges are Not-happening (no target)
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
   if (isDirected(bid) && at >= 0) logEvent("bout_target", { behavior_id: bid, track: activeTrack, target: at, start: t.s, end: t.e, via: "accept" });
-  if (isObjDirected(bid)) await fillSuggestedObject(bid, t.s, t.e);   // on object: the nearest one, correctable later
+  if (isObjDirected(bid)) await commitReviewObjects(rc, bid, t.s, t.e);   // on object: what you ticked, else the nearest
   advanceReview();
 }
 async function mergeCandidate() {   // "m": accept, but bridge the gap to an adjacent same-behavior bout instead of leaving it split
   if (!reviewCurrent || reviewCurrent.mode !== "new" || browseBlocked()) return;   // new detections only (disagree/reviewed must not be silently relabeled by merge)
   logDecision("merge");
   snapReview();
-  const { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
+  const rc = reviewCurrent, { bid, s, e } = reviewCurrent, t = reviewTrim || { s, e };
   const m = mergeExtent(bid, t.s, t.e);
   if (!m.merged) return acceptCandidate();          // nothing adjacent (e.g. you trimmed away from it) — fall back to a normal accept
   const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
@@ -4204,6 +4310,7 @@ async function mergeCandidate() {   // "m": accept, but bridge the gap to an adj
   if (m.gapAfter) await applyPaint(bid, m.gapAfter[0], m.gapAfter[1], 1, "candidate", at);      // the adjacent bout's own frames/provenance are never touched
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate");   // still mark any trimmed-off edges Not-happening, same as Accept
   if (t.e < e) await applyPaint(bid, t.e, e, 2, "candidate");
+  if (isObjDirected(bid)) await commitReviewObjects(rc, bid, t.s, t.e);   // on object: what you ticked, else the bout's own / nearest
   advanceReview();
 }
 // "s": the candidate spans MORE THAN ONE bout. Commit the part from the accept-range start up to the
@@ -4221,6 +4328,7 @@ async function splitCandidate() {
   const at = isDirected(bid) ? (reviewCurrent.target ?? NO_TARGET) : NO_TARGET;
   await applyPaint(bid, t.s, cut, 1, "candidate", at);        // left segment = one confirmed Happening bout
   if (t.s > s) await applyPaint(bid, s, t.s, 2, "candidate"); // any trimmed-off left edge = Not-happening
+  if (isObjDirected(bid)) await commitReviewObjects(reviewCurrent, bid, t.s, cut);   // on object: what you ticked, else the nearest
   // Keep reviewing the REMAINDER, but present it clearly as the next candidate (its own bout), not as
   // the same one silently shrinking — fromSplit/splitPiece drive the header badge and the message.
   reviewCurrent = { ...reviewCurrent, s: cut, e, fromSplit: true, splitPiece: piece + 1 };
@@ -4432,7 +4540,7 @@ async function browseStart() {                    // the Browse button, and a re
     return;
   }
   const fresh = !browse;
-  if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); closeObjPick(); }
+  if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); }
   browse = { bid, track, which, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
              srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
   logEvent("browse_start", { behavior_id: bid, name: bname(bid), which, order, threshold: browse.thr, labels_from: src || "this project",
@@ -4556,11 +4664,11 @@ function commitPaint() {
   logEvent("paint_commit", { behavior_id: bid, name: bname(bid), via: "anchor",
                              mode: painting.mode, value: k, start: s, end: e,
                              n_frames: e - s, dwell_ms: Date.now() - painting.t0, source: "manual", target: NO_TARGET });
-  applyPaint(bid, s, e, k);
+  const done = applyPaint(bid, s, e, k), op = undoStack[undoStack.length - 1];   // applyPaint pushes its undo op before its first await
   painting = null;
   if (k === 1 && isDirected(bid) && nTracks() >= 2) armTargetPick(bid, s, e, k);   // directed: ask for the recipient
   else busy(`marked ${bname(bid)}: ${s}–${e}`);
-  if (k === 1 && isObjDirected(bid)) armObjectPick(bid, s, e);                       // on object: ask which
+  if (k === 1 && isObjDirected(bid)) done.then(() => objectsAfterPaint(bid, s, e, op));   // on object: keep / suggest what it's on
 }
 function togglePaint(bid) {   // behavior hotkey: start (current mode) / commit
   if (drag) return;           // ignore while a timeline lane drag is live (avoids a concurrent anchor-paint)
@@ -4744,9 +4852,9 @@ tl.addEventListener("pointerup", () => {
       const dbid = drag.bid, dk = modeVal();
       logEvent("paint_commit", { behavior_id: dbid, name: bname(dbid), via: "drag",
                                  mode, value: dk, start: s, end: e, n_frames: e - s, source: "manual", target: NO_TARGET });
-      applyPaint(dbid, s, e, dk); show(drag.curFrame);
+      const done = applyPaint(dbid, s, e, dk), op = undoStack[undoStack.length - 1]; show(drag.curFrame);
       if (dk === 1 && isDirected(dbid) && nTracks() >= 2) armTargetPick(dbid, s, e, dk);   // directed: ask for the recipient
-      if (dk === 1 && isObjDirected(dbid)) armObjectPick(dbid, s, e);                       // on object: ask which
+      if (dk === 1 && isObjDirected(dbid)) done.then(() => objectsAfterPaint(dbid, s, e, op));   // on object: keep / suggest what it's on
     }
   }
   drag = null;
@@ -5013,8 +5121,6 @@ window.addEventListener("keydown", e => {
     if (!["ArrowLeft", "ArrowRight", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
   }
   const reviewing = el("reviewPanel").classList.contains("on");
-  if (awaitObject && !reviewing && e.key === "Enter") { e.preventDefault(); return setBoutObject(awaitObject.suggested || awaitObject.current || ""); }
-  if (awaitObject && !reviewing && e.key === "Escape") { e.preventDefault(); closeObjPick(); busy("object skipped — select the bout to set it later"); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI
   if (settingRoi && e.key === "Escape") { e.preventDefault(); setRoiMode(false); busy("spout ROI cancelled"); return; }

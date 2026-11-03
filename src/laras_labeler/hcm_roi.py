@@ -204,17 +204,47 @@ def _outer_ring(g) -> list[list[float]]:
 def engine_url(url: str) -> str:
     """A `postgresql://` URL names no driver, and SQLAlchemy's default changed under it: psycopg2
     before 2.1, psycopg (3) from 2.1. With only the other one installed, every lookup failed -- and
-    silently, since a DB error returns {}. Name whichever driver is installed (psycopg first)."""
-    m = re.match(r"postgres(?:ql)?://", url)
+    silently, since a DB error returns {}. Name whichever driver is installed (psycopg first).
+
+    A URL that names a driver which is not installed gets the installed one too. The lab's HCM URL
+    (the pheno db-query skill's) says `postgresql+psycopg2://`, while the labeler installs psycopg 3:
+    the user/password/host part is the same for both."""
+    m = re.match(r"postgres(?:ql)?(?:\+(psycopg2|psycopg))?://", url)
     if not m:
         return url
-    for mod in ("psycopg", "psycopg2"):
+    named = m.group(1)
+    for mod in ((named,) if named else ()) + ("psycopg", "psycopg2"):
         try:
             __import__(mod)
         except ImportError:
             continue
         return f"postgresql+{mod}://" + url[m.end():]
     return url
+
+
+def unavailable_reason(video_id: str, source_video: str | None = None) -> str | None:
+    """Why fetch_rois can't even ask the database for this clip, as a sentence for the GUI, or None when
+    the setup is complete (then an empty fetch means the database itself didn't answer). Checks only
+    what can be checked without a connection."""
+    if not (camera_of(source_video or "") or camera_of(video_id)):
+        return "the clip's name doesn't say which camera it is from (cam_NN), so its recording can't be looked up"
+    try:
+        import sqlalchemy  # noqa: F401
+    except Exception:
+        return "the database package (sqlalchemy) isn't installed: update the labeler (git pull) and start it with uv run"
+    if not any(_importable(m) for m in ("psycopg", "psycopg2")):
+        return "no Postgres driver (psycopg) is installed: update the labeler (git pull) and start it with uv run"
+    if not DATABASE_URL:
+        return "HCM_DATABASE_URL isn't set: set it in the terminal before you start the labeler"
+    return None
+
+
+def _importable(mod: str) -> bool:
+    try:
+        __import__(mod)
+    except Exception:
+        return False
+    return True
 
 
 def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,

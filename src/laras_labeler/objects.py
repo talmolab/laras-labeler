@@ -1,7 +1,8 @@
 """Object-directed bouts: which arena object a bout is on (climbing -> feeder, rearing -> cage wall).
 
-A behavior marked `object_directed` records, per Happening bout, one object from the PROJECT's object
-list (`project_objects`). Like behaviors, the list is the project's own: it starts with the arena
+A behavior marked `object_directed` records, per Happening bout, the objects it is on: any number from
+the PROJECT's object list (`project_objects`), stored as one sorted "+"-joined value ("cage+feeder_top",
+see labels._obj). Like behaviors, the list is the project's own: it starts with the arena
 objects the HCM database outlines, and the annotator can add more ("nest", "toy", ...):
 
     feeder_top   feeder cage, top outline        clip `feeder_top_roi`
