@@ -200,6 +200,9 @@ class Trainer:
             vid = v["video_id"]
             if not v.get("has_poses"):
                 continue
+            if v.get("role") == "test":                             # held-out test clip: scored, never trained on
+                skipped.append({"video_id": vid, "reason": "test clip (held out)"})
+                continue
             rdf = self.labels.rows_for_behavior(pid, vid, bid)      # track, frame, value
             if len(rdf) == 0:
                 continue

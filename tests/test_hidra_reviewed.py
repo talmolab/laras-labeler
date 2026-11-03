@@ -66,6 +66,25 @@ def test_held_out_clip_sends_nothing():
         assert res["video_ids"] == ["0-2"]
 
 
+def test_test_clip_sends_nothing_to_any_export():
+    """A clip marked as the test clip (role "test") is held out of every fine-tune, so the model
+    comparison scores each model on frames none of them trained on."""
+    class _TestProj(_Proj):
+        videos = [{**_Proj.videos[0], "role": "test"}, _Proj.videos[1]]
+
+    class _TestStore:
+        def get(self, pid):
+            return _TestProj()
+
+    for fn in (hidra.export_bouts, hidra.export_reviewed, hidra.export_window):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "spans.csv"
+            res = fn(_TestStore(), _Labels(), "p", 0, HEAD, out)
+            with out.open() as f:
+                assert {r["file"] for r in csv.DictReader(f)} == {"0-11_0.parquet"}
+            assert res["video_ids"] == ["0-11"]
+
+
 def test_window_export_is_the_social_window_or_the_whole_clip():
     res, rows = _export(hidra.export_window)
     spans = {(r["file"], int(r["start_frame"]), int(r["stop_frame"])) for r in rows}

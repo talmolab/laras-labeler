@@ -78,11 +78,24 @@ def main(argv=None) -> None:
     # ---- 1. restore the binding (re-derive the fine-tuned weights path) --------------------------
     if not args.no_restore:
         collapse = args.collapse or _default_collapse(args.action)
-        models = proj / "hidra" / "_finetune" / f"{args.lab}__{args.action}" / "models"
+        head_root = proj / "hidra" / "_finetune" / f"{args.lab}__{args.action}"
+        models = head_root / "models"                     # legacy flat layout (before fine-tunes were versioned)
         tag = _tag(pid, args.behavior, args.action)
-        weights = None
+        weights, run_id = None, None
+        # Versioned fine-tunes (…/<lab>__<action>/ft-<timestamp>/models): prefer the newest recorded run
+        # whose checkpoints are still on disk, then the newest run dir found on disk.
+        runs = [r for r in beh.get("hidra_runs", []) if (r.get("lab"), r.get("action")) == (args.lab, args.action)
+                and r.get("models_kept") and r.get("weights")]
+        runs = [r for r in sorted(runs, key=lambda r: r.get("created_at", "")) if list(Path(r["weights"].replace("{config}", "*")).parent.glob(Path(r["weights"]).name.replace("{config}", "*")))]
+        disk = sorted(d for d in head_root.glob("ft-*") if (d / "models").is_dir() and list((d / "models").glob(f"*__{tag}.pkl")))
         if args.zero_shot:
             print("  --zero-shot: binding the SHIPPED head (no weights) so Predict runs zero-shot")
+        elif runs:
+            weights, run_id = runs[-1]["weights"], runs[-1]["run_id"]
+            print(f"  using the newest recorded fine-tune {run_id}")
+        elif disk:
+            weights, run_id = str(disk[-1] / "models" / ("{config}__" + tag + ".pkl")), disk[-1].name
+            print(f"  using the newest fine-tune dir on disk {run_id}")
         elif models.is_dir():
             pkls = sorted(models.glob(f"*__{tag}.pkl"))
             if pkls:
@@ -98,6 +111,8 @@ def main(argv=None) -> None:
         if weights:
             new_hidra["weights"] = weights
             new_hidra["finetune_mode"] = args.mode
+            if run_id:
+                new_hidra["run_id"] = run_id
         print(f"  behavior {args.behavior} ({bname!r}) hidra:")
         print(f"    was: {json.dumps(beh.get('hidra', {}))}")
         print(f"    now: {json.dumps(new_hidra)}")
