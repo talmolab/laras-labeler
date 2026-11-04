@@ -22,7 +22,8 @@ made. The cut re-encodes (frame-exact select filter), so it needs ffmpeg: on PAT
 bundled with the imageio-ffmpeg package (add `--with imageio-ffmpeg` to the uv command).
 
 `--hour 4 --hour 16` keeps only those hours of the day (the `h04` / `h16` in a stem), and `--clip-only`
-writes just the cut clips, not the full-hour `.reid.slp` beside them. Every run also writes
+writes just the cut clips, not the full-hour `.reid.slp` beside them. `--skip-existing` resumes a
+stopped run: clips already complete in --out are skipped (a clip stopped mid-write is redone). Every run also writes
 `clips.summary.json` (each clip's source recording and frames), which the labeler reads to find a
 clip's HCM recording, and so its arena outlines. These clip names don't say which camera they are from.
 
@@ -171,9 +172,12 @@ def process(npz: Path, args, path_map) -> dict:
     if args.clip:
         start, end = args.clip
         fps = str(meta.get("fps") or "50/1")
-        clip_mp4 = out / f"{stem}.f{start}-{end}.mp4"
-        clip_slp = out / f"{stem}.f{start}-{end}.reid.slp"
-        cut_video(video_src, clip_mp4, start, end, fps)
+        clip_mp4, clip_slp = clip_paths(out, stem, start, end)
+        # each file gets its final name only once complete, so a run stopped mid-clip (Ctrl+C)
+        # leaves a .partial file that --skip-existing does not count as done
+        part_mp4 = clip_mp4.with_name(clip_mp4.stem + ".partial.mp4")
+        cut_video(video_src, part_mp4, start, end, fps)
+        part_mp4.replace(clip_mp4)
         clip = labels                                       # already re-labeled, in memory
         video = sio.Video.from_filename(str(clip_mp4))
         frames = []
@@ -183,9 +187,29 @@ def process(npz: Path, args, path_map) -> dict:
                                                instances=lf.instances))
         clip_labels = sio.Labels(labeled_frames=frames, videos=[video], skeletons=clip.skeletons,
                                  tracks=clip.tracks)
-        sio.save_slp(clip_labels, str(clip_slp))
+        part_slp = clip_slp.with_name(clip_slp.name[: -len(".reid.slp")] + ".reid.partial.slp")
+        sio.save_slp(clip_labels, str(part_slp))
+        part_slp.replace(clip_slp)
         row.update(clip_video=str(clip_mp4), clip_slp=str(clip_slp), start=start, end=end)
     return row
+
+
+def clip_paths(out: Path, stem: str, start: int, end: int) -> tuple[Path, Path]:
+    return out / f"{stem}.f{start}-{end}.mp4", out / f"{stem}.f{start}-{end}.reid.slp"
+
+
+def already_cut(npz: Path, args, path_map) -> dict | None:
+    """With --skip-existing: the summary row of a clip whose video and .reid.slp are both already in
+    --out (built from the identity table alone, so the summaries still list every clip), else None."""
+    if not (args.skip_existing and args.clip):
+        return None
+    meta = load_table(npz)["meta"]
+    start, end = args.clip
+    mp4, slp = clip_paths(Path(args.out).expanduser(), meta["stem"], start, end)
+    if not (mp4.exists() and slp.exists()):
+        return None
+    return {"stem": meta["stem"], "age_days": meta.get("age_days"), "video": remap(meta["video"], path_map),
+            "clip_video": str(mp4), "clip_slp": str(slp), "start": start, "end": end, "skipped": True}
 
 
 def main(argv=None) -> int:
@@ -200,6 +224,8 @@ def main(argv=None) -> int:
                     help="also cut frames [START, END) into an mp4 + matching .reid.slp")
     ap.add_argument("--clip-only", action="store_true",
                     help="with --clip: write only the clips, not the full-hour .reid.slp")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="with --clip: skip clips already in --out (resume a stopped run)")
     ap.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW",
                     help="rewrite a path prefix from the table's meta (default /mnt/vast=/Volumes/talmo "
                          "when /Volumes/talmo exists)")
@@ -231,19 +257,26 @@ def main(argv=None) -> int:
         print("no identity tables matched", file=sys.stderr)
         return 1
 
+    out = Path(args.out).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    summary = out / "reid_to_slp.summary.json"
     rows = []
     for i, f in enumerate(files, 1):
-        row = process(f, args, path_map)
+        row = already_cut(f, args, path_map)
+        if row:
+            print(f"[{i}/{len(files)}] {row['stem']}  already cut, skipped")
+        else:
+            row = process(f, args, path_map)
+            tot = max(row["instances"], 1)
+            print(f"[{i}/{len(files)}] {row['stem']}  P{row['age_days']}  "
+                  f"{row['assigned'] / tot:6.1%} assigned  {row['unresolved'] / tot:5.1%} no identity  "
+                  f"{'DUPLICATES ' + str(row['duplicate_frames']) if row['duplicate_frames'] else ''}")
         rows.append(row)
-        tot = max(row["instances"], 1)
-        print(f"[{i}/{len(files)}] {row['stem']}  P{row['age_days']}  "
-              f"{row['assigned'] / tot:6.1%} assigned  {row['unresolved'] / tot:5.1%} no identity  "
-              f"{'DUPLICATES ' + str(row['duplicate_frames']) if row['duplicate_frames'] else ''}")
-    summary = Path(args.out).expanduser() / "reid_to_slp.summary.json"
-    summary.write_text(json.dumps(rows, indent=2))
-    if args.clip:   # the labeler reads this to find each clip's HCM recording (laras_labeler.hcm_roi)
-        (Path(args.out).expanduser() / "clips.summary.json").write_text(json.dumps(rows, indent=2, default=str))
-    print(f"wrote {len(rows)} file(s) to {Path(args.out).expanduser()} (summary: {summary.name})")
+        # rewritten after every file, so a stopped run still leaves summaries of what it finished
+        summary.write_text(json.dumps(rows, indent=2, default=str))
+        if args.clip:   # the labeler reads this to find each clip's HCM recording (laras_labeler.hcm_roi)
+            (out / "clips.summary.json").write_text(json.dumps(rows, indent=2, default=str))
+    print(f"wrote {len(rows)} file(s) to {out} (summary: {summary.name})")
     return 0
 
 
