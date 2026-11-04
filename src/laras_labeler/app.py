@@ -153,6 +153,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     _saved = config.load_app_settings(settings.projects_root)
     if _saved.get("hidra_home") or _saved.get("hidra_python"):
         hidra.configure(_saved.get("hidra_home"), _saved.get("hidra_python"))
+    # The HCM database URL: from HCM_DATABASE_URL when it is exported (and remembered from then on),
+    # else the one remembered from an earlier start. Never sent to the browser.
+    hcm_roi.use_database_url(settings.projects_root)
     app.state.settings = settings
     app.state.store = store
     app.state.vm = vm

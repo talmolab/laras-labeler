@@ -63,8 +63,9 @@ def main() -> None:
     a = ap.parse_args()
 
     say("labeler has feeder code", hasattr(hcm_roi, "source_recording"))
-    url = os.environ.get("HCM_DATABASE_URL", "")
-    say("HCM_DATABASE_URL set", bool(url))
+    src = hcm_roi.use_database_url(Path(a.root).expanduser())   # the same choice the labeler makes
+    url = hcm_roi.DATABASE_URL
+    say("HCM_DATABASE_URL set", {"env": "True (this terminal; now remembered)", "saved": "True (remembered in settings.json)"}.get(src, False))
     have = {}
     for mod in ("sqlalchemy", "psycopg", "psycopg2"):
         try:

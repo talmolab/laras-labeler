@@ -28,6 +28,26 @@ import re
 from pathlib import Path
 
 DATABASE_URL = os.environ.get("HCM_DATABASE_URL", "")  # set HCM_DATABASE_URL locally; do not commit credentials
+SETTINGS_KEY = "hcm_database_url"   # where use_database_url remembers it in <projects_root>/settings.json
+
+
+def use_database_url(projects_root) -> str:
+    """Pick the HCM database URL for this process, and remember it: HCM_DATABASE_URL from the
+    environment when it is set (saved to <projects_root>/settings.json, so later starts need no
+    export), else the one saved there. A new value in the environment replaces the saved one; with
+    neither, a URL this process already set is kept. Returns where it came from: "env", "saved" or ""
+    (none). Never raises."""
+    global DATABASE_URL
+    from . import config
+    env = os.environ.get("HCM_DATABASE_URL", "").strip()
+    saved = str(config.load_app_settings(projects_root).get(SETTINGS_KEY) or "").strip()
+    if env and env != saved:
+        try:
+            config.save_app_settings(projects_root, {SETTINGS_KEY: env})
+        except OSError:
+            pass
+    DATABASE_URL = env or saved or DATABASE_URL
+    return "env" if env else ("saved" if saved else "")
 CAM_RE = re.compile(r"cam[_-]?0*(\d+)")
 
 # HCM segmentation class_name -> labeler ROI config field
@@ -235,7 +255,8 @@ def unavailable_reason(video_id: str, source_video: str | None = None) -> str | 
     if not any(_importable(m) for m in ("psycopg", "psycopg2")):
         return "no Postgres driver (psycopg) is installed: update the labeler (git pull) and start it with uv run"
     if not DATABASE_URL:
-        return "HCM_DATABASE_URL isn't set: set it in the terminal before you start the labeler"
+        return ("HCM_DATABASE_URL isn't set: export it in the terminal once before you start the labeler "
+                "(it is remembered in the projects folder after that)")
     return None
 
 
