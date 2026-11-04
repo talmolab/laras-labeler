@@ -134,7 +134,10 @@ def find_ffmpeg() -> str | None:
 
 def cut_video(src: str, dst: Path, start: int, end: int, fps: str) -> None:
     vf = f"select=between(n\\,{start}\\,{end - 1}),setpts=N/FRAME_RATE/TB"
+    # -frames:v stops ffmpeg once the clip is written: without it, it decoded the rest of the hour
+    # (a 5-min clip from the start of a 1-h file read all 60 min)
     cmd = [find_ffmpeg(), "-loglevel", "error", "-y", "-i", src, "-vf", vf, "-r", fps,
+           "-frames:v", str(end - start),
            "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(dst)]
     subprocess.run(cmd, check=True)
 
