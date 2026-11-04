@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from pathlib import Path
 
 DATABASE_URL = os.environ.get("HCM_DATABASE_URL", "")  # set HCM_DATABASE_URL locally; do not commit credentials
@@ -260,6 +261,28 @@ def unavailable_reason(video_id: str, source_video: str | None = None) -> str | 
     return None
 
 
+# The HCM database is shared by the whole lab and has a small connection limit. A project with ~200 clips
+# missing outlines used to open one connection per clip at once (one engine each, whose pool then kept
+# the connection open), which filled the server ("remaining connection slots are reserved"). Now: one
+# lookup at a time, through one engine per URL that closes each connection when the lookup is done.
+_DB_LOCK = threading.Lock()
+_ENGINES: dict[tuple, object] = {}
+
+
+def _engine(create_engine, timeout: int):
+    key = (DATABASE_URL, timeout)
+    eng = _ENGINES.get(key)
+    if eng is None:
+        kw = {}
+        try:
+            from sqlalchemy.pool import NullPool    # no idle connections kept between lookups
+            kw["poolclass"] = NullPool
+        except Exception:
+            pass
+        eng = _ENGINES[key] = create_engine(engine_url(DATABASE_URL), connect_args={"connect_timeout": timeout}, **kw)
+    return eng
+
+
 def _importable(mod: str) -> bool:
     try:
         __import__(mod)
@@ -295,8 +318,7 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
     source: dict = {}
     pat = recording_like(video_id) or recording_like_path(source_video)
     try:
-        engine = create_engine(engine_url(DATABASE_URL), connect_args={"connect_timeout": timeout})
-        with engine.connect() as conn:
+        with _DB_LOCK, _engine(create_engine, timeout).connect() as conn:   # one lookup at a time (see _DB_LOCK)
             status = conn.execute(text(_STATUS_SQL), {"pat": pat}).scalar() if pat else None
             for cls in classes:
                 field = ROI_CLASS.get(cls)
