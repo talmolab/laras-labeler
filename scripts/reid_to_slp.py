@@ -21,6 +21,11 @@ matching `.reid.slp` with frame indices shifted to 0, which is how the labeler's
 made. The cut re-encodes (frame-exact select filter), so it needs ffmpeg: on PATH, or the binary
 bundled with the imageio-ffmpeg package (add `--with imageio-ffmpeg` to the uv command).
 
+`--hour 4 --hour 16` keeps only those hours of the day (the `h04` / `h16` in a stem), and `--clip-only`
+writes just the cut clips, not the full-hour `.reid.slp` beside them. Every run also writes
+`clips.summary.json` (each clip's source recording and frames), which the labeler reads to find a
+clip's HCM recording, and so its arena outlines. These clip names don't say which camera they are from.
+
 Paths inside `meta` are the server's (`/mnt/vast/...`); `--path-map` rewrites the prefix for wherever
 the share is mounted. On a Mac with the talmo share connected that is the default:
 `/mnt/vast=/Volumes/talmo` (so `/mnt/vast/than/...` -> `/Volumes/talmo/than/...`).
@@ -34,12 +39,18 @@ the share is mounted. On a Mac with the talmo share connected that is the defaul
     uv run --with sleap-io --with imageio-ffmpeg python scripts/reid_to_slp.py \\
         /Volumes/talmo/than/26-09-reid-v2/studies/reid_remaining_20261007/b21/ident_tables \\
         --day 2026-06-08 --out ~/reid_b21 --clip 0 15000
+
+    # the first 5 min of hour 4 and hour 16 on every day, clips only
+    uv run --with sleap-io --with imageio-ffmpeg python scripts/reid_to_slp.py \\
+        /Volumes/talmo/than/26-09-reid-v2/studies/reid_remaining_20261007/b21/ident_tables \\
+        --hour 4 --hour 16 --clip 0 15000 --clip-only --out ~/reid_b21_h04_h16
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -148,9 +159,11 @@ def process(npz: Path, args, path_map) -> dict:
     labels.replace_filenames(new_filenames=[video_src])
     n = relabel(labels, table)
     dup = check_unique(labels)
-    full = out / f"{stem}.reid.slp"
-    sio.save_slp(labels, str(full))
-    row.update(n, duplicate_frames=dup, slp=str(full))
+    row.update(n, duplicate_frames=dup)
+    if not (getattr(args, "clip_only", False) and args.clip):
+        full = out / f"{stem}.reid.slp"
+        sio.save_slp(labels, str(full))
+        row["slp"] = str(full)
 
     if args.clip:
         start, end = args.clip
@@ -158,7 +171,7 @@ def process(npz: Path, args, path_map) -> dict:
         clip_mp4 = out / f"{stem}.f{start}-{end}.mp4"
         clip_slp = out / f"{stem}.f{start}-{end}.reid.slp"
         cut_video(video_src, clip_mp4, start, end, fps)
-        clip = sio.load_slp(str(full), open_videos=False)
+        clip = labels                                       # already re-labeled, in memory
         video = sio.Video.from_filename(str(clip_mp4))
         frames = []
         for lf in clip.labeled_frames:
@@ -168,7 +181,7 @@ def process(npz: Path, args, path_map) -> dict:
         clip_labels = sio.Labels(labeled_frames=frames, videos=[video], skeletons=clip.skeletons,
                                  tracks=clip.tracks)
         sio.save_slp(clip_labels, str(clip_slp))
-        row.update(clip_video=str(clip_mp4), clip_slp=str(clip_slp))
+        row.update(clip_video=str(clip_mp4), clip_slp=str(clip_slp), start=start, end=end)
     return row
 
 
@@ -178,8 +191,12 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True, help="output folder")
     ap.add_argument("--day", action="append", default=[], help="only this day (YYYY-MM-DD); repeatable")
     ap.add_argument("--stem", action="append", default=[], help="only this stem, e.g. b21_20260608_h16")
+    ap.add_argument("--hour", action="append", type=int, default=[],
+                    help="only this hour of the day (the h04 in b21_20260608_h04); repeatable")
     ap.add_argument("--clip", nargs=2, type=int, metavar=("START", "END"),
                     help="also cut frames [START, END) into an mp4 + matching .reid.slp")
+    ap.add_argument("--clip-only", action="store_true",
+                    help="with --clip: write only the clips, not the full-hour .reid.slp")
     ap.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW",
                     help="rewrite a path prefix from the table's meta (default /mnt/vast=/Volumes/talmo "
                          "when /Volumes/talmo exists)")
@@ -202,6 +219,11 @@ def main(argv=None) -> int:
         files = [f for f in files if f.name.split("_")[1] in days]
     if args.stem:
         files = [f for f in files if f.name.split(".")[0] in set(args.stem)]
+    if args.hour:
+        def hour_of(f: Path) -> int | None:
+            m = re.search(r"_h(\d{2})", f.name)
+            return int(m.group(1)) if m else None
+        files = [f for f in files if hour_of(f) in set(args.hour)]
     if not files:
         print("no identity tables matched", file=sys.stderr)
         return 1
@@ -216,6 +238,8 @@ def main(argv=None) -> int:
               f"{'DUPLICATES ' + str(row['duplicate_frames']) if row['duplicate_frames'] else ''}")
     summary = Path(args.out).expanduser() / "reid_to_slp.summary.json"
     summary.write_text(json.dumps(rows, indent=2))
+    if args.clip:   # the labeler reads this to find each clip's HCM recording (laras_labeler.hcm_roi)
+        (Path(args.out).expanduser() / "clips.summary.json").write_text(json.dumps(rows, indent=2, default=str))
     print(f"wrote {len(rows)} file(s) to {Path(args.out).expanduser()} (summary: {summary.name})")
     return 0
 

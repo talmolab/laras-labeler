@@ -13,6 +13,10 @@ The window rule is what keeps clips off an empty cage (the first hour of a batch
 hut, or a stretch the re-ID could not decode. It does bias toward times the mice are visible, which is
 what a clip to label needs; say so if clips are used to estimate how often a behavior happens.
 
+`--from-start` takes only the window that starts at frame 0 (the first --minutes of the hour), for
+tables where only the start of each hour was re-identified. Single hours work as strata ("4,16"),
+and with only a few re-identified hours a day, lower --min-hours-per-day to match.
+
 If a chosen hour has no qualifying window, the next hour in the same stratum is tried, then the next
 day in the bin. Every choice is written to `plan.csv`, so a run can be reviewed (`--dry-run`) and
 repeated exactly (same `--seed`).
@@ -73,7 +77,7 @@ def spread(items: list, k: int, rng: np.random.Generator) -> list:
 
 
 def pick_window(path: Path, minutes: float, min_cov: float, step_s: float,
-                rng: np.random.Generator) -> dict | None:
+                rng: np.random.Generator, from_start: bool = False) -> dict | None:
     t = reid_to_slp.load_table(path)
     ident, meta = t["ident"], t["meta"]
     fps = float(Fraction(str(meta.get("fps") or "50")))           # "50/1" or "50"
@@ -83,7 +87,7 @@ def pick_window(path: Path, minutes: float, min_cov: float, step_s: float,
     if len(all_in) < win:
         return None
     csum = np.concatenate([[0], np.cumsum(all_in)])
-    starts = np.arange(0, len(all_in) - win + 1, step)
+    starts = np.array([0]) if from_start else np.arange(0, len(all_in) - win + 1, step)
     cov = (csum[starts + win] - csum[starts]) / win
     ok = starts[cov >= min_cov]
     if len(ok) == 0:
@@ -96,8 +100,8 @@ def pick_window(path: Path, minutes: float, min_cov: float, step_s: float,
 def parse_strata(text: str) -> list[range]:
     out = []
     for part in text.split(","):
-        a, b = (int(x) for x in part.split("-"))
-        out.append(range(a, b + 1))
+        a, _, b = part.strip().partition("-")             # "12-17", or one hour: "4"
+        out.append(range(int(a), int(b or a) + 1))
     return out
 
 
@@ -108,13 +112,16 @@ def main(argv=None) -> int:
     ap.add_argument("--bin-days", type=int, default=7, help="age-bin width in days (default 7)")
     ap.add_argument("--days-per-bin", type=int, default=1)
     ap.add_argument("--hour-strata", default="12-17,18-23",
-                    help="hour ranges, one clip from each per chosen day (default dark phase: 12-17,18-23)")
+                    help="hour ranges or single hours, one clip from each per chosen day "
+                         "(default dark phase: 12-17,18-23; e.g. 4,16)")
     ap.add_argument("--skip-days", type=int, default=3,
                     help="skip the first N recorded days (cage entry; weakest identities). Default 3")
     ap.add_argument("--minutes", type=float, default=5.0)
     ap.add_argument("--min-coverage", type=float, default=0.8,
                     help="share of the window's frames in which every mouse has an identity (default 0.8)")
     ap.add_argument("--min-hours-per-day", type=int, default=12, help="skip days with fewer table hours")
+    ap.add_argument("--from-start", action="store_true",
+                    help="only the first --minutes of each hour (where only that part was re-identified)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true", help="write plan.csv only, cut nothing")
     ap.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW")
@@ -131,6 +138,10 @@ def main(argv=None) -> int:
     days = sorted(by_day)
     first = days[0]
     usable = [d for d in days[args.skip_days:] if len(by_day[d]) >= args.min_hours_per_day]
+    if not usable:
+        most = max(len(v) for v in by_day.values())
+        print(f"no usable days: none has >= {args.min_hours_per_day} identity tables (the most is {most}) "
+              f"after skipping {args.skip_days}. Lower --min-hours-per-day (e.g. to {most}).", file=sys.stderr)
     strata = parse_strata(args.hour_strata)
 
     bins: dict[int, list[dt.date]] = {}
@@ -151,7 +162,7 @@ def main(argv=None) -> int:
                     hours = [r for r in by_day[day] if r["hour"] in stratum]
                     rng.shuffle(hours)
                     for r in hours:
-                        w = pick_window(r["path"], args.minutes, args.min_coverage, 10, rng)
+                        w = pick_window(r["path"], args.minutes, args.min_coverage, 10, rng, args.from_start)
                         if w and w.get("start") is not None:
                             plan.append({"bin": b, "stratum": f"{stratum.start}-{stratum.stop - 1}",
                                          "stem": r["stem"], "day": str(day), "hour": r["hour"],
