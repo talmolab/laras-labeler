@@ -230,6 +230,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         finally:
             _hidra_lock.release()
 
+    def _is_hcm_clip(entry: dict, vid: str) -> bool:
+        """A clip cut from an HCM recording: its name says which one (clip_001_..._cam_06.11...), or a
+        re-ID clip linked to one (source_video, from its clips.summary.json). Its outlines come from the
+        HCM database. Any other experiment's clip has none to come, and draws them by hand."""
+        return bool(entry.get("source_video") or hcm_roi.recording_like(vid))
+
     def _meta(pid: str, vid: str) -> dict:
         proj = store.get(pid)
         entry = proj.video(vid) or {}
@@ -245,6 +251,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return {**vm.meta(pid, vid), "features": features.status(pid, vid),
                 "pix_per_cm": entry.get("pix_per_cm"),
                 "pix_per_cm_auto": _auto_scale(entry), "role": entry.get("role"),
+                "hcm_clip": _is_hcm_clip(entry, vid),
                 "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff,
                 **{k: entry.get(k) for k in hcm_roi.FEEDER_FIELDS},
                 "roi_checked": "roi_recording_status" in entry,
@@ -432,6 +439,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 key = (pid, v["video_id"])
                 if (not v.get("has_poses") or _rois_settled(v) or key in _roi_loading
                         or _roi_attempts.get(key, 0) >= _MAX_ROI_TRIES):
+                    continue
+                # a clip with no camera to look up (another experiment's) is not an HCM clip: skip it,
+                # or its instant empty answer would stop the lookups of the HCM clips after it
+                if not (hcm_roi.camera_of(v["video_id"]) or v.get("source_video") or hcm_roi.source_recording(v)):
                     continue
                 _roi_loading.add(key)
                 _roi_attempts[key] = _roi_attempts.get(key, 0) + 1
@@ -1527,16 +1538,14 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     @app.delete("/api/projects/{pid}/objects/{oid}")
     def delete_object(pid: str, oid: str):
-        """Remove an ADDED object (one with no outline). Bouts already labeled with it keep its id,
-        which the GUI then shows as is. The outlined arena objects stay: their outlines come from the
-        clips' ROIs."""
+        """Remove an object from the project's list, the HCM arena defaults included (another
+        experiment has no feeder). Bouts already labeled with it keep its id, which the GUI then shows
+        as is, and the clips' outlines are not touched. Adding a default back by name restores it."""
         p = _proj(pid)
         objs = objects.project_objects(p)
         o = next((x for x in objs if x["id"] == oid), None)
         if o is None:
             raise HTTPException(404, "object not found")
-        if o.get("roi"):
-            raise HTTPException(409, f"{o['name']} is outlined by the clips' ROIs and can't be removed")
         p.manifest["objects"] = [x for x in objs if x["id"] != oid]
         p.save()
         elog.log(pid, "object_delete", object_id=oid)
