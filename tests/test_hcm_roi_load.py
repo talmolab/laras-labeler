@@ -95,7 +95,7 @@ def test_stops_after_the_first_lookup_without_an_answer(monkeypatch):
     fake = FakeSA(answer=False)
     monkeypatch.setitem(sys.modules, "sqlalchemy", fake.mod)
     monkeypatch.setattr(hcm_roi, "_ENGINES", {}, raising=False)
-    c, store, pid = _project_with_missing_outlines(40)
+    c, _store, pid = _project_with_missing_outlines(40)
     monkeypatch.setattr(hcm_roi, "DATABASE_URL", "postgresql://u:p@h/db")
     calls = []
     real = hcm_roi.fetch_rois
