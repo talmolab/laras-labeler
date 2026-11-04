@@ -418,39 +418,54 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return set_fields
 
     def _autoload_missing_rois(pid: str) -> None:
+        """Fetch the outlines of every clip still missing one, in ONE background job, one clip at a time.
+        (It used to start a job per clip, so a project with ~200 new clips opened ~200 connections to the
+        shared lab database at once.) Stops at the first lookup that gets nothing back -- the database is
+        down, unreachable or not configured -- so it never hammers it clip after clip."""
         from . import hcm_roi
         proj = store.get(pid)
         if proj is None:
             return
-        for v in proj.videos:
-            if not v.get("has_poses"):
-                continue
-            vid = v["video_id"]
-            if _rois_settled(v):                               # nothing missing
-                continue
-            key = (pid, vid)
-            with _prewarm_lock:
-                if key in _roi_loading or _roi_attempts.get(key, 0) >= _MAX_ROI_TRIES:
+        todo = []
+        with _prewarm_lock:
+            for v in proj.videos:
+                key = (pid, v["video_id"])
+                if (not v.get("has_poses") or _rois_settled(v) or key in _roi_loading
+                        or _roi_attempts.get(key, 0) >= _MAX_ROI_TRIES):
                     continue
                 _roi_loading.add(key)
                 _roi_attempts[key] = _roi_attempts.get(key, 0) + 1
+                todo.append(v["video_id"])
+        if not todo:
+            return
 
-            def _fn(progress, _pid=pid, _vid=vid, _key=key):
-                try:
-                    entry = store.get(_pid).video(_vid)
+        def _fn(progress, _pid=pid, _todo=tuple(todo)):
+            done = 0
+            try:
+                for vid in _todo:
+                    entry = store.get(_pid).video(vid)
                     if entry is None:
-                        return
+                        continue
                     linked = _link_source(entry)
-                    got = hcm_roi.fetch_rois(_vid, source_video=entry.get("source_video"))
+                    got = hcm_roi.fetch_rois(vid, source_video=entry.get("source_video"))
                     before = _roi_snapshot(entry)
                     _apply_rois(entry, got)
                     if linked or before != _roi_snapshot(entry):
                         store.get(_pid).save()
-                finally:
+                    done += 1
                     with _prewarm_lock:
-                        _roi_loading.discard(_key)
+                        _roi_loading.discard((_pid, vid))
+                    progress(int(100 * done / len(_todo)), f"outlines {done}/{len(_todo)}")
+                    if not got:                        # no answer: don't try the rest now
+                        break
+            finally:
+                with _prewarm_lock:
+                    for vid in _todo[done:]:           # not tried: free them, and give their attempt back
+                        _roi_loading.discard((_pid, vid))
+                        _roi_attempts[(_pid, vid)] = max(0, _roi_attempts.get((_pid, vid), 1) - 1)
+            return {"looked_up": done, "of": len(_todo)}
 
-            jobs.start("roi-autoload", _fn, meta={"pid": pid, "video_id": vid})
+        jobs.start("roi-autoload", _fn, meta={"pid": pid, "clips": len(todo)})
 
     # ---- projects & videos ----
     @app.get("/api/projects")
