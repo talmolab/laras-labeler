@@ -36,9 +36,10 @@ DEFAULT_OBJECTS = [
 
 
 def project_objects(proj) -> list[dict]:
-    """The project's object list: what it saved, else the defaults (not written until changed)."""
+    """The project's object list: what it saved (even an empty list), else the defaults, which are
+    not written until changed. The defaults are the HCM arena; another experiment removes them."""
     objs = proj.manifest.get("objects")
-    return [dict(o) for o in (objs if objs else DEFAULT_OBJECTS)]
+    return [dict(o) for o in (DEFAULT_OBJECTS if objs is None else objs)]
 
 
 def object_ids(proj) -> set[str]:
@@ -53,6 +54,13 @@ def add_object(proj, name: str) -> dict:
     objs = project_objects(proj)
     if any(o["name"].lower() == name.lower() for o in objs):
         raise ValueError(f"there is already an object called {name!r}")
+    # adding back a removed default ("spout", "cage wall") restores it with its outline, so it is
+    # suggested again, rather than making a new outline-less object of the same name
+    back = next((d for d in DEFAULT_OBJECTS if name.lower() in (d["name"], d["id"].replace("_", " "))), None)
+    if back and not any(o["id"] == back["id"] for o in objs):
+        proj.manifest["objects"] = objs + [dict(back)]
+        proj.save()
+        return dict(back)
     base = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "object"
     oid, i = base, 2
     while any(o["id"] == oid for o in objs):

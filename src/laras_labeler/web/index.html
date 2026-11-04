@@ -264,6 +264,13 @@
     <div id="trackBadge" hidden title="The animal you are labeling / reviewing. Switch with the track chips or number keys."></div>
     <div id="poseCtl"><label><input type="checkbox" id="showPoses" checked> Poses</label>
       <label title="Show the arena outlines on the video: cage wall (amber, dashed), spout (blue), feeder top / side (pink, dotted). They come from the HCM database when a clip opens. Hiding them changes only the view, not features or suggestions."><input type="checkbox" id="showRois" checked> ROIs</label>
+      <span id="roiDraw" style="display:none" title="This clip is not from an HCM recording, so its outlines are drawn by hand">
+        <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features.">◎ Set spout</button>
+        <button id="setSpoutRoi" title="Click to draw the spout ROI polygon for THIS clip — enables spout-ROI features. Enter to finish, Esc to cancel, right-click removes the last point.">◇ Set spout ROI</button>
+        <button id="setCageRoi" title="Click to draw the cage-boundary ROI polygon for THIS clip — enables cage-ROI features (distance-to-wall + cage position). Enter to finish, Esc to cancel, right-click removes the last point.">▢ Set cage ROI</button>
+        <button id="clearSpout" title="Clear this clip's spout point and spout ROI (to draw them again)">◇ spout ✕</button>
+        <button id="clearCage" title="Clear this clip's cage ROI (to draw it again)">▢ cage ✕</button>
+      </span>
       <span id="hcmNote" style="display:none; color:#ffb347; font-size:12px; cursor:help"></span>
       <button id="showApproaches" title="Overlay each confirmed-positive bout's nose approach path to the spout for the active behavior — all tracks, colored by track (○ = start of approach, ★ = at spout). Needs a spout/ROI set. Toggle off to hide.">→ Approaches</button>
     </div>
@@ -903,6 +910,7 @@ logEvent("session_start", { app_version: APP_VERSION, ua: navigator.userAgent,
 async function boot() {
   window.addEventListener("resize", renderTimeline);
   overlay.addEventListener("click", ev => {   // click an animal in the video to annotate it (event-annotator style)
+    if (drawingRoi()) return;                     // placing a spout / ROI point, not selecting a track
     if (panMoved) { panMoved = false; return; }   // that click was a pan drag, not a select
     if (!poses) return;
     const rect = overlay.getBoundingClientRect();
@@ -1027,6 +1035,7 @@ async function openVideo(vidId) {
   spoutRoi = meta.spout_roi || null;              // per-clip spout ROI (from this clip's meta; falls back to project default)
   cageRoi = meta.cage_roi || null;                // per-clip cage-boundary ROI
   spout = meta.spout || null;
+  cancelRoiDrawing();                             // draw tools follow the clip: none for an HCM clip
   skeleton = await (await api(`/skeleton/${vid}`)).json();
   const res = await api(`/poses/${vid}`);
   if (res.ok) {
@@ -1085,7 +1094,7 @@ async function autoloadCageRoi() {   // fill a clip's missing cage / spout / fee
   let d; try { const r = await api(`/videos/${vid}/autoload-roi`, { method: "POST" }); if (!r.ok) return; d = await r.json(); }
   catch (e) { return; }
   if (!d || !d.set) return;
-  if (vid === reqVid) showHcmNote(d.unavailable);
+  if (vid === reqVid) showHcmNote(reqMeta.hcm_clip ? d.unavailable : null);   // another experiment's clip has nothing to load
   if (d.checked) { reqMeta.roi_checked = true; reqMeta.roi_recording_status = d.recording_status; }
   // Keep this clip's meta current, so reopening it shows them. A newly set ROI is this clip's own and now
   // overrides any project-wide default (it is what Train uses), so it replaces what's drawn. d.rois = the
@@ -1168,7 +1177,8 @@ function drawSpoutMarker() {
 function drawSpoutRoi() {
   if (!meta) return;
   const polys = [];
-  if (spoutRoi && spoutRoi.length >= 3) polys.push({ pts: spoutRoi, closed: true });
+  if (spoutRoi && spoutRoi.length >= 3 && !settingRoi) polys.push({ pts: spoutRoi, closed: true });
+  if (settingRoi && roiPts.length) polys.push({ pts: roiPts, closed: false });
   if (!polys.length) return;
   octx.save(); octx.lineWidth = 2;
   for (const { pts, closed } of polys) {
@@ -1185,11 +1195,123 @@ function drawSpoutRoi() {
   octx.fillText("spout ROI", lbl[0], lbl[1] - 8); octx.textAlign = "left"; octx.textBaseline = "alphabetic";
   octx.restore();
 }
+// ---------- outlines drawn by hand: only for a clip that is not from an HCM recording ----------
+// HCM clips get their outlines from the HCM database (autoloadCageRoi) and show no draw tools. A clip
+// from any other experiment has no database to ask, so its spout and cage outlines are drawn here.
+let settingSpout = false, settingRoi = false, settingCage = false, roiPts = [], cagePts = [];
+const drawingRoi = () => settingSpout || settingRoi || settingCage;
+function updateRoiDraw() {
+  const box = el("roiDraw"); if (!box) return;
+  const show = !!meta && !meta.hcm_clip;
+  box.style.display = show ? "" : "none";
+  if (!show) return;
+  const vis = (id, on) => { el(id).style.display = on ? "" : "none"; };
+  vis("setSpout", (!spout && !spoutRoi) || settingSpout);
+  vis("setSpoutRoi", !spoutRoi || settingRoi);
+  vis("setCageRoi", !cageRoi || settingCage);
+  vis("clearSpout", !!(spout || spoutRoi) && !drawingRoi());
+  vis("clearCage", !!cageRoi && !drawingRoi());
+}
+function cancelRoiDrawing() {   // a clip switch or browsing ends any half-drawn outline
+  settingSpout = settingRoi = settingCage = false; roiPts = []; cagePts = [];
+  for (const id of ["setSpout", "setSpoutRoi", "setCageRoi"]) { const b = el(id); if (b) b.classList.remove("on"); }
+  stage.style.cursor = "";
+  updateRoiDraw();
+}
+function showRoisForDrawing() {   // drawing with the outlines hidden would draw blind
+  if (el("showRois").checked) return;
+  el("showRois").checked = true;
+  try { localStorage.setItem("laras.showRois", "1"); } catch (e) { /* view only */ }
+}
+function setSpoutMode(on) {
+  settingSpout = on;
+  if (on) { setCageMode(false); setRoiMode(false); showRoisForDrawing(); }
+  const b = el("setSpout"); if (b) b.classList.toggle("on", on);
+  stage.style.cursor = on ? "crosshair" : "";
+  busy(on ? "click the spout location on the video · Esc to cancel" : "");
+  updateRoiDraw();
+}
+async function pickSpout(clientX, clientY) {   // screen click -> video pixel coords (overlay rect already reflects zoom/pan)
+  if (!meta) return;
+  const [x, y] = screenToVideo(clientX, clientY);
+  setSpoutMode(false);
+  await applySpout(x, y);
+}
+async function applySpout(x, y) {
+  const r = await api(`/videos/${vid}/spout`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ x, y }) });   // per-clip
+  if (!r.ok) { alert("Could not set spout: " + r.status); return; }
+  spout = (await r.json()).spout;
+  if (meta) meta.spout = spout;                   // this clip's landmark
+  updateRoiDraw(); drawPose();
+  busy(spout ? `spout set at (${spout[0]}, ${spout[1]}) for this clip — retrain (rebuilds features) to use distance-to-spout` : "spout cleared for this clip — retrain to drop distance-to-spout features");
+}
+function setRoiMode(on) {
+  settingRoi = on;
+  if (on) { setSpoutMode(false); setCageMode(false); roiPts = []; showRoisForDrawing(); }
+  const b = el("setSpoutRoi"); if (b) b.classList.toggle("on", on);
+  stage.style.cursor = on ? "crosshair" : "";
+  busy(on ? "click to add spout-ROI points · Enter to finish · Esc to cancel · right-click removes the last point" : "");
+  updateRoiDraw(); drawPose();
+}
+function screenToVideo(clientX, clientY) {   // overlay rect already reflects zoom/pan
+  const r = overlay.getBoundingClientRect();
+  return [
+    Math.round(Math.max(0, Math.min(meta.width, (clientX - r.left) / r.width * meta.width))),
+    Math.round(Math.max(0, Math.min(meta.height, (clientY - r.top) / r.height * meta.height))),
+  ];
+}
+function addRoiPoint(clientX, clientY) { if (!meta) return; roiPts.push(screenToVideo(clientX, clientY)); drawPose(); }
+async function finishRoi() {
+  if (roiPts.length < 3) { busy("need at least 3 points — keep clicking, or Esc to cancel"); return; }
+  const pts = roiPts.slice();
+  setRoiMode(false);
+  await applySpoutRoi(pts);
+}
+async function applySpoutRoi(points) {
+  const r = await api(`/videos/${vid}/spout-roi`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points }) });   // per-clip
+  if (!r.ok) { alert("Could not set spout ROI: " + r.status); return; }
+  spoutRoi = (await r.json()).spout_roi;
+  if (meta) meta.spout_roi = spoutRoi;            // this clip's ROI
+  updateRoiDraw(); drawPose();
+  busy(spoutRoi ? `spout ROI set (${spoutRoi.length} pts) for this clip — retrain (rebuilds features) to use spout-ROI features` : "spout ROI cleared for this clip — retrain to drop spout-ROI features");
+}
+function setCageMode(on) {
+  settingCage = on;
+  if (on) { setSpoutMode(false); setRoiMode(false); cagePts = []; showRoisForDrawing(); }
+  const b = el("setCageRoi"); if (b) b.classList.toggle("on", on);
+  stage.style.cursor = on ? "crosshair" : "";
+  busy(on ? "click to trace the cage boundary · Enter to finish · Esc to cancel · right-click removes the last point" : "");
+  updateRoiDraw(); drawPose();
+}
+function addCagePoint(clientX, clientY) { if (!meta) return; cagePts.push(screenToVideo(clientX, clientY)); drawPose(); }
+async function finishCage() {
+  if (cagePts.length < 3) { busy("need at least 3 points — keep clicking, or Esc to cancel"); return; }
+  const pts = cagePts.slice();
+  setCageMode(false);
+  await applyCageRoi(pts);
+}
+async function applyCageRoi(points) {
+  const r = await api(`/videos/${vid}/cage-roi`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points }) });   // per-clip
+  if (!r.ok) { alert("Could not set cage ROI: " + r.status); return; }
+  cageRoi = (await r.json()).cage_roi;
+  if (meta) meta.cage_roi = cageRoi;             // this clip's cage boundary
+  updateRoiDraw(); drawPose();
+  busy(cageRoi ? `cage ROI set (${cageRoi.length} pts) for this clip — retrain (rebuilds features) to use cage-ROI features` : "cage ROI cleared for this clip — retrain to drop cage-ROI features");
+}
+async function clearSpoutOutlines() {
+  if (!confirm("Clear this clip's spout point and spout ROI?")) return;
+  if (spoutRoi) await applySpoutRoi(null);
+  if (spout) await applySpout(null, null);
+}
+async function clearCageOutline() {
+  if (confirm("Clear this clip's cage ROI?")) await applyCageRoi(null);
+}
 // ---------- cage-boundary ROI (amber, dashed) ----------
 function drawCageRoi() {
   if (!meta) return;
   const polys = [];
-  if (cageRoi && cageRoi.length >= 3) polys.push({ pts: cageRoi, closed: true });
+  if (cageRoi && cageRoi.length >= 3 && !settingCage) polys.push({ pts: cageRoi, closed: true });
+  if (settingCage && cagePts.length) polys.push({ pts: cagePts, closed: false });
   if (!polys.length) return;
   octx.save(); octx.lineWidth = 2; octx.setLineDash([9, 6]);       // dashed = boundary, distinct from the solid spout ROI
   for (const { pts, closed } of polys) {
@@ -1291,7 +1413,7 @@ function drawApproaches() {
 }
 function drawPose() {
   octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (el("showRois").checked) {                         // the ROIs checkbox: the view only (features still use them)
+  if (el("showRois").checked || drawingRoi()) {         // the ROIs checkbox: the view only (features still use them)
     drawSpoutMarker();                                  // spout landmark
     drawSpoutRoi();                                     // spout ROI polygon
     drawCageRoi();                                      // cage-boundary ROI polygon
@@ -2313,11 +2435,13 @@ function fillObjectList(bar, t) {
     const nm = document.createElement("span"); nm.textContent = (sug && sug.suggested === o.id ? "★ " : "") + o.name; row.appendChild(nm);
     const d = dist.get(o.id), od = document.createElement("span"); od.className = "od";
     od.textContent = (d && d.distance_px != null ? `${Math.round(d.distance_px)}px ` : "") + (o.roi ? "◇" : "");
-    if (!o.roi) {                                    // an added object can be removed (its old bouts keep it)
-      const x = document.createElement("span"); x.className = "x"; x.textContent = "✕"; x.title = "remove this object";
+    {                                                // any object can be removed (its old bouts keep it)
+      const x = document.createElement("span"); x.className = "x"; x.textContent = "✕";
+      x.title = o.roi ? "remove from this project (add it back by name with ＋ object to restore it)" : "remove this object";
       x.onclick = async ev => {
         ev.preventDefault(); ev.stopPropagation();
-        if (!confirm(`Remove object "${o.name}"? Bouts already labeled with it keep it.`)) return;
+        if (!confirm(`Remove object "${o.name}" from this project? Bouts already labeled with it keep it.`
+                     + (o.roi ? ` Its outlines on the clips stay; add "${o.name}" back with ＋ object to restore it.` : ""))) return;
         const r = await api(`/objects/${encodeURIComponent(o.id)}`, { method: "DELETE" });
         if (!r.ok) { busy("could not remove: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
         projMeta.objects = projObjects().filter(y => y.id !== o.id);
@@ -4401,7 +4525,7 @@ function setBrowseLock(on) {
   document.querySelector("main").classList.toggle("browsing", on);
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
-  for (const id of ["loadbar", "toolsCard", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
+  for (const id of ["loadbar", "toolsCard", "roiDraw", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
     if (!live) lock(n);
@@ -4889,6 +5013,11 @@ el("rvUndo").onclick = undoReview;
 
 // ---------- zoom + pan ----------
 el("showPoses").onchange = e => { showPoses = e.target.checked; drawPose(); };
+el("setSpout").onclick = () => setSpoutMode(!settingSpout);
+el("setSpoutRoi").onclick = () => setRoiMode(!settingRoi);
+el("setCageRoi").onclick = () => setCageMode(!settingCage);
+el("clearSpout").onclick = clearSpoutOutlines;
+el("clearCage").onclick = clearCageOutline;
 // ROIs on the video: on or off, remembered in this browser (view only)
 try { el("showRois").checked = localStorage.getItem("laras.showRois") !== "0"; } catch (e) { /* no storage: shown */ }
 el("showRois").onchange = () => {
@@ -4974,8 +5103,16 @@ stageInner.addEventListener("wheel", ev => {
   setZoom(zoom * (ev.deltaY < 0 ? 1.12 : 1 / 1.12), ev.clientX - rect.left, ev.clientY - rect.top);
 }, { passive: false });
 stageInner.addEventListener("pointerdown", ev => {
+  if (drawingRoi() && ev.button !== 0) return;     // right-click while drawing: contextmenu drops the last point, adds none
+  if (settingRoi) { ev.preventDefault(); addRoiPoint(ev.clientX, ev.clientY); return; }    // add a spout-ROI vertex, not pan
+  if (settingCage) { ev.preventDefault(); addCagePoint(ev.clientX, ev.clientY); return; } // add a cage-ROI vertex, not pan
+  if (settingSpout) { ev.preventDefault(); pickSpout(ev.clientX, ev.clientY); return; }   // place the spout, not pan
   stageDrag = { x: ev.clientX, y: ev.clientY, px: panX, py: panY }; panMoved = false;
   stage.classList.add("grabbing"); stageInner.setPointerCapture(ev.pointerId);
+});
+stageInner.addEventListener("contextmenu", ev => {   // while drawing an outline, right-click removes its last point
+  if (settingRoi) { ev.preventDefault(); roiPts.pop(); drawPose(); return; }
+  if (settingCage) { ev.preventDefault(); cagePts.pop(); drawPose(); }
 });
 stageInner.addEventListener("pointermove", ev => {
   if (!stageDrag) return;
@@ -4988,6 +5125,7 @@ stageInner.addEventListener("pointerup", ev => {
   if (stageDrag) { stageDrag = null; stage.classList.remove("grabbing"); try { stageInner.releasePointerCapture(ev.pointerId); } catch (e) {} }
 });
 stageInner.addEventListener("dblclick", ev => {   // double-click to zoom in on that spot, again to reset — then drag to pan
+  if (drawingRoi()) return;                        // don't zoom while drawing an outline
   const rect = stage.getBoundingClientRect();
   setZoom(zoom > 1 ? 1 : 2.2, ev.clientX - rect.left, ev.clientY - rect.top);
 });
@@ -5001,6 +5139,9 @@ window.addEventListener("keydown", e => {
     if (!["ArrowLeft", "ArrowRight", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
   }
   const reviewing = el("reviewPanel").classList.contains("on");
+  if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI
+  if (settingCage && e.key === "Enter") { e.preventDefault(); finishCage(); return; }       // finish drawing the cage ROI
+  if (drawingRoi() && e.key === "Escape") { e.preventDefault(); cancelRoiDrawing(); drawPose(); busy("drawing cancelled"); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.key === "Escape" && awaitTarget) { awaitTarget = null; busy("target skipped — bout left unassigned (Shift + track number to set it later)"); return; }
   if (e.key === "Escape" && painting) { logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor }); painting = null; busy(""); renderTimeline(); return; }

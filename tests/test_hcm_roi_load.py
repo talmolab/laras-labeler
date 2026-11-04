@@ -112,3 +112,24 @@ def test_real_engine_keeps_no_idle_connections(monkeypatch):
     monkeypatch.setattr(hcm_roi, "DATABASE_URL", "postgresql://u:p@127.0.0.1:1/db")
     e1 = hcm_roi._engine(sqlalchemy.create_engine, 8)
     assert e1 is hcm_roi._engine(sqlalchemy.create_engine, 8) and isinstance(e1.pool, NullPool)
+
+
+def test_other_experiments_clips_are_skipped_and_flagged(monkeypatch):
+    """A project mixing another experiment's clips (no HCM recording) with HCM clips: the non-HCM
+    clips are not looked up and don't stop the HCM ones, and the GUI is told which is which
+    (`hcm_clip`: HCM clips get outlines from the database, the others draw them by hand)."""
+    fake = FakeSA()
+    monkeypatch.setitem(sys.modules, "sqlalchemy", fake.mod)
+    monkeypatch.setattr(hcm_roi, "_ENGINES", {})
+    c, store, pid = _project_with_missing_outlines(5)
+    proj = store.get(pid)
+    proj.manifest["videos"].insert(0, {"video_id": "rat_session1", "video_path": "/x/rat_session1.mp4", "n_frames": 100,
+                                       "fps": 50.0, "width": 10, "height": 10, "has_poses": True})
+    proj.save()
+    monkeypatch.setattr(hcm_roi, "DATABASE_URL", "postgresql://u:p@h/db")
+    meta = {v["video_id"]: v for v in c.get(f"/api/projects/{pid}").json()["videos"]}
+    assert meta["rat_session1"]["hcm_clip"] is False
+    assert all(m["hcm_clip"] for k, m in meta.items() if k != "rat_session1")
+    _wait_for(lambda: sum(bool(v.get("cage_roi")) for v in store.get(pid).videos) == 5)
+    assert fake.lookups == 5                             # the 5 HCM clips, not the rat clip
+    assert not store.get(pid).video("rat_session1").get("cage_roi")

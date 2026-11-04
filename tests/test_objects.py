@@ -142,7 +142,10 @@ def test_api_validates_objects_and_keeps_removed_ones_writable():
     assert c.put(f"/api/projects/{pid}/labels/v", json=span("nest")).status_code == 400
     assert c.post(f"/api/projects/{pid}/objects", json={"name": "nest"}).json()["id"] == "nest"
     assert c.put(f"/api/projects/{pid}/labels/v", json=span("nest")).status_code == 200
-    assert c.delete(f"/api/projects/{pid}/objects/cage").status_code == 409      # outlined: stays
+    assert c.delete(f"/api/projects/{pid}/objects/feeder_side").status_code == 200   # defaults can go too
+    assert "feeder_side" not in [o["id"] for o in c.get(f"/api/projects/{pid}/objects").json()]
+    back = c.post(f"/api/projects/{pid}/objects", json={"name": "Feeder side"}).json()
+    assert back == {"id": "feeder_side", "name": "feeder side", "roi": "feeder_side_roi", "measure": "region"}
     assert c.delete(f"/api/projects/{pid}/objects/nest").status_code == 200
     assert "nest" not in [o["id"] for o in c.get(f"/api/projects/{pid}/objects").json()]
     assert c.put(f"/api/projects/{pid}/labels/v", json=span("nest")).status_code == 200   # its old bouts re-save
@@ -216,3 +219,12 @@ def test_autoload_says_why_outlines_did_not_load(monkeypatch):
                                                                "cage_roi": [[0, 0], [9, 0], [9, 9]]})
     r = c.post(f"/api/projects/{pid}/videos/rec_cam_06.17/autoload-roi").json()
     assert r["unavailable"] is None and r["set"] == {"cage_roi": [[0, 0], [9, 0], [9, 9]]}
+
+
+def test_an_emptied_object_list_stays_empty():
+    """Another experiment can remove every default; an empty list must not bring them back."""
+    proj = FakeProj()
+    proj.manifest["objects"] = []
+    assert objects.project_objects(proj) == []
+    assert objects.add_object(proj, "cage")["roi"] == "cage_roi"          # a default's id restores it too
+    assert [o["id"] for o in objects.project_objects(proj)] == ["cage"]
