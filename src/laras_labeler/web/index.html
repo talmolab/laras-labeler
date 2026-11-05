@@ -519,7 +519,7 @@
     <span class="stg">⑤ Analyze</span>
     <button id="statsBtn" title="Precision stats + learning curve vs. how much you've labeled">📊 Stats</button>
     <button id="trainsetBtn" title="Which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening) — and what the current model learned from">🗂 Training set</button>
-    <button id="labelStatsBtn" title="How many bouts you labeled by hand vs accepted from candidates, per track">🏷 Label sources</button>
+    <button id="labelStatsBtn" title="How many Happening / Not-happening bouts and frames each behavior has (enough to train?), and which you labeled by hand vs accepted from candidates">🏷 Label counts</button>
     <button id="featDiffBtn" title="How keypoint features differ between positive and negative frames">📈 Feature diff</button>
     <button id="importBtn">Import…</button>
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
@@ -656,10 +656,12 @@
 
   <div id="labelStatsPanel" class="panel">
     <div class="row" style="margin-top:0; justify-content:space-between">
-      <b style="font-size:14px">Label sources</b>
+      <b style="font-size:14px">Label counts</b>
       <button id="labelStatsClose">✕ Close</button>
     </div>
-    <div class="status" style="color:#6b7280; margin:10px 0 8px">Bouts you labeled <b style="color:#cbd3df">by hand</b> vs <b style="color:#cbd3df">accepted from candidates</b> (and imported), per animal track. Positive bouts shown, negatives in parentheses.</div>
+    <div class="status" style="color:#6b7280; margin:10px 0 6px">Per behavior, every track and clip pooled, whatever the source. A <b style="color:#cbd3df">bout</b> is one unbroken run of the same label on one animal. The held-out test clip is left out (it never trains a model).</div>
+    <div id="labelSummary" style="overflow-x:auto"></div>
+    <div class="status" style="color:#6b7280; margin:16px 0 8px; border-top:1px solid #2a2e35; padding-top:10px">Where they came from: <b style="color:#cbd3df">by hand</b> vs <b style="color:#cbd3df">accepted from candidates</b> (and imported), per clip and animal track. Happening bouts shown, Not-happening in parentheses.</div>
     <div id="labelStatsList" style="max-height:360px; overflow:auto"></div>
   </div>
 
@@ -2617,6 +2619,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  syncFeatDiffBtn();
   syncDirectedToggle();                // reflect this behavior's directed flag
   renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
@@ -2791,6 +2794,7 @@ async function hidraSave() {
     const h = await r.json();
     const b = (behaviors || []).find(x => x.id === activeBid);
     if (b) { if (h && h.action) b.hidra = h; else delete b.hidra; }
+    syncFeatDiffBtn();
   } else {
     el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
     return;
@@ -3637,7 +3641,7 @@ const SOURCE_LABELS = { manual: "By hand", candidate: "From candidates", importe
 const SOURCE_ORDER = ["manual", "candidate", "imported"];
 async function openLabelStats() {
   const r = await api(`/label-stats`);
-  if (!r.ok) { busy("could not load label sources"); return; }
+  if (!r.ok) { busy("could not load label counts"); return; }
   renderLabelStats(await r.json());
   el("labelStatsPanel").classList.add("on");
 }
@@ -3646,7 +3650,58 @@ function lsCell(c) {
   const pos = c.pos_bouts || 0, neg = c.neg_bouts || 0;
   return `<b style="color:${HAPPENING_COLOR}">${pos}</b>${neg ? ` <span style="color:${NOTHAPPENING_COLOR}">(${neg})</span>` : ""}`;
 }
+function fmtSecs(s) {
+  s = Number(s) || 0;
+  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`;
+  const t = Math.round(s), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = String(t % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+// What's missing before this behavior can train (or be scored). Only states what the trainers
+// actually require -- there is no magic "enough" number; the model's own scores say that.
+function labelSummaryNotes(r, nClips) {
+  const bh = (behaviors.find(x => x.id === r.behavior_id) || {}).hidra;
+  const hidra = !!(bh && bh.action), onlyReviewed = hidra && (bh.train_on || "all") === "reviewed";
+  const notes = [], grey = [];
+  if (!r.pos_bouts) notes.push("no Happening bouts yet");
+  else if (hidra && !onlyReviewed) { if (!r.neg_bouts) grey.push("HiDRA fine-tune counts unlabeled frames as Not-happening"); }
+  else if (!r.neg_bouts) notes.push(hidra ? "trains on reviewed frames only: needs Not-happening bouts too"
+                                          : "needs Not-happening bouts to train");
+  else if (!hidra && (r.pos_bouts < 2 || r.neg_bouts < 2))
+    notes.push("needs ≥2 Happening and ≥2 Not-happening bouts for the model to score itself");
+  if (r.pos_bouts && r.clips_with_pos === 1 && nClips > 1) notes.push("all Happening bouts are from one clip; other clips help it generalize");
+  const tp = r.test_pos_bouts || 0, tn = r.test_neg_bouts || 0;
+  if (tp || tn) grey.push(`test clip: ${tp} Happening${tn ? ` / ${tn} Not` : ""} (held out)`);
+  return notes.map(n => `<span style="color:#d9a65a">${n}</span>`).concat(grey.map(n => `<span style="color:#7b8494">${n}</span>`)).join("<br>");
+}
+function renderLabelSummary(d) {
+  const host = el("labelSummary"), rows = d.summary || [], n = d.train_clips ?? (d.videos || []).length;
+  if (!rows.length) { host.innerHTML = `<div class="status">No behaviors yet.</div>`; return; }
+  const th = (t, tip, left) => `<th title="${tip || ""}" style="text-align:${left ? "left" : "right"}; padding:3px 10px; color:#7b8494; font-weight:600; white-space:nowrap">${t}</th>`;
+  const td = (v, extra) => `<td style="text-align:right; padding:4px 10px; white-space:nowrap; ${extra || ""}">${v}</td>`;
+  const num = x => (Number(x) || 0).toLocaleString();
+  let html = `<table style="border-collapse:collapse; font-size:12.5px"><thead><tr>`
+    + th("Behavior", "", true)
+    + th(`<span style="color:${HAPPENING_COLOR}">Happening</span> bouts`, "unbroken runs of Happening, per animal, all clips")
+    + th("frames (time)", "Happening frames, and how long that is at each clip's frame rate")
+    + th(`<span style="color:${NOTHAPPENING_COLOR}">Not-happening</span> bouts`, "unbroken runs of Not-happening you labeled (or accepted)")
+    + th("frames (time)", "Not-happening frames, and how long that is")
+    + th("clips", "clips with a Happening bout, of all clips in the project (test clip not counted)")
+    + th("", "", true) + `</tr></thead><tbody>`;
+  for (const r of rows) {
+    const dim = !(r.pos_bouts || r.neg_bouts) ? "color:#4b5563" : "";
+    html += `<tr style="border-top:1px solid #23272e">`
+      + `<td style="padding:4px 10px 4px 2px; white-space:nowrap"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:6px; background:${r.color || "#cbd3df"}"></span><b>${esc(r.name) || ("behavior " + r.behavior_id)}</b></td>`
+      + td(`<b style="color:${r.pos_bouts ? HAPPENING_COLOR : "#4b5563"}">${num(r.pos_bouts)}</b>`)
+      + td(r.pos_frames ? `${num(r.pos_frames)} <span style="color:#7b8494">(${fmtSecs(r.pos_seconds)})</span>` : "·", dim)
+      + td(`<b style="color:${r.neg_bouts ? NOTHAPPENING_COLOR : "#4b5563"}">${num(r.neg_bouts)}</b>`)
+      + td(r.neg_frames ? `${num(r.neg_frames)} <span style="color:#7b8494">(${fmtSecs(r.neg_seconds)})</span>` : "·", dim)
+      + td(`${r.clips_with_pos || 0} <span style="color:#7b8494">of ${n}</span>`, dim)
+      + `<td style="padding:4px 2px 4px 10px; font-size:11.5px; line-height:1.35">${labelSummaryNotes(r, n)}</td></tr>`;
+  }
+  host.innerHTML = html + `</tbody></table>`;
+}
 function renderLabelStats(d) {
+  renderLabelSummary(d);
   const host = el("labelStatsList"); host.innerHTML = "";
   if (!d.behaviors || !d.behaviors.length) { host.innerHTML = `<div class="status">No labels yet — paint some or import annotations, then check back.</div>`; return; }
   const present = new Set();
@@ -3690,6 +3745,13 @@ function renderLabelStats(d) {
 }
 
 // ---------- feature differences: how keypoint features separate positive vs negative frames ----------
+// These are the project model's own features; a HiDRA classifier never sees them, so the button is
+// hidden while the active behavior is bound to HiDRA (and its panel closed).
+function syncFeatDiffBtn() {
+  const b = behaviors.find(x => x.id === activeBid), hidra = !!(b && b.hidra && b.hidra.action);
+  el("featDiffBtn").style.display = hidra ? "none" : "";
+  if (hidra) el("featDiffPanel").classList.remove("on");
+}
 async function openFeatureDiff() {
   if (activeBid == null) { busy("select a behavior first"); return; }
   busy("computing feature differences…");
