@@ -249,6 +249,10 @@ class LabelStore:
         'how many bouts did I label by hand vs accept from candidates, on which clip and track?'."""
         proj = self.store.get(pid)
         acc: dict[tuple[int, str, int, str], dict] = {}
+        # per behavior, whatever the source: bouts (runs of one value on one track), frames, seconds
+        # (each clip's own fps) and clips -- the summary table ("do I have enough to train?"). A held-out
+        # test clip never trains a model, so its bouts are counted on the side, not in the totals.
+        summ: dict[int, dict] = {}
         for v in proj.videos:
             vid = v["video_id"]
             if (pid, vid) not in self._cache and not self._path(pid, vid).exists():
@@ -256,6 +260,25 @@ class LabelStore:
             df = self._df(pid, vid)
             if len(df) == 0:
                 continue
+            fps = float(v.get("fps") or 30.0)
+            held_out = v.get("role") == "test"
+            for (b, _t), sub in df.groupby(["behavior_id", "track"]):
+                s_ = summ.setdefault(int(b), {"pos_bouts": 0, "pos_frames": 0, "neg_bouts": 0, "neg_frames": 0,
+                                              "pos_seconds": 0.0, "neg_seconds": 0.0, "test_pos_bouts": 0,
+                                              "test_neg_bouts": 0, "_clips": set(), "_pos_clips": set()})
+                for s, e, val in _rle(sub["frame"].to_numpy(), sub["value"].to_numpy()):
+                    if val not in (0, 1):
+                        continue
+                    k = "pos" if val == 1 else "neg"
+                    if held_out:
+                        s_[f"test_{k}_bouts"] += 1
+                        continue
+                    s_["_clips"].add(vid)
+                    s_[f"{k}_bouts"] += 1
+                    s_[f"{k}_frames"] += int(e - s)
+                    s_[f"{k}_seconds"] += (e - s) / fps
+                    if val == 1:
+                        s_["_pos_clips"].add(vid)
             for (b, t, src), sub in df.groupby(["behavior_id", "track", "source"], dropna=False):
                 a = acc.setdefault((int(b), vid, int(t), str(src)),
                                    {"pos_bouts": 0, "neg_bouts": 0, "pos_frames": 0, "neg_frames": 0})
@@ -284,7 +307,17 @@ class LabelStore:
             behaviors.append({
                 "behavior_id": bid, "name": b.get("name"), "color": b.get("color"), "clips": clips,
             })
-        return {"videos": [v["video_id"] for v in proj.videos], "behaviors": behaviors}
+        summary = []                                   # every behavior, labeled or not
+        for b in proj.behaviors:
+            sm = summ.get(int(b["id"]), {})
+            row = {"behavior_id": int(b["id"]), "name": b.get("name"), "color": b.get("color"),
+                   "pos_bouts": 0, "pos_frames": 0, "pos_seconds": 0.0,
+                   "neg_bouts": 0, "neg_frames": 0, "neg_seconds": 0.0, "test_pos_bouts": 0, "test_neg_bouts": 0}
+            row.update({k: (round(v, 1) if isinstance(v, float) else v) for k, v in sm.items() if not k.startswith("_")})
+            row.update(clips=len(sm.get("_clips", ())), clips_with_pos=len(sm.get("_pos_clips", ())))
+            summary.append(row)
+        return {"videos": [v["video_id"] for v in proj.videos], "behaviors": behaviors, "summary": summary,
+                "train_clips": sum(1 for v in proj.videos if v.get("role") != "test")}
 
     def delete_range(self, pid: str, vid: str, behavior_id: int, track: int, start: int, end: int) -> None:
         df = self._df(pid, vid)
