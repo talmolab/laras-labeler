@@ -2619,6 +2619,7 @@ async function selectBehavior(bid) {
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  syncFeatDiffBtn();
   syncDirectedToggle();                // reflect this behavior's directed flag
   renderThreshReadout();               // this behavior's own detection cut
   renderTimeline();
@@ -2793,6 +2794,7 @@ async function hidraSave() {
     const h = await r.json();
     const b = (behaviors || []).find(x => x.id === activeBid);
     if (b) { if (h && h.action) b.hidra = h; else delete b.hidra; }
+    syncFeatDiffBtn();
   } else {
     el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
     return;
@@ -3743,6 +3745,13 @@ function renderLabelStats(d) {
 }
 
 // ---------- feature differences: how keypoint features separate positive vs negative frames ----------
+// These are the project model's own features; a HiDRA classifier never sees them, so the button is
+// hidden while the active behavior is bound to HiDRA (and its panel closed).
+function syncFeatDiffBtn() {
+  const b = behaviors.find(x => x.id === activeBid), hidra = !!(b && b.hidra && b.hidra.action);
+  el("featDiffBtn").style.display = hidra ? "none" : "";
+  if (hidra) el("featDiffPanel").classList.remove("on");
+}
 async function openFeatureDiff() {
   if (activeBid == null) { busy("select a behavior first"); return; }
   busy("computing feature differences…");
