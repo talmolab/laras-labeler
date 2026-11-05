@@ -411,6 +411,7 @@
     <!-- ③ Train -->
     <span class="stg">③ Train</span>
     <button id="train" class="primary">⚙ Train</button>
+    <button id="stopTrain" style="display:none" title="Stop this training. Stopped while it trains: nothing changes, the previous model stays in use. Stopped after the new model is made (while it re-predicts clips): the new model is kept, and clips it hadn't reached keep the previous model's predictions.">■ Stop training</button>
     <select id="featSet" title="Which features this behavior's model is trained on. A lean set can beat the full one (e.g. drinking does better on spout-only — pose/social features overfit). Retrain to apply.">
       <option value="all">All features</option>
       <option value="spout">Spout only</option>
@@ -4032,6 +4033,29 @@ function timerMark(ap, bid, name, trainMs, nCand) {   // called on each Train: l
 if (el("timerToggle")) { el("timerToggle").onclick = toggleTimer; el("timerReset").onclick = resetTimer; }
 let jobsRunning = 0;   // Train or Predict still going. Browse waits so their later writes are not refused.
 async function train() { jobsRunning++; try { await trainJob(); } finally { jobsRunning--; } }
+// ■ Stop training: the Train jobs running now (jid -> {bid, bname, stop}). Usually one; with several
+// (Train pressed on two behaviors) the button asks which to stop.
+const trainRuns = new Map();
+function syncStopTrain() {
+  const b = el("stopTrain"), live = [...trainRuns.values()];
+  b.style.display = live.length ? "" : "none";
+  b.disabled = live.length > 0 && live.every(r => r.stop);
+  b.textContent = live.length > 1 ? `■ Stop training (${live.length})` : "■ Stop training";
+}
+async function stopTrain() {
+  el("stopTrain").blur();
+  const runs = [...trainRuns.entries()].filter(([, r]) => !r.stop);
+  const pick = runs.length > 1
+    ? runs.filter(([, r]) => confirm(`Stop training ${r.bname}?\n\nOK = stop it · Cancel = keep it running`))
+    : runs;
+  for (const [, r] of pick) r.stop = true;
+  syncStopTrain();                                   // greyed out at once; it goes away when the job ends
+  if (pick.length) busy(`stopping ${pick.map(([, r]) => r.bname).join(", ")}…`);
+  for (const [jid, r] of pick) {
+    await api(`/jobs/${jid}/cancel`, { method: "POST" }).catch(() => null);
+    logEvent("train_stop", { behavior_id: r.bid, name: r.bname });
+  }
+}
 async function trainJob() {
   if (activeBid == null || browseBlocked()) return;
   const bid = activeBid, bname = (behaviors.find(x => x.id === bid) || {}).name;   // capture the model being trained (activeBid may change during the async job)
@@ -4047,7 +4071,20 @@ async function trainJob() {
   const r = await api(`/behaviors/${bid}/train${scope}`, { method: "POST" });
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
   const { job_id } = await r.json();
+  trainRuns.set(job_id, { bid, bname, stop: false }); syncStopTrain();
   pollJob(job_id, async s => {
+    trainRuns.delete(job_id); syncStopTrain();
+    if (s.status === "cancelled") {
+      const q = s.result || {}, kept = !!(q.version || q.weights), nApplied = ((q.predict || {}).videos || []).length;
+      logEvent("train_result", { behavior_id: bid, name: bname, status: "cancelled", kept_model: kept, wall_ms: Date.now() - t0 });
+      await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
+      busy(kept
+        ? `■ ${bname}: the new model was already made, so it's kept — only re-predicting was stopped`
+          + (nApplied ? ` (applied to ${nApplied} clip${nApplied === 1 ? "" : "s"} first)` : "")
+          + `. Clips it didn't reach still show the previous model; ▶ Predict them when you're ready.`
+        : `■ ${bname}: training stopped — nothing changed, the previous model is still in use.`);
+      return;
+    }
     if (s.status === "error") {
       const full = String(s.error || "error").trim(); const one = full.replace(/\s*\n\s*/g, " | ");
       logEvent("train_error", { behavior_id: bid, name: bname, error: one.slice(0, 500) });
@@ -5081,7 +5118,7 @@ el("undo").onclick = undo; el("redo").onclick = redo;
 el("toolPaint").onclick = () => setTool("paint");
 el("toolSelect").onclick = () => setTool("select");
 el("delSeg").onclick = deleteSelectedSeg;
-el("train").onclick = train; el("predict").onclick = predictVideo; el("stopJob").onclick = stopPredict; el("importBtn").onclick = importFile; el("review").onclick = startReview;
+el("train").onclick = train; el("predict").onclick = predictVideo; el("stopJob").onclick = stopPredict; el("stopTrain").onclick = stopTrain; el("importBtn").onclick = importFile; el("review").onclick = startReview;
 el("predThresh").oninput = onThreshInput;
 el("predThresh").onchange = onThreshCommit;
 el("predMinBout").onchange = onMinBoutChange;
