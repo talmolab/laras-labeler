@@ -21,7 +21,7 @@ class JobCancelled(Exception):
     """Raised inside a job's thread once someone asked it to stop (JobManager.cancel)."""
 
 
-def current() -> "Job | None":
+def current() -> Job | None:
     return getattr(_local, "job", None)
 
 
