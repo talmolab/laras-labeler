@@ -27,7 +27,7 @@ from .events import EventLog, rounds_csv
 from .features import quick_series, resolve_roles
 from .featurestore import FeatureStore
 from .importers import Importer
-from .jobs import JobManager
+from .jobs import JobCancelled, JobManager, raise_if_cancelled
 from .labels import LabelStore, obj_ids
 from .predict import CANDIDATE_ORDERS, Predictor
 from .project import DEFAULT_FEATURE_CONFIG, ProjectStore
@@ -224,7 +224,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def _hidra_exclusive(progress, what: str):
         if not _hidra_lock.acquire(blocking=False):
             progress(1, f"waiting for another HiDRA job to finish before {what} …")
-            _hidra_lock.acquire()
+            while not _hidra_lock.acquire(timeout=0.5):
+                raise_if_cancelled()        # Stop while waiting for its turn: leave the queue
         try:
             yield
         finally:
@@ -268,6 +269,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             t0 = time.perf_counter()
             try:
                 r = fn(progress) or {}
+            except JobCancelled:
+                elog.log(pid, "job_done", kind=kind, status="cancelled",
+                         seconds=round(time.perf_counter() - t0, 2), **ctx)
+                raise
             except Exception as e:  # noqa: BLE001
                 elog.log(pid, "job_done", kind=kind, status="error", error=str(e)[:300],
                          seconds=round(time.perf_counter() - t0, 2), **ctx)
@@ -852,6 +857,17 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         job = jobs.get(jid)
         if job is None:
             raise HTTPException(404, "job not found")
+        return job.snapshot()
+
+    @app.post("/api/projects/{pid}/jobs/{jid}/cancel")
+    def cancel_job(pid: str, jid: str):
+        """Stop a job (the GUI's ■ Stop): a queued one leaves the queue, a running one ends at its next
+        step, and a HiDRA subprocess it runs is killed. Work it already finished stays: a Predict that
+        wrote some behaviors' lanes keeps those."""
+        job = jobs.cancel(jid)
+        if job is None:
+            raise HTTPException(404, "job not found")
+        elog.log(pid, "job_cancel", job_id=jid, kind=job.kind)
         return job.snapshot()
 
     @app.get("/api/projects/{pid}/jobs/{jid}/events")

@@ -46,6 +46,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import jobs as _jobs
+
 # ==============================================================================================
 # heads
 # ==============================================================================================
@@ -848,13 +850,15 @@ def infer(work: Path, out: Path, lab: str, action: str, fps: float, pix_per_cm: 
                             env=_subproc_env())
     tail: list[str] = []
     full: list[str] = []
-    for line in proc.stdout or []:
-        line = line.rstrip()
-        if not line:
-            continue
-        full.append(line)
-        tail = (tail + [line])[-25:]
-        progress(min(90, 5 + len(tail) * 3), line[:120])
+    with _jobs.track(proc):                      # Stop on the job kills it (jobs.track)
+        for line in proc.stdout or []:
+            line = line.rstrip()
+            if not line:
+                continue
+            full.append(line)
+            tail = (tail + [line])[-25:]
+            progress(min(90, 5 + len(tail) * 3), line[:120])
+        _jobs.raise_if_cancelled()               # killed by Stop: not a HiDRA failure
     if proc.wait() != 0:
         # The GUI toast only shows the last few lines; write the WHOLE HiDRA output (and the exact
         # command) to a file so the real exception/path is never lost to truncation.
@@ -973,7 +977,7 @@ def rebind(prev: dict | None, lab: str, action: str, collapse: str, rate: float)
     return out
 
 
-TRAIN_ON = {"all": "every frame", "window": "inside the social window",
+TRAIN_ON = {"all": "every frame", "window": "selected window only",
             "reviewed": "reviewed frames only"}
 
 
@@ -1222,7 +1226,7 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1, env=_subproc_env())
         seen: list[str] = []
-        with full_log.open("a", buffering=1) as out:          # line-buffered: readable while it runs
+        with _jobs.track(proc), full_log.open("a", buffering=1) as out:   # line-buffered: readable while it runs
             out.write("$ " + " ".join(cmd) + "\n")
             for line in proc.stdout or []:
                 out.write(line)
@@ -1231,6 +1235,7 @@ def finetune(rt: dict, head: dict, tracking_dir: Path, annotations_csv: Path, da
                     continue
                 seen = (seen + [line])[-40:]
                 progress(min(hi - 1, lo + len(seen)), line[:120])
+            _jobs.raise_if_cancelled()           # killed by Stop: not a HiDRA failure
         if proc.wait() != 0:
             raise RuntimeError(f"HiDRA {label} failed:\n" + "\n".join(seen[-15:]))
         return seen

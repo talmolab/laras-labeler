@@ -376,6 +376,16 @@
       <option value="1" selected>1×</option><option value="1.5">1.5×</option>
       <option value="2">2×</option><option value="4">4×</option>
     </select>
+    <span class="sep"></span>
+    <span id="winCtl" style="display:inline-flex; align-items:center; gap:4px"
+          title="This clip's window: the stretch of the clip that counts. Labels can only be painted inside it, review candidates and Browse detections come only from inside it, the project's own model ignores the rest, and so does a HiDRA fine-tune set to 'inside the window'. (A fine-tune set to 'every frame' still counts unlabeled frames outside it as NO.) Use it for a social session's entry-to-exit, or any part of a clip you want to limit work to. The timeline dims what is outside.">
+      <span class="status">Window</span>
+      <button id="winStart" title="Start the window at the playhead">⇤ start here</button>
+      <span id="winText" class="status" style="font-variant-numeric:tabular-nums">whole clip</span>
+      <button id="winEnd" title="End the window at the playhead (this frame included)">end here ⇥</button>
+      <button id="winClear" title="Remove this clip's window: the whole clip counts again">✕</button>
+      <button id="winAll" title="Give every clip in this project this clip's window (frames, cut to each clip's length), or, with no window here, remove every clip's window">→ all clips</button>
+    </span>
   </div>
 
   <div class="card" id="toolsCard">
@@ -416,6 +426,7 @@
       <option value="all">predict: all clips</option>
     </select>
     <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
+    <button id="stopJob" style="display:none" title="Stop this prediction. Clips (and behaviors) already predicted keep their new predictions; nothing else changes.">■ Stop</button>
     <span class="sep"></span>
     <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
            title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
@@ -441,9 +452,9 @@
       <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
              title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
       <label class="status" for="hidraTrainOn">train on:</label>
-      <select id="hidraTrainOn" title="Which frames the next ⚙ HiDRA fine-tune learns from.&#10;Every frame: anything you did not mark yes counts as NO, including time outside the social window and real approaches you never saw.&#10;Inside the social window: the same, but frames outside each clip's social window are left out.&#10;Reviewed frames only: only the yes and no answers you gave. Every other frame counts as neither.&#10;The last two need a HiDRA with the reviewed-frames change (scripts/hidra_patches/README.md).">
+      <select id="hidraTrainOn" title="Which frames the next ⚙ HiDRA fine-tune learns from.&#10;Every frame: anything you did not mark yes counts as NO, including time outside the clip's window and real approaches you never saw.&#10;Selected window only: the same, but only inside each clip's window (set with Window in the playbar); a clip with no window counts whole. Use it to leave out an empty cage, a stretch with one mouse, and so on.&#10;Reviewed frames only: only the yes and no answers you gave. Every other frame counts as neither.&#10;The last two need a HiDRA with the reviewed-frames change (scripts/hidra_patches/README.md).">
         <option value="all">every frame</option>
-        <option value="window">inside social window</option>
+        <option value="window">selected window only</option>
         <option value="reviewed">reviewed frames only</option>
       </select>
       <label class="status" for="hidraFps">fps:</label>
@@ -499,10 +510,10 @@
       <option value="low">order: lowest score</option>
       <option value="random">order: random</option>
     </select>
-    <select id="browseLabels" title="Labels to compare the detections with. Another project is listed only if it holds the same clip (same name, length, frame size, fps and social window). Its labels are only read, never changed. Use this for a held-out clip whose hand labels live in a separate project.">
+    <select id="browseLabels" title="Labels to compare the detections with. Another project is listed only if it holds the same clip (same name, length, frame size, fps and window). Its labels are only read, never changed. Use this for a held-out clip whose hand labels live in a separate project.">
       <option value="">labels: this project</option>
     </select>
-    <button id="browseBtn" title="Step through the model's detected bouts on this clip and track (inside the social window), read only. No accept, reject or trim, so your labels and the training data are never touched. Esc closes it.">👁 Browse detections</button>
+    <button id="browseBtn" title="Step through the model's detected bouts on this clip and track (inside the clip's window), read only. No accept, reject or trim, so your labels and the training data are never touched. Esc closes it.">👁 Browse detections</button>
     <div class="sep"></div>
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
@@ -1036,6 +1047,7 @@ async function openVideo(vidId) {
   cageRoi = meta.cage_roi || null;                // per-clip cage-boundary ROI
   spout = meta.spout || null;
   cancelRoiDrawing();                             // draw tools follow the clip: none for an HCM clip
+  updateWinCtl();
   skeleton = await (await api(`/skeleton/${vid}`)).json();
   const res = await api(`/poses/${vid}`);
   if (res.ok) {
@@ -2232,7 +2244,7 @@ async function applyPaint(bid, s, e, k, source = "manual", target = NO_TARGET, o
   // reject. No-op for a clip with no window set.
   if (meta && meta.social_start != null && meta.social_end != null) {
     s = Math.max(s, meta.social_start); e = Math.min(e, meta.social_end);
-    if (e <= s) { busy("outside the social window — nothing to label there"); return; }
+    if (e <= s) { busy("outside this clip's window — nothing to label there"); return; }
   }
   clearSel();                                        // any label edit invalidates a highlighted selection
   const v = labelState.get(bid), src = sourceState.get(bid), tg = targetState.get(bid), ob = objectState.get(bid), sc = SRC_CODES[source] ?? 0;
@@ -2637,7 +2649,7 @@ function hidraSyncBehavior() {
   hidraReflect();
 }
 
-const TRAIN_ON = { all: "every frame", window: "inside the social window", reviewed: "reviewed frames only" };
+const TRAIN_ON = { all: "every frame", window: "selected window only", reviewed: "reviewed frames only" };
 
 async function hidraSaveTrainOn() {
   if (!HIDRA || activeBid == null) return;
@@ -3449,7 +3461,7 @@ function renderNextTrain(d) {
       + `not trained as ${N}.`
     : on === "window"
     ? `<b>Next Train</b> fine-tunes HiDRA <code>${esc(d.head.lab)}/${esc(d.head.action)}</code> on the ${H} bouts below, `
-      + `<b>inside each clip's social window</b>: for each mouse with a ${H} bout, every other frame inside the window trains as ${N} — `
+      + `<b>inside each clip's window</b>: for each mouse with a ${H} bout, every other frame inside the window trains as ${N} — `
       + `including frames you never looked at. Frames outside the window are left out. Mice and clips with no ${H} bout are not used.`
     : `<b>Next Train</b> fine-tunes HiDRA <code>${esc(d.head.lab)}/${esc(d.head.action)}</code> on the ${H} bouts below. `
       + `HiDRA has no “not reviewed”: for each mouse with a ${H} bout in a clip, <b>every other frame of that clip trains as ${N}</b> — `
@@ -3921,7 +3933,7 @@ function pollJob(jid, onDone) {
   const t = setInterval(async () => {
     const s = await (await api(`/jobs/${jid}`)).json();
     busy(`${s.kind}: ${s.msg || s.status}${s.pct != null ? " " + s.pct + "%" : ""}`);
-    if (s.status === "done" || s.status === "error") { clearInterval(t); onDone(s); }
+    if (s.status === "done" || s.status === "error" || s.status === "cancelled") { clearInterval(t); onDone(s); }
   }, 500);
 }
 // ---- session timer (testing aid): a stopwatch + a log of the model's AP at each Train, so you can
@@ -4030,7 +4042,21 @@ async function trainJob() {
   });
 }
 function awaitJob(jid) { return new Promise(resolve => pollJob(jid, resolve)); }   // pollJob calls back once at terminal state
-async function predictVideo() { jobsRunning++; try { await predictJob(); } finally { jobsRunning--; } }
+let predictRun = null;   // {jid, stop}: the Predict running now, for ■ Stop
+async function predictVideo() {
+  if (predictRun) { busy("a prediction is already running — ■ Stop it first, or wait"); return; }
+  predictRun = { jid: null, stop: false };
+  el("stopJob").style.display = ""; el("stopJob").disabled = false;
+  jobsRunning++;
+  try { await predictJob(); } finally { jobsRunning--; predictRun = null; el("stopJob").style.display = "none"; }
+}
+async function stopPredict() {
+  const run = predictRun; if (!run) return;
+  run.stop = true; el("stopJob").disabled = true; el("stopJob").blur();
+  busy("stopping…");
+  if (run.jid) await api(`/jobs/${run.jid}/cancel`, { method: "POST" }).catch(() => null);
+  logEvent("predict_stop", { video_id: vid });
+}
 async function predictJob() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
   if (browseBlocked()) return;
   const all = (el("trainScope") || {}).value === "all";
@@ -4038,14 +4064,22 @@ async function predictJob() {   // apply existing model(s), NO retrain — curre
   const pT0 = Date.now();
   logEvent("predict_click", { video_id: vid, scope: all ? "all" : "this", n: targets.length });
   let ok = 0; const errs = [];
+  let stopped = false;
   for (let i = 0; i < targets.length; i++) {
     const tv = targets[i];
+    if (predictRun && predictRun.stop) { stopped = true; break; }
     busy(all ? `predicting clip ${i + 1}/${targets.length}…` : "starting prediction…");
     let r;
     try { r = await api(`/videos/${tv}/predict`, { method: "POST" }); }
     catch (e) { errs.push(`${tv.slice(0, 16)}…: ${e.message}`); continue; }
     if (!r.ok) { const d = (await r.json()).detail; logEvent("predict_error", { video_id: tv, error: String(d).slice(0, 200) }); errs.push(`${tv.slice(0, 16)}…: ${d}`); continue; }
-    const s = await awaitJob((await r.json()).job_id);
+    const jid = (await r.json()).job_id;
+    if (predictRun) {
+      predictRun.jid = jid;
+      if (predictRun.stop) await api(`/jobs/${jid}/cancel`, { method: "POST" }).catch(() => null);   // Stop hit while it was starting
+    }
+    const s = await awaitJob(jid);
+    if (s.status === "cancelled") { stopped = true; logEvent("predict_result", { video_id: tv, status: "cancelled" }); break; }
     if (s.status === "error") {
       // Keep the WHOLE error (the cause is often in the tail lines): console + event log get it all.
       const full = String(s.error || "error").trim(), one = full.replace(/\s*\n\s*/g, " | ");
@@ -4067,6 +4101,7 @@ async function predictJob() {   // apply existing model(s), NO retrain — curre
     }
   }
   await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
+  if (stopped) { busy(`prediction stopped${all ? ` after ${ok} of ${targets.length} clips` : ""} — anything already predicted keeps its new predictions`); return; }
   if (errs.length) busy(`predicted ${ok}/${targets.length}${all ? " clips" : ""} — ${errs.length} failed: ${errs[0]}`);
   else busy(all ? `prediction done — all ${ok} clip${ok !== 1 ? "s" : ""}` : (ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first"));
 }
@@ -4091,6 +4126,63 @@ async function importFile() {
 function setReviewView(s, e) {                     // zoom the timeline x-axis to the bout (+ context)
   const pad = Math.max(20, Math.round((e - s) * 0.35));
   tlView = { s: Math.max(0, s - pad), e: Math.min(meta.n_frames, e + pad) };
+}
+// ---------- the clip's window (stored as social_start / social_end, half-open frames) ----------
+const fmtSec = f => { const t = Math.max(0, f) / ((meta && meta.fps) || 30); return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`; };
+function updateWinCtl() {
+  const has = !!meta && meta.social_start != null && meta.social_end != null;
+  el("winText").textContent = !meta ? "" : has
+    ? `${meta.social_start}–${meta.social_end} (${fmtSec(meta.social_start)}–${fmtSec(meta.social_end)})` : "whole clip";
+  el("winClear").style.display = has ? "" : "none";
+  el("winAll").textContent = has ? "→ all clips" : "clear all clips";
+  const anyWin = ((projMeta && projMeta.videos) || []).some(v => v.social_start != null && v.social_end != null);
+  el("winAll").style.display = has || anyWin ? "" : "none";   // "clear all clips" only when some clip has one
+}
+async function putWindow(videoId, start, end) {   // -> the saved {social_start, social_end}, or throws
+  const r = await api(`/videos/${encodeURIComponent(videoId)}/social-window`, { method: "PUT", headers: { "Content-Type": "application/json" },
+                                                                             body: JSON.stringify({ start_frame: start, end_frame: end }) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+  return r.json();
+}
+function labeledOutside(s, e) {   // labeled frames of this clip (active track, any behavior) the window [s, e) would leave out
+  let n = 0;
+  for (const arr of labelState.values()) for (let i = 0; i < arr.length; i++) if (arr[i] && (i < s || i >= e)) n++;
+  return n;
+}
+async function setWindow(start, end) {
+  if (!meta || browseBlocked()) return;
+  if (start != null) {
+    if (!(start < end)) { busy("the window's start must come before its end"); return; }
+    const out = labeledOutside(start, end);
+    if (out && !confirm(`${out} labeled frames on this clip fall outside ${start}–${end}. They stay saved, but labeling, `
+                        + "training and review will leave them out while the window is set. Set it?")) return;
+  }
+  try {
+    const w = await putWindow(vid, start, end);
+    meta.social_start = w.social_start; meta.social_end = w.social_end;
+  } catch (e) { busy("couldn't set the window: " + e.message); return; }
+  logEvent("window_set", { video_id: vid, start: meta.social_start, end: meta.social_end });
+  updateWinCtl(); renderTimeline();
+  busy(meta.social_start != null ? `window ${meta.social_start}–${meta.social_end} (${fmtSec(meta.social_start)}–${fmtSec(meta.social_end)}) — features for this clip are rebuilt in the background`
+                                 : "window removed: the whole clip counts again");
+}
+async function windowToAllClips() {
+  if (!meta || browseBlocked()) return;
+  const has = meta.social_start != null && meta.social_end != null, clips = (projMeta && projMeta.videos) || [];
+  if (!confirm(has ? `Give all ${clips.length} clips in this project the window ${meta.social_start}–${meta.social_end} `
+                     + `(${fmtSec(meta.social_start)}–${fmtSec(meta.social_end)}), cut to each clip's length? Their features are rebuilt in the background.`
+                   : `Remove the window from all ${clips.length} clips in this project?`)) return;
+  let done = 0, skipped = 0;
+  for (const c of clips) {
+    const n = c.n_frames || 0, s = has ? Math.min(meta.social_start, n) : null, e = has ? Math.min(meta.social_end, n) : null;
+    if (has && !(s < e)) { skipped++; continue; }          // this clip is shorter than the window's start
+    try { const w = await putWindow(c.video_id, s, e); c.social_start = w.social_start; c.social_end = w.social_end; done++; }
+    catch (err) { skipped++; }
+    if (done % 10 === 0) busy(`window: ${done}/${clips.length} clips…`);
+  }
+  logEvent("window_set_all", { start: has ? meta.social_start : null, end: has ? meta.social_end : null, clips: done, skipped });
+  updateWinCtl(); renderTimeline();
+  busy(`window ${has ? "set" : "removed"} on ${done} clip${done === 1 ? "" : "s"}` + (skipped ? ` (${skipped} skipped: shorter than the window, or an error)` : ""));
 }
 function locStr(f) {   // where in the whole clip this frame sits: index, time, and % through
   if (!meta) return `frame ${f}`;
@@ -4525,7 +4617,7 @@ function setBrowseLock(on) {
   document.querySelector("main").classList.toggle("browsing", on);
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
-  for (const id of ["loadbar", "toolsCard", "roiDraw", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
+  for (const id of ["loadbar", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
     if (!live) lock(n);
@@ -4913,6 +5005,10 @@ el("last").onclick = () => { stop(); show(meta.n_frames - 1); };
 el("play").onclick = () => play();   // don't pass the click event as stopAt
 scrub.oninput = e => { stop(); scrubTo(Number(e.target.value)); };
 el("speedSel").onchange = e => { playbackSpeed = parseFloat(e.target.value); playAnchorT = null; };   // re-anchor the wall-clock at the new rate
+el("winStart").onclick = () => { el("winStart").blur(); const end = meta && meta.social_end != null && meta.social_end > cur ? meta.social_end : (meta ? meta.n_frames : 0); setWindow(cur, end); };
+el("winEnd").onclick = () => { el("winEnd").blur(); const st = meta && meta.social_start != null && meta.social_start <= cur ? meta.social_start : 0; setWindow(st, cur + 1); };
+el("winClear").onclick = () => { el("winClear").blur(); setWindow(null, null); };
+el("winAll").onclick = () => { el("winAll").blur(); windowToAllClips(); };
 const gotoFrame = () => { stop(); show(parseInt(el("frameInput").value) || 0); };
 el("frameInput").onchange = gotoFrame;
 el("frameInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); gotoFrame(); el("frameInput").blur(); } });
@@ -4923,7 +5019,7 @@ el("undo").onclick = undo; el("redo").onclick = redo;
 el("toolPaint").onclick = () => setTool("paint");
 el("toolSelect").onclick = () => setTool("select");
 el("delSeg").onclick = deleteSelectedSeg;
-el("train").onclick = train; el("predict").onclick = predictVideo; el("importBtn").onclick = importFile; el("review").onclick = startReview;
+el("train").onclick = train; el("predict").onclick = predictVideo; el("stopJob").onclick = stopPredict; el("importBtn").onclick = importFile; el("review").onclick = startReview;
 el("predThresh").oninput = onThreshInput;
 el("predThresh").onchange = onThreshCommit;
 el("predMinBout").onchange = onMinBoutChange;
