@@ -24,6 +24,7 @@ from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 
 from .featurestore import feature_config_hash, feature_set_fallback, select_feature_cols
+from .jobs import raise_if_cancelled
 
 
 def make_model() -> Pipeline:
@@ -390,6 +391,7 @@ class Trainer:
         version = self._version(bid, rows, cfg_hash if not feature_set else f"{cfg_hash}|{feature_set}",
                                 pipe.named_steps["clf"].get_params())
 
+        raise_if_cancelled()        # ■ Stop during cross-validation / the fit: save nothing, keep the old model
         d = self._dir(pid, bid)
         d.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipe, d / f"{version}.joblib")

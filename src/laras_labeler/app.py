@@ -940,6 +940,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                         try:
                             _hidra_predict(pid, v, [live], lambda p, m, lo=lo, span=span: progress(lo + int(p * span / 100), f"applying fine-tune: {m}"))
                             done.append(v)
+                        except JobCancelled:                 # ■ Stop while applying: the fine-tune is kept,
+                            r["predict"] = {"videos": done, "skipped": skipped, "stopped": True}   # the rest
+                            return r                         # of the clips keep the previous lane
                         except Exception as e:               # never fail a finished fine-tune over the apply step
                             skipped.append({"video_id": v, "error": str(e)[:300]})
                     r["predict"] = {"videos": done, "skipped": skipped}
@@ -955,13 +958,16 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         def job(progress):
             r = trainer.train(pid, bid, lambda p, m: progress(int(p * 0.7), m))
             step = lambda p, m: progress(70 + int(p * 0.3), m)
-            if scope is None:
-                r["predict"] = predictor.predict_behavior(pid, bid, step)
-            elif scope:
-                r["predict"] = predictor.predict_behavior(pid, bid, step, videos=scope)
-            else:
-                r["predict"] = {"videos": [], "skipped": [], "note": "no prediction — predict_videos was empty"}
-            return r
+            try:
+                if scope is None:
+                    r["predict"] = predictor.predict_behavior(pid, bid, step)
+                elif scope:
+                    r["predict"] = predictor.predict_behavior(pid, bid, step, videos=scope)
+                else:
+                    r["predict"] = {"videos": [], "skipped": [], "note": "no prediction — predict_videos was empty"}
+            except JobCancelled:              # ■ Stop while re-predicting: the new model is already saved and
+                r["predict"] = {"videos": [], "skipped": [], "stopped": True}   # kept; clips not reached
+            return r                          # keep the previous model's lane (flagged as older)
 
         j = _timed_job("train", pid, job, {"pid": pid, "behavior_id": bid}, _train_summary)
         return {"job_id": j.id}
@@ -1206,6 +1212,16 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                                     progress, smoke, configs, steps, mode, on)
             ok = not smoke and bool(r.get("weights"))
             return r
+        except JobCancelled:
+            mf = data_root / "manifest.json"          # the record a stopped run leaves says it was stopped
+            if mf.exists():
+                try:
+                    m = json.loads(mf.read_text())
+                    m["stopped"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    mf.write_text(json.dumps(m, indent=1))
+                except (OSError, ValueError):
+                    pass
+            raise
         finally:
             # Bulky intermediates go; bouts.csv, run.json, manifest.json and hidra_log.txt stay, so even
             # a failed or smoke run leaves a record of what it trained on. Only a run that wrote a
@@ -1332,6 +1348,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                            mode=mode, configs=configs, smoke=smoke, steps=steps,
                            progress=lambda p, m: progress(15 + int(p * 0.85), m),
                            reviewed_csv=reviewed_csv)
+        raise_if_cancelled()                  # ■ Stop as it finished: keep the working model, bind nothing
 
         # Record the fine-tuned checkpoints on the behavior so the next Predict loads them (infer
         # passes h["weights"] through to predict.py --weights), plus which frames they were trained
