@@ -252,16 +252,28 @@ def score(run: Path, tattoo: str):
     plan = json.loads((run / "spotcheck" / "plan.json").read_text())
     ans = read_answers(run / "spotcheck" / "answers.csv")
     items = {it["i"]: it for it in plan["items"]}
-    judged, unsure = [], 0
+    # Your answers say which lane carried the tattoo; the names are read from the run's identities as
+    # they are NOW, so the same answers score a later re-run of the same files.
+    current, judged, unsure, gone = {}, [], 0, 0
     for i, a in ans.items():
         it = items[i]
         if a["answer"] == "?":
             unsure += 1
             continue
-        ident = it["left_ident"] if a["answer"] == "L" else it["right_ident"]
+        lane = it["left_lane"] if a["answer"] == "L" else it["right_lane"]
+        if it["stem"] not in current:
+            p = run / "identities" / f"{it['stem']}.npz"
+            z = np.load(p, allow_pickle=False) if p.exists() else None
+            current[it["stem"]] = z["lane_ident"] if z is not None and bool(z["decoded"]) else None
+        li = current[it["stem"]]
+        ident = int(li[it["frame"], lane]) if li is not None and it["frame"] < len(li) else -1
+        if ident < 0:
+            gone += 1
+            continue
         judged.append((it["stem"].split("_")[1], it["stem"], ident))
     print(f"run: {run}")
-    print(f"answered {len(ans)} of {plan['n']} frames: {len(judged)} judged, {unsure} can't tell")
+    print(f"answered {len(ans)} of {plan['n']} frames: {len(judged)} judged, {unsure} can't tell"
+          + (f", {gone} no longer named by the run" if gone else ""))
     if not judged:
         return
     names = sorted({j[2] for j in judged})
