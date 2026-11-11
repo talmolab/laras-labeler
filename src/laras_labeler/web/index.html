@@ -323,7 +323,7 @@
       <button id="rvSplit" title="This candidate spans more than one bout: split at the playhead — the part up to the playhead is saved as a confirmed bout, and the remainder becomes the next candidate to review (s)">✂ Split at playhead (s)</button>
       <div class="sep"></div>
       <button id="rvYes" class="yes">✓ Accept (y)</button>
-      <button id="rvNo" class="no">✗ Reject (n)</button>
+      <button id="rvNo" class="no" title="Not this behavior: marks what's between the ▮ handles Not-happening (n). Anything trimmed off stays unlabeled; where the handles go past the proposal, only unlabeled frames are marked, never your existing labels.">✗ Reject (n)</button>
       <button id="rvSkip">Next (⏎)</button>
       <button id="rvUndo" title="Undo the last review action (accept / reject / split / merge / reclassify) and go back to that candidate (z)" disabled>↶ Undo (z)</button>
       <div class="sep"></div>
@@ -4333,10 +4333,18 @@ function updateReviewText() {
   const label = dropped ? "Filtered-out" : "Candidate";
   let head = reviewQueue.length ? `${label} <b>${reviewIdx + 1}/${reviewQueue.length}</b>` : `Predicted <b style="color:${b.color}">${b.name}</b>`;
   if (reviewCurrent.fromSplit) head += ` · <span style="color:#8a5cf6">✂ split piece ${reviewCurrent.splitPiece}</span>`;   // this candidate is the remainder of a just-split bout
-  const sd = reviewCurrent.spoutDist;
-  const spoutNote = (sd != null) ? ` · <span style="color:#4ad0ff">nose→spout ${sd.toFixed(2)} BL${sd <= 0.01 ? " (inside)" : ""}</span>` : "";
-  const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>` : "";
-  const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>` : "";
+  const sd = reviewCurrent.spoutDist, cf = reviewCurrent.clippedFrom;
+  const ofOrig = cf ? ` <span style="opacity:.6">(over the whole original ${cf.s}–${cf.e})</span>` : "";   // the server measured these over the unclipped proposal
+  const spoutNote = (sd != null) ? ` · <span style="color:#4ad0ff">nose→spout ${sd.toFixed(2)} BL${sd <= 0.01 ? " (inside)" : ""}</span>${ofOrig}` : "";
+  const socialNote = (reviewCurrent.maxConcurrent >= 2) ? ` · <span style="color:#e8a33d">⚠ ${reviewCurrent.maxConcurrent} mice at spout</span>${ofOrig}` : "";
+  const dropNote = (dropped && reviewCurrent.dropReason) ? ` · <span style="color:#d9534f">🚫 dropped: ${esc(reviewCurrent.dropReason)}</span>${ofOrig}` : "";
+  const clipNote = cf ? `<div style="color:#7b8494; font-size:12px; margin-top:3px">Part of this proposal (${cf.s}–${cf.e}) was already labeled earlier in this review, so only the unlabeled part is shown`
+      + (reviewCurrent.otherParts ? `; ${reviewCurrent.otherParts} more unlabeled piece${reviewCurrent.otherParts === 1 ? "" : "s"} of it will come up later` : "") + `.</div>` : "";
+  const skipNote = reviewCurrent.autoSkipped ? `<div style="color:#7b8494; font-size:12px; margin-top:3px">Skipped ${reviewCurrent.autoSkipped} proposal${reviewCurrent.autoSkipped === 1 ? "" : "s"} you had already labeled in this review.</div>` : "";
+  const trimmedIn = t.s > reviewCurrent.s || t.e < reviewCurrent.e, extended = t.s < reviewCurrent.s || t.e > reviewCurrent.e;
+  const nNote = (trimmedIn || extended) ? `<div style="color:#7b8494; font-size:12px; margin-top:3px">n marks ${t.s}–${t.e} Not-happening`
+      + (trimmedIn ? "; the trimmed-off edges stay unlabeled (y would mark them Not-happening)" : "")
+      + (extended ? "; outside the proposal it only fills unlabeled frames, never your existing labels" : "") + `.</div>` : "";
   // Directed behavior: show the actor->target pair HiDRA proposed so accept commits the full pair.
   // -1 (no recoverable recipient) prompts a hand pick; Shift + the target's track number corrects it.
   const dir = isDirected(reviewCurrent.bid) && nTracks() >= 2;
@@ -4346,8 +4354,9 @@ function updateReviewText() {
       ? ` · <span style="color:#e8a33d">track ${activeTrack + 1} → track ${tgt + 1}</span> <span style="opacity:.6">(Shift + track number to change)</span>`
       : ` · <span style="color:#d9534f">⚠ no target — pick one (Shift + the target's track number)</span>`;
   el("reviewQ").innerHTML = `${head} · track ${activeTrack + 1} · bout <b>${reviewCurrent.s}–${reviewCurrent.e}</b> · `
-    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`;
-  el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject · m merge (when adjacent) · ⏎ next · or paint the lane";
+    + `accept <b style="color:${HAPPENING_COLOR}">${t.s}–${t.e}</b> (${t.e - t.s}f)${spoutNote}${socialNote}${dropNote}${dirNote}. &nbsp; ${dropped ? "Override — is this <b>" + b.name + "</b>?" : "Is this <b>" + b.name + "</b>?"} &nbsp; ${loc}`
+    + clipNote + skipNote + nNote;
+  el("rvProgress").textContent = "r replay · [ / ] or drag the ▮ handles to trim OR extend · y accept · n reject (both use the handles) · m merge (when adjacent) · ⏎ next · or paint the lane";
 }
 // Review-session counters, so a review_end says what the sitting produced without the rollup having
 // to re-derive it, and every decision carries its own dwell time (candidate shown -> call made).
@@ -4391,7 +4400,7 @@ function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lan
   if (browseBlocked()) return;
   activeBid = bid; reviewCurrent = { bid, s: bt.s, e: bt.e, p: bt.p, mode: "new", target: (bt.target != null ? bt.target : NO_TARGET) }; reviewTrim = { s: bt.s, e: bt.e };
   reviewQueue = []; setReviewView(bt.s, bt.e);
-  el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)";
+  el("rvYes").textContent = "✓ Accept (y)"; el("rvNo").textContent = "✗ Reject (n)"; el("rvNo").title = RV_REJECT_TITLE;
   clearReviewUndo(); el("reviewPanel").classList.add("on"); setReviewLayout(true);
   if (!evReviewT0) { evReviewT0 = Date.now(); evReviewN = {}; }
   evReviewN.shown = (evReviewN.shown || 0) + 1; evCandShownT = Date.now(); evCandReplays = 0;
@@ -4399,24 +4408,51 @@ function openBoutReview(bid, bt) {   // clicked a predicted bout on the auto lan
                                  n_frames: bt.e - bt.s, proba: bt.p, candidate_kind: "new", via: "timeline" });
   renderBehaviorBar(); updateReviewText(); populateReclassifySelect(); playBout(bt.s, bt.e);   // auto-play the clicked bout
 }
-function showCandidate(i) {
+const RV_REJECT_TITLE = "Not this behavior: marks what's between the ▮ handles Not-happening (n). Anything trimmed off stays unlabeled; where the handles go past the proposal, only unlabeled frames are marked, never your existing labels.";
+// The server's review floor: candidates() never proposes a piece shorter than max(min_bout, min_cand),
+// and min_cand defaults to 8 frames there (predict.py DEFAULT_POSTPROC) until the min-bout box sets it.
+const DEFAULT_MINCAND = 8;
+const candFloor = bid => Math.max(1, behMinBout(bid), behPP(bid).min_cand ?? DEFAULT_MINCAND);
+function showCandidate(i, autoSkipped = 0) {
   reviewIdx = i;
   if (i >= reviewQueue.length) { refillReview(); return; }   // the BATCH ran out — the queue may not have
-  const c = reviewQueue[i];
+  let c = reviewQueue[i];
   const isDis = c.kind === "disagree";
-  reviewCurrent = { bid: activeBid, s: c.start, e: c.end, p: c.mean_proba, mode: isDis ? "disagree" : "new",
+  // A batch is loaded once, so a later proposal in it can overlap frames you labeled since it loaded
+  // (e.g. you extended an earlier bout into it). Show only the part that is still unlabeled -- what a
+  // fresh queue would propose, with the same length floor -- so neither y (whose trimmed edges become
+  // Not-happening) nor n can overwrite those labels. If nothing of it is left, move on; it is recorded
+  // as passed over, so a refill can't hand it back forever if the server still lists it.
+  let clippedFrom = null, otherParts = 0;
+  if (!isDis) {
+    const lab = labelState.get(activeBid);
+    if (lab && lab.subarray(c.start, c.end).some(x => x)) {
+      const parts = unlabeledSubruns([{ s: c.start, e: c.end, p: c.mean_proba }], lab, candFloor(activeBid));
+      if (!parts.length) {
+        logEvent("candidate_already_labeled", { behavior_id: activeBid, idx: i, start: c.start, end: c.end });
+        reviewSkipped.add(skipKey(activeBid, c.start, c.end));
+        return showCandidate(i + 1, autoSkipped + 1);
+      }
+      const best = parts.reduce((a, b) => (b.e - b.s > a.e - a.s ? b : a));
+      clippedFrom = { s: c.start, e: c.end }; otherParts = parts.length - 1;
+      c = { ...c, start: best.s, end: best.e };
+    }
+  }
+  reviewCurrent = { bid: activeBid, s: c.start, e: c.end, p: c.mean_proba, mode: isDis ? "disagree" : "new", clippedFrom, otherParts, autoSkipped,
                     labelValue: c.label_value, suggestVal: c.suggest_value, conf: c.disagreement, spoutDist: c.spout_dist, maxConcurrent: c.max_concurrent, dropReason: c.drop_reason,
                     target: (c.target != null ? c.target : NO_TARGET) };   // HiDRA's proposed recipient for a directed pair (-1 = pick by hand)
   reviewTrim = { s: c.start, e: c.end };
   el("rvYes").textContent = isDis ? "✓ Change (y)" : "✓ Accept (y)";
   el("rvNo").textContent = isDis ? "✗ Keep (n)" : "✗ Reject (n)";
+  el("rvNo").title = isDis ? "Keep your label as it is (n)" : RV_REJECT_TITLE;
   setReviewView(c.start, c.end);
   evReviewN.shown = (evReviewN.shown || 0) + 1; evCandShownT = Date.now(); evCandReplays = 0;
   logEvent("candidate_show", { behavior_id: activeBid, name: bname(activeBid), idx: i,
                                queue_len: reviewQueue.length, start: c.start, end: c.end,
                                n_frames: c.end - c.start, proba: c.mean_proba, candidate_kind: reviewCurrent.mode,
                                queue_mode: candidateMode, order: candidateOrder,
-                               label_value: c.label_value, suggest_value: c.suggest_value });
+                               label_value: c.label_value, suggest_value: c.suggest_value,
+                               ...(clippedFrom ? { clipped_from: [clippedFrom.s, clippedFrom.e] } : {}) });
   updateReviewText(); populateReclassifySelect(); playBout(c.start, c.end);   // auto-play the candidate bout under review
 }
 function populateReclassifySelect() {   // every OTHER behavior, so you can mark a candidate as one of them instead
@@ -4457,7 +4493,7 @@ async function reclassifyCandidate(otherBid) {
   const { bid, s, e, mode } = reviewCurrent, t = reviewTrim || { s, e };
   if (candidateMode === "mislabel") await markReviewedCurrent();   // resolved this mislabel by reclassifying
   if (mode !== "disagree") {                        // this candidate ISN'T the behavior under review — same "Not-happening" call as Reject
-    await applyPaint(bid, s, e, 2, "candidate");
+    await paintRejectRange(bid, t.s, t.e, s, e);
   }
   await applyPaint(otherBid, t.s, t.e, 1, "candidate");   // ...but IS the chosen one, over the (possibly trimmed) range
   advanceReview();
@@ -4536,13 +4572,29 @@ async function splitCandidate() {
   if (isObjDirected(bid)) await commitReviewObjects(reviewCurrent, bid, t.s, cut);   // on object: what you ticked, else the nearest
   // Keep reviewing the REMAINDER, but present it clearly as the next candidate (its own bout), not as
   // the same one silently shrinking — fromSplit/splitPiece drive the header badge and the message.
-  reviewCurrent = { ...reviewCurrent, s: cut, e, fromSplit: true, splitPiece: piece + 1 };
+  reviewCurrent = { ...reviewCurrent, s: cut, e, fromSplit: true, splitPiece: piece + 1, autoSkipped: 0 };
   reviewTrim = { s: cut, e };
   evCandShownT = Date.now();                                  // the remainder is a fresh judgement
   setReviewView(cut, e); updateReviewText(); renderTimeline(); playBout(cut, e);
   busy(`✂ Split at frame ${cut}: piece ${piece} (${t.s}–${cut}) saved as a bout · now reviewing piece ${piece + 1} (${cut}–${e}) — accept, split again, or reject`);
 }
-async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: keep your label. reviewed: un-review.
+// n's write (and reclassify's "not this behavior"): Not-happening over the handle range. Inside the
+// proposal [s,e) every frame; where the handles were extended past it, only frames that are still
+// unlabeled -- n is a call about the proposal, so it never flips a bout you labeled next to it.
+// Anything trimmed off is left unlabeled.
+async function paintRejectRange(bid, ts, te, s, e) {
+  const lab = labelState.get(bid);
+  const a = Math.max(ts, s), b = Math.min(te, e);
+  if (b > a) await applyPaint(bid, a, b, 2, "candidate");
+  for (const [x, y] of [[ts, Math.min(te, s)], [Math.max(ts, e), te]]) {
+    for (let i = x; i < y;) {
+      if (lab && lab[i]) { i++; continue; }
+      let j = i; while (j < y && !(lab && lab[j])) j++;
+      await applyPaint(bid, i, j, 2, "candidate"); i = j;
+    }
+  }
+}
+async function rejectCandidate() {   // "n": new: mark what's between the handles Not-happening. disagree: keep your label.
   if (!reviewCurrent || browseBlocked()) return;
   logDecision("reject");
   snapReview();
@@ -4551,13 +4603,17 @@ async function rejectCandidate() {   // "n": new: mark Not-happening. disagree: 
     if (candidateMode === "mislabel") await markReviewedCurrent();   // you checked it and kept your label -> don't resurface
     advanceReview(); return;   // your call stands — no write, so a hand-labeled bout stays 'manual'
   }
-  await applyPaint(bid, s, e, 2, "candidate");
+  // The range you set with the handles ([ / ] or dragging), like y -- not the proposal's original
+  // bounds, which could cover frames you just moved the handles off. See paintRejectRange.
+  await paintRejectRange(bid, t.s, t.e, s, e);
   advanceReview();
 }
 function nextCandidate() {   // advance without writing (e.g. after painting inside); it stays in the queue
   if (!reviewCurrent || browseBlocked()) return;
   logDecision("skip");
   reviewSkipped.add(skipKey(reviewCurrent.bid, reviewCurrent.s, reviewCurrent.e));
+  const o = reviewCurrent.clippedFrom;                 // a refill may still list it by its original bounds
+  if (o) reviewSkipped.add(skipKey(reviewCurrent.bid, o.s, o.e));
   advanceReview();
 }
 // The loaded batch is used up, but the queue is per clip x behavior x animal and loads only candN at a
