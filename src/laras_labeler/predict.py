@@ -214,12 +214,17 @@ class Predictor:
         return [v["video_id"] for v in proj.videos
                 if v.get("has_poses") and self.features.status(pid, v["video_id"])["status"] == "ready"]
 
-    def predict_one(self, pid: str, vid: str, bid: int, model=None) -> str:
+    def predict_one(self, pid: str, vid: str, bid: int, model=None, meta: dict | None = None) -> str:
         """Run one behavior's model over one video's feature memmap -> predictions/<vid>/<bid>.npy.
         Returns a status: 'ok' | 'no_model' | 'feature_mismatch: …' — the reason is surfaced to the UI
         so a skipped prediction is never silent (the common trap: a new clip missing the spout/cage ROI
-        the model was trained with, so its feature count doesn't match)."""
-        model = model if model is not None else self.trainer.load_model(pid, bid)
+        the model was trained with, so its feature count doesn't match).
+
+        `meta` is the meta.json that came WITH `model` (Trainer.load_model_and_meta). The lane is
+        stamped with its version, not with whatever meta.json says after predicting: a Train that
+        finishes during a long sweep must not get its version written on the old model's lanes."""
+        if model is None:
+            model, meta = self.trainer.load_model_and_meta(pid, bid)
         if model is None:
             return "no_model"
         Xf = self.features.load(pid, vid)                          # memmap (F, T, D)
@@ -257,7 +262,7 @@ class Predictor:
         p = self._path(pid, vid, bid)
         p.parent.mkdir(parents=True, exist_ok=True)
         np.save(p, proba)                                          # (F, T)
-        mm = self.trainer.model_meta(pid, bid) or {}
+        mm = meta if meta is not None else (self.trainer.model_meta(pid, bid) or {})
         ver = mm.get("version")
         write_pred_meta(p, {"engine": "project", "version": ver})
         if ver:                                                    # keep it for the model comparison too
@@ -266,16 +271,20 @@ class Predictor:
                               "trained_videos": list(mm.get("videos_used") or [])})
         return "ok"
 
-    def provenance(self, pid: str, vid: str, bid: int) -> dict | None:
+    def provenance(self, pid: str, vid: str, bid: int, ctx: dict | None = None) -> dict | None:
         """Which model produced the predictions on disk for (vid, bid), and whether they are current.
 
         {engine, label, predicted_at, stale, why[, finetuned_at, no_model]}. `stale` = what a Predict
         would give now differs from the trace on disk: a newer fine-tune/retrain that was not applied to
         this clip, a different HiDRA head or scoring setting, or missing fine-tuned checkpoints. The
         sidecar <bid>.meta.json says which model wrote the file; files from before it existed (or with
-        an unreadable sidecar) are judged by file time against the current model's time."""
+        an unreadable sidecar) are judged by file time against the current model's time.
+
+        `ctx`: a dict reused across calls for the SAME behavior (the Models overview asks about every
+        clip); it caches the behavior, the bound checkpoints' time and the model meta."""
         import json
         from datetime import datetime
+        ctx = {} if ctx is None else ctx
         p = self._path(pid, vid, bid)
         if not p.exists():
             return None
@@ -288,7 +297,9 @@ class Predictor:
                 rec = None                                         # half-written/corrupt: fall back to file times
             if not isinstance(rec, dict):
                 rec = None
-        beh = next((b for b in self.store.get(pid).behaviors if b["id"] == bid), {})
+        if "beh" not in ctx:
+            ctx["beh"] = next((b for b in self.store.get(pid).behaviors if b["id"] == bid), {})
+        beh = ctx["beh"]
         h = beh.get("hidra") or {}
         iso = lambda t: datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
         out = {"predicted_at": iso(pred_t), "stale": False, "why": ""}
@@ -298,7 +309,9 @@ class Predictor:
 
         if h.get("action"):                                        # bound to a HiDRA head
             weights = h.get("weights")
-            tuned_t = weights_mtime(weights)
+            if "tuned_t" not in ctx:
+                ctx["tuned_t"] = weights_mtime(weights)
+            tuned_t = ctx["tuned_t"]
             if tuned_t:
                 out["finetuned_at"] = iso(tuned_t)
             missing = bool(weights) and not tuned_t               # bound to checkpoints that are gone
@@ -332,7 +345,9 @@ class Predictor:
                     out["label"] = f"HiDRA {h['action']} · {'fine-tuned' if weights else 'zero-shot'}"
             return out
 
-        meta = self.trainer.model_meta(pid, bid) or {}             # this project's own model
+        if "meta" not in ctx:
+            ctx["meta"] = self.trainer.model_meta(pid, bid) or {}
+        meta = ctx["meta"]                                         # this project's own model
         out["engine"] = "project"
         out["label"] = "your project model" + (f" · {meta['version']}" if meta.get("version") else "")
         if not meta.get("trained_at"):
@@ -352,7 +367,7 @@ class Predictor:
                          videos: list[str] | None = None) -> dict:
         """Apply this behavior's model to every ready clip, or only to `videos` when given (order and
         membership follow the project's ready clips, so an unknown id is simply absent from the result)."""
-        model = self.trainer.load_model(pid, bid)
+        model, meta = self.trainer.load_model_and_meta(pid, bid)
         if model is None:
             raise ValueError("no trained model for this behavior")
         vids = self._ready_videos(pid)
@@ -361,14 +376,17 @@ class Predictor:
             vids = [v for v in vids if v in want]
         done, skipped = [], []
         for i, vid in enumerate(vids):
-            status = self.predict_one(pid, vid, bid, model=model)
+            status = self.predict_one(pid, vid, bid, model=model, meta=meta)
             (done if status == "ok" else skipped).append(vid if status == "ok" else {"video_id": vid, "reason": status})
             progress(int((i + 1) / max(1, len(vids)) * 100), f"predicted {vid}")
         return {"videos": done, "skipped": skipped}
 
     def trained_behaviors(self, pid: str) -> list[int]:
+        """Behaviors this project's own model answers: trained, and NOT bound to a HiDRA head. A bound
+        behavior can still have a model/<bid>/ left over from before it was bound; predicting with it
+        overwrote the head's lane with a native one, which then read as out of date forever."""
         return [b["id"] for b in self.store.get(pid).behaviors
-                if self.trainer.model_meta(pid, b["id"])]
+                if not (b.get("hidra") or {}).get("action") and self.trainer.model_meta(pid, b["id"])]
 
     def predict_video(self, pid: str, vid: str, progress=lambda p, m: None) -> dict:
         """Apply every trained behavior model to a single video (e.g. a newly loaded one). Reports both

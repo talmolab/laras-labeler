@@ -24,7 +24,7 @@ from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 
 from .featurestore import feature_config_hash, feature_set_fallback, select_feature_cols
-from .jobs import raise_if_cancelled
+from .jobs import JobCancelled, raise_if_cancelled
 
 
 def make_model() -> Pipeline:
@@ -184,10 +184,15 @@ class Trainer:
         return json.loads(tp.read_text()) if tp.exists() else None
 
     def load_model(self, pid: str, bid: int):
+        return self.load_model_and_meta(pid, bid)[0]
+
+    def load_model_and_meta(self, pid: str, bid: int):
+        """(model, its meta.json) read together, so whoever predicts with the model can stamp the
+        lanes with the version that made them -- (None, None) when nothing is trained."""
         meta = self.model_meta(pid, bid)
         if not meta:
-            return None
-        return joblib.load(self._dir(pid, bid) / f"{meta['version']}.joblib")
+            return None, None
+        return joblib.load(self._dir(pid, bid) / f"{meta['version']}.joblib"), meta
 
     def gather(self, pid: str, bid: int):
         """Per-track examples pooled across tracks and videos. One row per (video, track, frame).
@@ -392,6 +397,15 @@ class Trainer:
                                 pipe.named_steps["clf"].get_params())
 
         raise_if_cancelled()        # ■ Stop during cross-validation / the fit: save nothing, keep the old model
+        # From here the new model is saved, so a Stop must no longer end this step half-way (the job
+        # would read "nothing changed" with a new model on disk): later progress reports can't raise.
+        _report = progress
+
+        def progress(p, m):
+            try:
+                _report(p, m)
+            except JobCancelled:
+                pass
         d = self._dir(pid, bid)
         d.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipe, d / f"{version}.joblib")
