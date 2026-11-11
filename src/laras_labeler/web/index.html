@@ -65,6 +65,32 @@
   #modelCompare .bar .fill { height: 12px; border-radius: 3px; background: #6ea8fe; }
   #modelCompare .bar .track { background: rgba(255,255,255,0.06); border-radius: 3px; }
   .chip .testtag { margin-left: 6px; font-size: 10.5px; color: #ffd24a; }
+  /* 🧠 Models overview */
+  #modelsBody { max-height: 72vh; overflow: auto; }
+  #modelsPanel .mcard { border: 1px solid var(--border, #262b33); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  #modelsPanel .mhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+  #modelsPanel .mhead .eng { color: #8b93a2; font-size: 12px; }
+  #modelsPanel .muse { font-size: 12.5px; color: #cbd3df; margin: 5px 0 8px; line-height: 1.45; }
+  #modelsPanel .mwarn { color: #ffb347; font-size: 12px; margin: 4px 0; }
+  #modelsPanel .mcounts { font-size: 12.5px; margin: 4px 0; }
+  #modelsPanel .mcounts .d { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: middle; }
+  #modelsPanel .mcounts .d:first-child { margin-left: 0; }
+  #modelsPanel .mgrid { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0; }
+  #modelsPanel .mgrid .sq { width: 13px; height: 13px; border-radius: 3px; cursor: pointer; box-sizing: border-box; }
+  #modelsPanel .mgrid .sq.test { outline: 2px solid #ffd24a; outline-offset: -2px; }
+  #modelsPanel .mgrid .sq.here { box-shadow: 0 0 0 2px #e6edf5; }
+  #modelsPanel .mact { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 8px; font-size: 12px; color: #8b93a2; }
+  #modelsPanel details { font-size: 12px; color: #9aa3b2; margin: 2px 0 6px; }
+  #modelsPanel details summary { cursor: pointer; color: #8b93a2; }
+  #modelsPanel details .cl { margin: 3px 0 3px 14px; line-height: 1.5; }
+  #modelsPanel details .cl a { color: #9cc3ff; cursor: pointer; text-decoration: none; }
+  #modelsPanel table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 4px; }
+  #modelsPanel th, #modelsPanel td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border, #262b33); vertical-align: top; }
+  #modelsPanel th { color: #8b93a2; font-weight: 600; white-space: nowrap; }
+  #modelsPanel td.num { white-space: nowrap; }
+  #modelsPanel .cur { color: #9cc3ff; font-weight: 700; }
+  #modelsPanel .ins { color: #6b7382; font-style: italic; }
+  #modelsPanel .note { color: #8b93a2; font-size: 11.5px; line-height: 1.45; margin-top: 6px; }
   #trackBadge { position: absolute; left: 10px; bottom: 10px; z-index: 5; display: flex; align-items: center; gap: 7px;
                 background: rgba(14,17,23,0.78); border: 1px solid var(--border-strong); border-radius: 9px;
                 padding: 4px 10px; font: 600 13px system-ui; color: #e6edf5; line-height: 1.3; pointer-events: none; }
@@ -518,6 +544,7 @@
     <div class="sep"></div>
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
+    <button id="modelsBtn" title="Every behavior's models in one place: which model is in use, what each one learned from, how they score on your test clips, and which clips still show an older model's predictions (with one click to bring them up to date)">🧠 Models</button>
     <button id="statsBtn" title="Precision stats + learning curve vs. how much you've labeled">📊 Stats</button>
     <button id="trainsetBtn" title="Which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening) — and what the current model learned from">🗂 Training set</button>
     <button id="labelStatsBtn" title="How many Happening / Not-happening bouts and frames each behavior has (enough to train?), and which you labeled by hand vs accepted from candidates">🏷 Label counts</button>
@@ -608,6 +635,20 @@
     <span class="status" style="color:#6b7280">per-frame feature time-series for the selected track (synced to the playhead)</span>
   </div>
   <canvas id="features" title="per-frame feature time-series"></canvas>
+
+  <div id="modelsPanel" class="panel">
+    <div class="row" style="margin-top:0; justify-content:space-between">
+      <b style="font-size:14px">🧠 Models</b>
+      <span>
+        <button id="modelsRefresh" title="Read everything again (after a Train elsewhere, or a long sweep)">↻ Refresh</button>
+        <button id="modelsClose">✕ Close</button>
+      </span>
+    </div>
+    <div class="status" style="color:#6b7280; margin:8px 0 2px">Per behavior: the model in use and every earlier one, how they score, and which clips show the model in use.
+      Squares are clips: <span style="color:#5fbf7f">■</span> up to date · <span style="color:#e8a33d">■</span> older model · <span style="color:#596170">■</span> never predicted · <span style="color:#a04a4a">■</span> can't predict;
+      <span style="color:#ffd24a">yellow outline</span> = test clip, white ring = the clip open now. Click a square to open that clip.</div>
+    <div id="modelsBody"></div>
+  </div>
 
   <div id="statsPanel" class="panel">
     <div class="row" style="margin-top:0; justify-content:space-between">
@@ -3637,6 +3678,186 @@ async function copyTrainset() {
   catch (e) { console.log(text); busy("clipboard blocked — training-set JSON logged to console instead"); }
 }
 
+// ---------- 🧠 Models overview: models per behavior, their scores, and which clips show the one in use ----------
+// GET /models is cheap (small files only); scores come from /behaviors/{bid}/compare, which reads every
+// stored prediction, so they load one behavior at a time after the panel is drawn and are kept until
+// ↻ Refresh. "Predict the out-of-date clips" is POST /behaviors/{bid}/predict: one behavior, those clips.
+const MS_COLOR = { current: "#5fbf7f", older: "#e8a33d", none: "#596170", blocked: "#a04a4a" };
+const MS_NAME = { current: "up to date", older: "older model", none: "never predicted", blocked: "can't predict" };
+let modelsData = null;
+const modelsScores = new Map();      // bid -> /compare result (or {error})
+const modelsSweeps = new Map();      // bid -> {jid, msg}
+async function openModels() {
+  el("modelsPanel").classList.add("on");
+  await refreshModels(false);
+}
+async function refreshModels(rescore) {
+  if (rescore) modelsScores.clear();
+  const r = await api(`/models`);
+  if (!r.ok) { el("modelsBody").innerHTML = `<div class="status">could not load the models overview</div>`; return; }
+  modelsData = await r.json();
+  renderModels();
+  loadModelScores();
+}
+async function loadModelScores() {
+  for (const b of (modelsData || {}).behaviors || []) {
+    if (b.engine === "none" || modelsScores.has(b.behavior_id)) continue;
+    let d;
+    try { const r = await api(`/behaviors/${b.behavior_id}/compare`); d = r.ok ? await r.json() : { error: (await r.json().catch(() => ({}))).detail || r.status }; }
+    catch (e) { d = { error: String(e) }; }
+    modelsScores.set(b.behavior_id, d);
+    if (el("modelsPanel").classList.contains("on")) renderModelCard(b);
+  }
+}
+const msDate = s => s ? String(s).slice(0, 10) : "";
+function msLearned(m) {
+  if (m.kind === "zeroshot") return `<span class="ins">none of your labels</span>`;
+  if (m.kind === "finetune") return [m.train_on_label, m.n_clips != null ? `${m.n_clips} clip${m.n_clips === 1 ? "" : "s"}` : null,
+                                     m.bouts != null ? `${m.bouts} bouts` : null, m.mode].filter(Boolean).map(esc).join(" · ");
+  return [m.n_clips != null ? `${m.n_clips} clip${m.n_clips === 1 ? "" : "s"}` : null,
+          m.bouts != null ? `${m.bouts}+${m.neg_bouts != null ? ` / ${m.neg_bouts}−` : ""} bouts` : null,
+          m.feature_set && m.feature_set !== "all" ? `${m.feature_set} features` : null].filter(Boolean).map(esc).join(" · ");
+}
+function msScore(s) {
+  if (!s) return "—";
+  const thin = s.thin ? ` <span class="warn" title="too few labeled Happening or Not-happening frames to trust">⚠</span>` : "";
+  return `AP <b>${fmt3(s.ap)}</b> · AUROC ${fmt3(s.auroc)} · F1 ${fmt3(s.best_f1)}${thin}`;
+}
+function msEstimate(b, n) {
+  if (b.engine === "hidra") {
+    const lo = n, hi = 2 * n, f = x => x < 90 ? `${x} min` : `${(x / 60).toFixed(1)} h`;
+    return `HiDRA takes about 1–2 min per clip, so about ${f(lo)}–${f(hi)}. It runs in the background; other HiDRA jobs take turns between clips.`;
+  }
+  return "a few seconds per clip (longer for a clip whose features need building first).";
+}
+function renderModels() {
+  const host = el("modelsBody"); host.innerHTML = "";
+  const bs = (modelsData || {}).behaviors || [];
+  if (!bs.length) { host.innerHTML = `<div class="status">No behaviors yet.</div>`; return; }
+  const noTest = !(modelsData.videos || []).some(v => v.role === "test");
+  if (noTest) host.insertAdjacentHTML("beforeend", `<div class="mwarn" style="margin:6px 0">No test clip yet, so no model has a fair score: scores on clips a model trained on run high. Open a clip you haven't trained on, click <b>🧪 use as test clip</b>, label it, and predict it.</div>`);
+  for (const b of bs) {
+    const card = document.createElement("div"); card.className = "mcard"; card.id = `mcard-${b.behavior_id}`;
+    host.appendChild(card); renderModelCard(b);
+  }
+  host.insertAdjacentHTML("beforeend", `<div class="note">Test-clip scores are the fair comparison: no model trained on those clips. AP, AUROC and best F1 use only frames you labeled Happening or Not-happening. Scores on training clips, and a project model's cross-validated (CV) AP, run high because the model has seen those labels. Review visits what a model proposed, so treat small differences with caution.</div>`);
+}
+function renderModelCard(b) {
+  const card = el(`mcard-${b.behavior_id}`); if (!card) return;
+  const bid = b.behavior_id, cur = b.current, sc = modelsScores.get(bid), sweep = modelsSweeps.get(bid);
+  const eng = b.engine === "hidra" ? `HiDRA · ${esc(b.head)}` : b.engine === "project" ? "this project's own model" : "no model yet";
+  let html = `<div class="mhead"><span style="display:inline-block;width:11px;height:11px;border-radius:2px;background:${b.color || "#cbd3df"}"></span>`
+    + `<b>${esc(b.name) || "behavior " + bid}</b><span class="eng">${eng}</span></div>`;
+  if (b.engine === "none") html += `<div class="muse">Nothing to predict with yet: ⚙ Train it, or pick a HiDRA head for it.</div>`;
+  else if (cur) html += `<div class="muse">In use: <b class="cur">${esc(cur.label)}</b>${cur.when ? ` · trained ${msDate(cur.when)}` : ""}${cur.kind !== "zeroshot" ? ` · learned from ${msLearned(cur)}` : ""}</div>`;
+  if (b.checkpoints_missing) html += `<div class="mwarn">⚠ The fine-tuned checkpoints in use are missing from disk (moved or deleted), so a Predict would only give the zero-shot head. Fine-tune again to fix it.</div>`;
+  // clips
+  const c = b.counts, clips = (modelsData.videos || []);
+  html += `<div class="mcounts">` + ["current", "older", "none", "blocked"].filter(k => c[k] || k === "current")
+    .map(k => `<span class="d" style="background:${MS_COLOR[k]}"></span>${c[k]} ${MS_NAME[k]}`).join("") + `</div>`;
+  html += `<div class="mgrid">` + clips.map(v => {
+    const st = b.clips[v.video_id] || { status: "none" };
+    const tip = `${clipShortName(v.video_id)}${v.role === "test" ? " (test clip)" : ""} — ${MS_NAME[st.status]}`
+      + (st.by ? ` · made by ${st.by}` : "") + (st.why && st.status !== "current" ? ` · ${st.why}` : "") + (st.predicted_at ? ` · predicted ${st.predicted_at.slice(0, 16).replace("T", " ")}` : "");
+    return `<span class="sq${v.role === "test" ? " test" : ""}${v.video_id === vid ? " here" : ""}" data-vid="${esc(v.video_id)}" style="background:${MS_COLOR[st.status]}" title="${esc(tip)}"></span>`;
+  }).join("") + `</div>`;
+  const groups = ["older", "none", "blocked"].filter(k => c[k]);
+  if (groups.length) {
+    html += `<details><summary>which clips</summary>` + groups.map(k => `<div class="cl"><b style="color:${MS_COLOR[k]}">${MS_NAME[k]}</b>: `
+      + clips.filter(v => (b.clips[v.video_id] || {}).status === k).map(v => {
+          const st = b.clips[v.video_id];
+          const extra = k === "older" ? (st.by ? ` (${esc(st.by)})` : "") : k === "blocked" ? ` (${esc(st.why)})` : "";
+          return `<a data-vid="${esc(v.video_id)}">${esc(clipShortName(v.video_id))}</a>${v.role === "test" ? " 🧪" : ""}${extra}`;
+        }).join(", ") + `</div>`).join("") + `</details>`;
+  }
+  const n = b.fixable.length;
+  if (sweep) html += `<div class="mact"><button class="mstop">■ Stop</button><span>${esc(sweep.msg || "starting…")}</span></div>`;
+  else if (n) html += `<div class="mact"><button class="mpred">▶ Predict the ${n} out-of-date clip${n === 1 ? "" : "s"}</button><span>${esc(msEstimate(b, n))}${b.fixable.some(v => (clips.find(x => x.video_id === v) || {}).role === "test") ? " Test clips go first." : ""}</span></div>`;
+  else if (b.engine !== "none" && (c.older || c.none)) html += `<div class="mact"><span>The clips that aren't up to date can't be fixed by predicting again (see why above).</span></div>`;
+  // models + scores
+  if (b.engine !== "none") {
+    const byKey = new Map(((sc && sc.models) || []).map(m => [m.key, m]));
+    const todo = new Map(((sc && sc.can_compute) || []).map(t => [t.model, t]));
+    html += `<table><thead><tr><th>Model</th><th>Trained</th><th>Learned from</th><th title="Scored on frames you labeled in your test clips, which this model never trained on: the fair comparison">Test clips (fair)</th><th title="Scored on clips this model trained on: in-sample, so it runs high">Training clips</th></tr></thead><tbody>`;
+    for (const m of b.models.slice().reverse()) {        // newest first
+      const s = byKey.get(m.compare_key), sco = (s && s.scores) || {};
+      let test;
+      if (!sc) test = `<span class="ins">scoring…</span>`;
+      else if (sc.error) test = `<span class="ins">couldn't score</span>`;
+      else if (sco.test) test = msScore(sco.test) + (s.test_partial ? ` <span class="warn" title="scored on only some of the test clips">◐</span>` : "");
+      else if (s && (s.test_in_sample || []).length) test = `<span class="ins" title="this model trained on the test clip (before it was marked test)">trained on it</span>`;
+      else if (!(sc.test_videos || []).length) test = `<span class="ins">no test clip</span>`;
+      else if (todo.has(m.key)) test = `<button class="mscore" data-model="${esc(m.key)}">▶ score on test clip</button>`;
+      else test = `<span class="ins">${m.kind === "native" && !m.current ? "can't re-run an older project model" : m.checkpoints === false ? "checkpoints deleted" : "not predicted on the test clip yet"}</span>`;
+      const train = sco.train_in ? `<span class="ins">${msScore(sco.train_in)}</span>`
+        : m.cv_ap != null ? `<span class="ins" title="cross-validated on its own training labels">CV AP ${fmt3(m.cv_ap)}</span>` : "—";
+      html += `<tr><td>${m.current ? `<span class="cur">${esc(m.label)} · in use</span>` : esc(m.label)}${m.checkpoints === false && m.kind === "finetune" ? ` <span class="ins">(checkpoints deleted)</span>` : ""}</td>`
+        + `<td class="num">${m.kind === "zeroshot" ? `<span class="ins">pretrained</span>` : msDate(m.when) || "—"}</td><td>${msLearned(m)}</td><td class="num">${test}</td><td class="num">${train}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+    if (b.other_head_runs) html += `<div class="note">${b.other_head_runs} fine-tune${b.other_head_runs === 1 ? "" : "s"} of a different HiDRA head not shown.</div>`;
+  }
+  card.innerHTML = html;
+  card.querySelectorAll("[data-vid]").forEach(x => x.onclick = () => modelsOpenClip(x.dataset.vid, bid));
+  const pb = card.querySelector(".mpred"); if (pb) pb.onclick = () => modelsPredict(b);
+  const sb = card.querySelector(".mstop"); if (sb) sb.onclick = () => modelsStop(bid, sb);
+  card.querySelectorAll(".mscore").forEach(x => x.onclick = () => modelsScore(bid, x.dataset.model, x));
+}
+async function modelsOpenClip(vidId, bid) {
+  if (browseBlocked()) return;
+  closeReview(); closeBrowse();
+  if (vidId !== vid) await openVideo(vidId);
+  if (bid !== activeBid) await selectBehavior(bid);
+  if (modelsData) for (const b of modelsData.behaviors) renderModelCard(b);   // move the white ring
+}
+async function modelsPredict(b) {
+  const bid = b.behavior_id, n = b.fixable.length;
+  if (b.engine === "hidra" && n > 3 && !confirm(`Predict ${b.name} on ${n} clips with HiDRA?\n\n${msEstimate(b, n)}\nYou can keep labeling meanwhile, and ■ Stop keeps what's already done.`)) return;
+  const order = b.fixable.slice();                         // the clip open now right after the test clips
+  const i = order.indexOf(vid);
+  if (i > 0) { order.splice(i, 1); const t = order.findIndex(v => ((modelsData.videos || []).find(x => x.video_id === v) || {}).role !== "test"); order.splice(t < 0 ? order.length : t, 0, vid); }
+  const r = await api(`/behaviors/${bid}/predict?videos=${encodeURIComponent(order.join(","))}`, { method: "POST" });
+  if (!r.ok) { busy(`could not start: ${(await r.json().catch(() => ({}))).detail || r.status}`); return; }
+  const { job_id } = await r.json();
+  logEvent("models_predict", { behavior_id: bid, name: b.name, n_clips: n });
+  modelsSweeps.set(bid, { jid: job_id, msg: "starting…" }); renderModelCard(b);
+  const t = setInterval(async () => {
+    let s;
+    try { s = await (await api(`/jobs/${job_id}`)).json(); } catch (e) { return; }
+    const sw = modelsSweeps.get(bid); if (!sw) { clearInterval(t); return; }
+    if (!s || !s.status) { clearInterval(t); modelsSweeps.delete(bid); return; }   // server restarted: the job is gone
+    sw.msg = `${s.msg || s.status}${s.pct != null ? ` (${s.pct}%)` : ""}`;
+    const cardB = ((modelsData || {}).behaviors || []).find(x => x.behavior_id === bid);
+    if (!["done", "error", "cancelled"].includes(s.status)) { const sp = document.querySelector(`#mcard-${bid} .mact span`); if (sp) sp.textContent = sw.msg; return; }
+    clearInterval(t); modelsSweeps.delete(bid);
+    const q = s.result || {}, done = (q.videos || []).length, sk = q.skipped || [];
+    busy(s.status === "error" ? `${b.name}: predicting failed — ${String(s.error || "").slice(0, 200)}`
+      : `${b.name}: predicted ${done} of ${q.total ?? n} clip${(q.total ?? n) === 1 ? "" : "s"}${s.status === "cancelled" ? " (stopped — those keep their new predictions)" : ""}`
+        + (sk.length ? ` · ${sk.length} failed, e.g. ${clipShortName(sk[0].video_id)}: ${String(sk[0].reason).slice(0, 140)}` : ""));
+    logEvent("models_predict_result", { behavior_id: bid, status: s.status, n_done: done, n_failed: sk.length });
+    modelsScores.delete(bid);
+    if ((q.videos || []).includes(vid)) { await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline(); }
+    if (el("modelsPanel").classList.contains("on")) await refreshModels(false); else if (cardB) renderModelCard(cardB);
+  }, 1000);
+}
+async function modelsStop(bid, btn) {
+  const sw = modelsSweeps.get(bid); if (!sw) return;
+  btn.disabled = true; btn.blur(); sw.msg = "stopping…";
+  await api(`/jobs/${sw.jid}/cancel`, { method: "POST" }).catch(() => null);
+  logEvent("models_predict_stop", { behavior_id: bid });
+}
+async function modelsScore(bid, model, btn) {
+  btn.disabled = true; btn.textContent = "scoring…";
+  const r = await api(`/behaviors/${bid}/compare/run?model=${encodeURIComponent(model)}`, { method: "POST" });
+  if (!r.ok) { busy("could not start: " + ((await r.json().catch(() => ({}))).detail || r.status)); btn.disabled = false; btn.textContent = "▶ score on test clip"; return; }
+  const { job_id } = await r.json();
+  pollJob(job_id, async s => {
+    if (s.status === "error") { busy("scoring failed: " + String(s.error || "").slice(0, 300)); btn.disabled = false; btn.textContent = "▶ score on test clip"; return; }
+    modelsScores.delete(bid); busy("scored on the test clip");
+    if (el("modelsPanel").classList.contains("on")) await refreshModels(false);
+  });
+}
+
 // ---------- label provenance (by-hand vs from-candidates, per track) ----------
 const SOURCE_LABELS = { manual: "By hand", candidate: "From candidates", imported: "Imported" };
 const SOURCE_ORDER = ["manual", "candidate", "imported"];
@@ -5229,6 +5450,9 @@ el("trainsetClose").onclick = () => el("trainsetPanel").classList.remove("on");
 el("trainsetCopy").onclick = copyTrainset;
 el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
+el("modelsBtn").onclick = openModels;
+el("modelsRefresh").onclick = () => refreshModels(true);
+el("modelsClose").onclick = () => el("modelsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
 function replayCandidate() {   // re-watch the bout under review — the range as you've trimmed/extended it, i.e. what y would accept

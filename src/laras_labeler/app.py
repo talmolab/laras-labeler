@@ -1908,6 +1908,105 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return beh["hidra"]
 
     # ---- model comparison (Stats panel): zero-shot vs each fine-tune vs native, on a held-out test clip
+    # ── 🧠 Models overview: every behavior's models and which clips show the one in use ──────────
+    @app.get("/api/projects/{pid}/models")
+    def models_overview(pid: str):
+        """Per behavior: its models (in use, when trained, what each learned from) and, per clip,
+        whether the predictions come from the model in use (current / older / none / blocked). Reads
+        small files only, so it is quick on a ~200-clip project. Scores come from /compare."""
+        from . import modelsview
+        proj = _proj(pid)
+
+        def hidra_block(entry: dict) -> str | None:
+            return None if _effective_ppc(proj, entry)[0] else "no px/cm (HiDRA needs the clip's scale)"
+        return modelsview.overview(store, predictor, trainer, pid, hidra_block)
+
+    _sweeps: dict[tuple[str, int], str] = {}          # (pid, bid) -> job id of a running "predict these clips"
+
+    @app.post("/api/projects/{pid}/behaviors/{bid}/predict")
+    def predict_behavior_clips(pid: str, bid: int, videos: str | None = None):
+        """Predict ONE behavior with the model in use, on the clips listed in `videos` (comma-separated,
+        in that order), or on every clip whose predictions are out of date when omitted (held-out
+        test clips first). Other behaviors' predictions are left alone. Each clip is its own step: a
+        clip that fails is reported and the rest go on; ■ Stop (POST /jobs/{jid}/cancel) keeps what
+        is already done. HiDRA takes its one-at-a-time lock per clip, so a ▶ Predict or a fine-tune
+        clicked meanwhile gets in between clips instead of waiting hours."""
+        from . import modelsview
+        proj = _behavior(pid, bid)
+        beh = next(b for b in proj.behaviors if b["id"] == bid)
+        prev = _sweeps.get((pid, bid))
+        if prev and (jobs.get(prev) and jobs.get(prev).status not in ("done", "error", "cancelled")):
+            raise HTTPException(409, f"already predicting {beh.get('name')} — ■ Stop it first, or wait")
+        hidra_bound = bool((beh.get("hidra") or {}).get("action"))
+        if hidra_bound:
+            from .predict import weights_mtime
+            h = beh["hidra"]
+            if h.get("weights") and weights_mtime(h["weights"]) is None:
+                raise HTTPException(409, "the fine-tuned checkpoints in use are missing from disk, so predicting "
+                                         "would only give the zero-shot head — fine-tune again first")
+        elif not trainer.model_meta(pid, bid):
+            raise HTTPException(409, "this behavior has no model yet — ⚙ Train it (or pick a HiDRA head) first")
+        if videos is None:
+            def hidra_block(entry: dict) -> str | None:
+                return None if _effective_ppc(proj, entry)[0] else "no px/cm"
+            ov = modelsview.overview(store, predictor, trainer, pid, hidra_block)
+            targets = next(b for b in ov["behaviors"] if b["behavior_id"] == bid)["fixable"]
+        else:
+            known = {v["video_id"] for v in proj.videos}
+            targets = [v for v in dict.fromkeys(x.strip() for x in videos.split(",")) if v and v in known]
+        if not targets:
+            raise HTTPException(409, "nothing to predict — every clip is up to date (or can't be predicted)")
+        name = beh.get("name") or f"behavior {bid}"
+
+        def job(progress):
+            done, skipped, n = [], [], len(targets)
+            model = meta = None
+            if not hidra_bound:
+                model, meta = trainer.load_model_and_meta(pid, bid)   # the version is captured WITH the model
+                if model is None:
+                    raise RuntimeError("this behavior's model is gone — train it again")
+            for i, vid in enumerate(targets):
+                lo, span = int(100 * i / n), max(1, int(100 / n))
+                step = lambda p, m, lo=lo, span=span, i=i: progress(lo + int(p * span / 100), f"{name}: clip {i + 1}/{n} · {m}")
+                try:
+                    step(0, "starting")                      # a ■ Stop lands here, between clips
+                    entry = store.get(pid).video(vid)
+                    if entry is None:
+                        raise RuntimeError("no longer in the project")
+                    if not entry.get("has_poses"):
+                        raise RuntimeError("no tracking file")
+                    if hidra_bound:
+                        with _hidra_exclusive(step, f"predicting {name}"):
+                            live = next((b for b in store.get(pid).behaviors if b["id"] == bid), None)
+                            if live is None or not (live.get("hidra") or {}).get("action"):
+                                skipped.append({"video_id": vid, "reason": "the behavior was unbound or deleted"})
+                                break
+                            _hidra_predict(pid, vid, [live], step)
+                    else:
+                        if features.status(pid, vid)["status"] != "ready":
+                            features.compute(pid, vid, lambda p, m, step=step: step(int(p * 0.8), f"features: {m}"))
+                        status = predictor.predict_one(pid, vid, bid, model=model, meta=meta)
+                        if status != "ok":
+                            raise RuntimeError(status)
+                    done.append(vid)
+                except JobCancelled:
+                    return {"behavior_id": bid, "videos": done, "skipped": skipped, "total": n, "stopped": True}
+                except Exception as e:  # noqa: BLE001 -- one clip's failure never ends the sweep
+                    skipped.append({"video_id": vid, "reason": str(e)[:300]})
+            out = {"behavior_id": bid, "videos": done, "skipped": skipped, "total": n}
+            try:
+                progress(100, f"{name}: done")
+            except JobCancelled:                             # Stop after the last clip: nothing left to stop
+                out["stopped"] = True
+            return out
+
+        # its own job kind: a long background sweep is not the "predict" a human sits and waits for, which
+        # the annotation-time rounds count as compute time (events.py)
+        j = _timed_job("predict_clips", pid, job, {"pid": pid, "behavior_id": bid, "n_clips": len(targets)},
+                       lambda r: {"n_done": len(r.get("videos") or []), "n_skipped": len(r.get("skipped") or [])})
+        _sweeps[(pid, bid)] = j.id
+        return {"job_id": j.id, "videos": targets}
+
     @app.get("/api/projects/{pid}/behaviors/{bid}/compare")
     def compare_models(pid: str, bid: int):
         from . import modelcompare
