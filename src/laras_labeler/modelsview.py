@@ -96,19 +96,27 @@ def _native_models(trainer, pid: str, bid: int) -> tuple[list[dict], dict, dict]
     return models, num, {"engine": "project" if meta.get("trained_at") else "none"}
 
 
-def _made_by(rec: dict | None, h: dict, rank: dict, num: dict) -> str:
+def _made_by(rec: dict | None, h: dict, rank: dict, num: dict, cur: dict | None) -> str:
     """Name of the model that wrote a lane, from its sidecar ('' when the lane predates sidecars)."""
     if not isinstance(rec, dict):
         return ""
     if rec.get("engine") == "hidra":
-        if h.get("action") and (rec.get("lab"), rec.get("action")) != (h.get("lab"), h.get("action")):
+        if not h.get("action"):
+            return f"HiDRA {rec.get('action')} ({'fine-tuned' if rec.get('weights') else 'zero-shot'})"
+        if (rec.get("lab"), rec.get("action")) != (h.get("lab"), h.get("action")):
             return f"another HiDRA head ({rec.get('action')})"
         if not rec.get("weights"):
             return "zero-shot"
         n = rank.get(rec.get("run_id"))
-        return f"fine-tune #{n}" if n else "an earlier fine-tune"
-    n = num.get(rec.get("version"))
-    return f"project model #{n}" if n else "an earlier project model"
+        if n:
+            return f"fine-tune #{n}"
+        if not rec.get("run_id") and rec.get("weights") == h.get("weights") and cur:   # the legacy fine-tune in use
+            return cur["label"]
+        return "an earlier fine-tune"
+    if rec.get("version") in num:
+        n = num[rec["version"]]
+        return f"project model #{n}" if n else "project model"
+    return "an earlier project model"
 
 
 def overview(store, predictor, trainer, pid: str, hidra_block) -> dict:
@@ -138,7 +146,7 @@ def overview(store, predictor, trainer, pid: str, hidra_block) -> dict:
             lane = predictor._path(pid, vid, bid)
             prov = predictor.provenance(pid, vid, bid, ctx) if lane.exists() else None
             rec = _read_json(lane.with_suffix(".meta.json")) if prov else None
-            st = {"by": _made_by(rec, h, rank, num), "predicted_at": (prov or {}).get("predicted_at")}
+            st = {"by": _made_by(rec, h, rank, num, cur), "predicted_at": (prov or {}).get("predicted_at")}
             block = ("no tracking file" if not c["has_poses"]
                      else c["hidra_block"] if info["engine"] == "hidra" else None)
             if prov is None:

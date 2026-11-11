@@ -1053,6 +1053,7 @@ async function selectProject(pid) {
 // project's labels into the new one.
 function resetWorkspaceState() {
   closeReview(); closeBrowse();
+  el("modelsPanel").classList.remove("on"); modelsData = null;   // the 🧠 Models panel belongs to the old project
   activeBid = null; selectedSeg = null; segTrim = null; tlView = null;
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
@@ -3684,29 +3685,39 @@ async function copyTrainset() {
 // ↻ Refresh. "Predict the out-of-date clips" is POST /behaviors/{bid}/predict: one behavior, those clips.
 const MS_COLOR = { current: "#5fbf7f", older: "#e8a33d", none: "#596170", blocked: "#a04a4a" };
 const MS_NAME = { current: "up to date", older: "older model", none: "never predicted", blocked: "can't predict" };
-let modelsData = null;
-const modelsScores = new Map();      // bid -> /compare result (or {error})
-const modelsSweeps = new Map();      // bid -> {jid, msg}
+let modelsData = null, modelsPid = null, modelsGen = 0;
+const modelsScores = new Map();      // bid -> /compare result (or {error}), for project modelsPid
+const modelsSweeps = new Map();      // bid -> {jid, msg}, for project modelsPid
 async function openModels() {
   el("modelsPanel").classList.add("on");
-  await refreshModels(false);
+  await refreshModels(true);         // scores too: a Train, a new test clip or a Predict since last time changes them
 }
 async function refreshModels(rescore) {
+  if (modelsPid !== PID) { modelsScores.clear(); modelsSweeps.clear(); modelsPid = PID; }   // another project
   if (rescore) modelsScores.clear();
+  const gen = ++modelsGen;           // a newer refresh supersedes this one (and its score loop)
   const r = await api(`/models`);
+  if (gen !== modelsGen) return;
   if (!r.ok) { el("modelsBody").innerHTML = `<div class="status">could not load the models overview</div>`; return; }
   modelsData = await r.json();
+  if (gen !== modelsGen) return;
+  for (const b of modelsData.behaviors)   // a sweep still running (started before a reload, or from another tab): follow it
+    if (b.sweep && !modelsSweeps.has(b.behavior_id)) modelsWatch(b.behavior_id, b.sweep.job_id, b.name, b.sweep.msg);
   renderModels();
-  loadModelScores();
+  loadModelScores(gen);
 }
-async function loadModelScores() {
-  for (const b of (modelsData || {}).behaviors || []) {
-    if (b.engine === "none" || modelsScores.has(b.behavior_id)) continue;
+async function loadModelScores(gen) {
+  for (const b0 of ((modelsData || {}).behaviors || []).slice()) {
+    const bid = b0.behavior_id;
+    if (gen !== modelsGen) return;
+    if (b0.engine === "none" || modelsScores.has(bid)) continue;
     let d;
-    try { const r = await api(`/behaviors/${b.behavior_id}/compare`); d = r.ok ? await r.json() : { error: (await r.json().catch(() => ({}))).detail || r.status }; }
+    try { const r = await api(`/behaviors/${bid}/compare`); d = r.ok ? await r.json() : { error: (await r.json().catch(() => ({}))).detail || r.status }; }
     catch (e) { d = { error: String(e) }; }
-    modelsScores.set(b.behavior_id, d);
-    if (el("modelsPanel").classList.contains("on")) renderModelCard(b);
+    if (gen !== modelsGen) return;   // superseded while it loaded: its numbers may predate the refresh
+    modelsScores.set(bid, d);
+    const cb = (modelsData.behaviors || []).find(x => x.behavior_id === bid);   // the CURRENT data, never b0
+    if (cb && el("modelsPanel").classList.contains("on")) renderModelCard(cb);
   }
 }
 const msDate = s => s ? String(s).slice(0, 10) : "";
@@ -3766,7 +3777,8 @@ function renderModelCard(b) {
     html += `<details><summary>which clips</summary>` + groups.map(k => `<div class="cl"><b style="color:${MS_COLOR[k]}">${MS_NAME[k]}</b>: `
       + clips.filter(v => (b.clips[v.video_id] || {}).status === k).map(v => {
           const st = b.clips[v.video_id];
-          const extra = k === "older" ? (st.by ? ` (${esc(st.by)})` : "") : k === "blocked" ? ` (${esc(st.why)})` : "";
+          const extra = k === "older" ? (st.by && !(cur && st.by === cur.label) ? ` (${esc(st.by)})` : ` (${esc(st.why)})`)
+                      : k === "blocked" ? ` (${esc(st.why)})` : "";
           return `<a data-vid="${esc(v.video_id)}">${esc(clipShortName(v.video_id))}</a>${v.role === "test" ? " 🧪" : ""}${extra}`;
         }).join(", ") + `</div>`).join("") + `</details>`;
   }
@@ -3779,7 +3791,10 @@ function renderModelCard(b) {
     const byKey = new Map(((sc && sc.models) || []).map(m => [m.key, m]));
     const todo = new Map(((sc && sc.can_compute) || []).map(t => [t.model, t]));
     html += `<table><thead><tr><th>Model</th><th>Trained</th><th>Learned from</th><th title="Scored on frames you labeled in your test clips, which this model never trained on: the fair comparison">Test clips (fair)</th><th title="Scored on clips this model trained on: in-sample, so it runs high">Training clips</th></tr></thead><tbody>`;
-    for (const m of b.models.slice().reverse()) {        // newest first
+    const known = new Set(b.models.map(m => m.compare_key));
+    const extra = ((sc && sc.models) || []).filter(m => !known.has(m.key) && m.comparable !== false)
+      .map(m => ({ key: m.key, compare_key: m.key, kind: m.kind, label: m.label, current: false, extra: true }));
+    for (const m of extra.concat(b.models.slice().reverse())) {        // newest first
       const s = byKey.get(m.compare_key), sco = (s && s.scores) || {};
       let test;
       if (!sc) test = `<span class="ins">scoring…</span>`;
@@ -3792,7 +3807,7 @@ function renderModelCard(b) {
       const train = sco.train_in ? `<span class="ins">${msScore(sco.train_in)}</span>`
         : m.cv_ap != null ? `<span class="ins" title="cross-validated on its own training labels">CV AP ${fmt3(m.cv_ap)}</span>` : "—";
       html += `<tr><td>${m.current ? `<span class="cur">${esc(m.label)} · in use</span>` : esc(m.label)}${m.checkpoints === false && m.kind === "finetune" ? ` <span class="ins">(checkpoints deleted)</span>` : ""}</td>`
-        + `<td class="num">${m.kind === "zeroshot" ? `<span class="ins">pretrained</span>` : msDate(m.when) || "—"}</td><td>${msLearned(m)}</td><td class="num">${test}</td><td class="num">${train}</td></tr>`;
+        + `<td class="num">${m.kind === "zeroshot" ? `<span class="ins">pretrained</span>` : msDate(m.when) || "—"}</td><td>${m.extra ? `<span class="ins">no longer on the behavior's list</span>` : msLearned(m)}</td><td class="num">${test}</td><td class="num">${train}</td></tr>`;
     }
     html += `</tbody></table>`;
     if (b.other_head_runs) html += `<div class="note">${b.other_head_runs} fine-tune${b.other_head_runs === 1 ? "" : "s"} of a different HiDRA head not shown.</div>`;
@@ -3805,6 +3820,9 @@ function renderModelCard(b) {
 }
 async function modelsOpenClip(vidId, bid) {
   if (browseBlocked()) return;
+  if (modelsPid !== PID || !projMeta.videos.some(v => v.video_id === vidId) || !behaviors.some(x => x.id === bid)) {
+    busy("that clip or behavior isn't in this project any more — ↻ Refresh the Models panel"); return;
+  }
   closeReview(); closeBrowse();
   if (vidId !== vid) await openVideo(vidId);
   if (bid !== activeBid) await selectBehavior(bid);
@@ -3817,34 +3835,48 @@ async function modelsPredict(b) {
   const i = order.indexOf(vid);
   if (i > 0) { order.splice(i, 1); const t = order.findIndex(v => ((modelsData.videos || []).find(x => x.video_id === v) || {}).role !== "test"); order.splice(t < 0 ? order.length : t, 0, vid); }
   const r = await api(`/behaviors/${bid}/predict?videos=${encodeURIComponent(order.join(","))}`, { method: "POST" });
-  if (!r.ok) { busy(`could not start: ${(await r.json().catch(() => ({}))).detail || r.status}`); return; }
+  if (!r.ok) {
+    busy(`could not start: ${(await r.json().catch(() => ({}))).detail || r.status}`);
+    if (r.status === 409) await refreshModels(false);      // e.g. already running: show its progress and ■ Stop
+    return;
+  }
   const { job_id } = await r.json();
-  logEvent("models_predict", { behavior_id: bid, name: b.name, n_clips: n });
-  modelsSweeps.set(bid, { jid: job_id, msg: "starting…" }); renderModelCard(b);
+  // target_behavior_id, not behavior_id: the event log's rounds follow behavior_id (the one being labeled)
+  logEvent("models_predict", { target_behavior_id: bid, name: b.name, n_clips: n });
+  modelsWatch(bid, job_id, b.name, "starting…");
+}
+// Follow a "predict these clips" job: progress on its card, ■ Stop, and a refresh when it ends. Started
+// by modelsPredict, or by refreshModels for a sweep the server reports as running (e.g. after a reload).
+function modelsWatch(bid, jid, name, msg) {
+  const pid = PID;
+  modelsSweeps.set(bid, { jid, msg: msg || "running…" });
+  const cardB = ((modelsData || {}).behaviors || []).find(x => x.behavior_id === bid);
+  if (cardB && el(`mcard-${bid}`)) renderModelCard(cardB);
   const t = setInterval(async () => {
+    if (PID !== pid) { clearInterval(t); return; }          // another project is open now
     let s;
-    try { s = await (await api(`/jobs/${job_id}`)).json(); } catch (e) { return; }
-    const sw = modelsSweeps.get(bid); if (!sw) { clearInterval(t); return; }
+    try { const r = await api(`/jobs/${jid}`); s = r.ok ? await r.json() : null; } catch (e) { return; }
+    const sw = modelsSweeps.get(bid);
+    if (!sw || sw.jid !== jid) { clearInterval(t); return; }
     if (!s || !s.status) { clearInterval(t); modelsSweeps.delete(bid); return; }   // server restarted: the job is gone
     sw.msg = `${s.msg || s.status}${s.pct != null ? ` (${s.pct}%)` : ""}`;
-    const cardB = ((modelsData || {}).behaviors || []).find(x => x.behavior_id === bid);
     if (!["done", "error", "cancelled"].includes(s.status)) { const sp = document.querySelector(`#mcard-${bid} .mact span`); if (sp) sp.textContent = sw.msg; return; }
     clearInterval(t); modelsSweeps.delete(bid);
-    const q = s.result || {}, done = (q.videos || []).length, sk = q.skipped || [];
-    busy(s.status === "error" ? `${b.name}: predicting failed — ${String(s.error || "").slice(0, 200)}`
-      : `${b.name}: predicted ${done} of ${q.total ?? n} clip${(q.total ?? n) === 1 ? "" : "s"}${s.status === "cancelled" ? " (stopped — those keep their new predictions)" : ""}`
-        + (sk.length ? ` · ${sk.length} failed, e.g. ${clipShortName(sk[0].video_id)}: ${String(sk[0].reason).slice(0, 140)}` : ""));
-    logEvent("models_predict_result", { behavior_id: bid, status: s.status, n_done: done, n_failed: sk.length });
+    const q = s.result || {}, done = (q.videos || []).length, sk = q.skipped || [], tot = q.total ?? done + sk.length;
+    busy(s.status === "error" ? `${name}: predicting failed — ${String(s.error || "").slice(0, 200)}`
+      : `${name}: predicted ${done} of ${tot} clip${tot === 1 ? "" : "s"}${s.status === "cancelled" || q.stopped ? " (stopped — those keep their new predictions)" : ""}`
+        + (sk.length ? ` · ${sk.length} not predicted, e.g. ${clipShortName(sk[0].video_id)}: ${String(sk[0].reason).slice(0, 140)}` : ""));
+    logEvent("models_predict_result", { target_behavior_id: bid, status: s.status, n_done: done, n_failed: sk.length });
     modelsScores.delete(bid);
     if ((q.videos || []).includes(vid)) { await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline(); }
-    if (el("modelsPanel").classList.contains("on")) await refreshModels(false); else if (cardB) renderModelCard(cardB);
+    if (el("modelsPanel").classList.contains("on")) await refreshModels(false);
   }, 1000);
 }
 async function modelsStop(bid, btn) {
   const sw = modelsSweeps.get(bid); if (!sw) return;
   btn.disabled = true; btn.blur(); sw.msg = "stopping…";
   await api(`/jobs/${sw.jid}/cancel`, { method: "POST" }).catch(() => null);
-  logEvent("models_predict_stop", { behavior_id: bid });
+  logEvent("models_predict_stop", { target_behavior_id: bid });
 }
 async function modelsScore(bid, model, btn) {
   btn.disabled = true; btn.textContent = "scoring…";

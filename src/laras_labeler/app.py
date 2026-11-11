@@ -1919,9 +1919,20 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         def hidra_block(entry: dict) -> str | None:
             return None if _effective_ppc(proj, entry)[0] else "no px/cm (HiDRA needs the clip's scale)"
-        return modelsview.overview(store, predictor, trainer, pid, hidra_block)
+        out = modelsview.overview(store, predictor, trainer, pid, hidra_block)
+        for b in out["behaviors"]:                  # a sweep still running (e.g. started before a page reload)
+            j = _running_sweep(pid, b["behavior_id"])
+            if j is not None:
+                snap = j.snapshot()
+                b["sweep"] = {"job_id": j.id, "pct": snap.get("pct"), "msg": snap.get("msg")}
+        return out
 
     _sweeps: dict[tuple[str, int], str] = {}          # (pid, bid) -> job id of a running "predict these clips"
+
+    def _running_sweep(pid: str, bid: int):
+        jid = _sweeps.get((pid, bid))
+        j = jobs.get(jid) if jid else None
+        return j if j is not None and j.status not in ("done", "error", "cancelled") else None
 
     @app.post("/api/projects/{pid}/behaviors/{bid}/predict")
     def predict_behavior_clips(pid: str, bid: int, videos: str | None = None):
@@ -1934,9 +1945,8 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         from . import modelsview
         proj = _behavior(pid, bid)
         beh = next(b for b in proj.behaviors if b["id"] == bid)
-        prev = _sweeps.get((pid, bid))
-        if prev and (jobs.get(prev) and jobs.get(prev).status not in ("done", "error", "cancelled")):
-            raise HTTPException(409, f"already predicting {beh.get('name')} — ■ Stop it first, or wait")
+        if _running_sweep(pid, bid) is not None:
+            raise HTTPException(409, f"already predicting {beh.get('name')} — its progress and ■ Stop are on its card in 🧠 Models")
         hidra_bound = bool((beh.get("hidra") or {}).get("action"))
         if hidra_bound:
             from .predict import weights_mtime
@@ -1975,6 +1985,11 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                         raise RuntimeError("no longer in the project")
                     if not entry.get("has_poses"):
                         raise RuntimeError("no tracking file")
+                    live = next((b for b in store.get(pid).behaviors if b["id"] == bid), None)
+                    if live is None or bool((live.get("hidra") or {}).get("action")) != hidra_bound:
+                        skipped.append({"video_id": vid, "reason": "the behavior was deleted, or bound/unbound to a "
+                                                                   "HiDRA head, while predicting — the rest were left alone"})
+                        break
                     if hidra_bound:
                         with _hidra_exclusive(step, f"predicting {name}"):
                             live = next((b for b in store.get(pid).behaviors if b["id"] == bid), None)
@@ -1983,6 +1998,12 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                                 break
                             _hidra_predict(pid, vid, [live], step)
                     else:
+                        now = trainer.model_meta(pid, bid) or {}
+                        if now.get("version") != (meta or {}).get("version"):   # a Train finished meanwhile: use the new model,
+                            model, meta = trainer.load_model_and_meta(pid, bid)  # never write the old one over its lanes
+                            if model is None:
+                                skipped.append({"video_id": vid, "reason": "the behavior's model is gone"})
+                                break
                         if features.status(pid, vid)["status"] != "ready":
                             features.compute(pid, vid, lambda p, m, step=step: step(int(p * 0.8), f"features: {m}"))
                         status = predictor.predict_one(pid, vid, bid, model=model, meta=meta)
@@ -2002,8 +2023,11 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
         # its own job kind: a long background sweep is not the "predict" a human sits and waits for, which
         # the annotation-time rounds count as compute time (events.py)
-        j = _timed_job("predict_clips", pid, job, {"pid": pid, "behavior_id": bid, "n_clips": len(targets)},
-                       lambda r: {"n_done": len(r.get("videos") or []), "n_skipped": len(r.get("skipped") or [])})
+        # target_behavior_id, not behavior_id: the event log's rounds follow behavior_id, and a background
+        # sweep of one behavior must not split the round of the behavior being labeled meanwhile
+        j = _timed_job("predict_clips", pid, job, {"pid": pid, "target_behavior_id": bid, "n_clips": len(targets)},
+                       lambda r: {"n_done": len(r.get("videos") or []), "n_skipped": len(r.get("skipped") or []),
+                                  "stopped": bool(r.get("stopped"))})
         _sweeps[(pid, bid)] = j.id
         return {"job_id": j.id, "videos": targets}
 

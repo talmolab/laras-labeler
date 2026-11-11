@@ -172,3 +172,63 @@ def test_predict_clips_needs_a_model():
     shutil.rmtree(store.get(pid).path / "model" / str(nb))
     r = c.post(f"/api/projects/{pid}/behaviors/{nb}/predict")
     assert r.status_code == 409 and "no model" in r.json()["detail"]
+
+
+def test_running_sweep_is_reported_so_a_reloaded_page_can_follow_and_stop_it():
+    c, app, _store, pid, nb, _hb, _runs = _setup()
+    app.state.trainer.load_model_and_meta = lambda p, b: ("MODEL", {"version": "v2"})
+    app.state.features.status = lambda p, v: {"status": "ready"}
+
+    def slow(p, vid, bid, model=None, meta=None):
+        time.sleep(0.3)
+        return "ok"
+    app.state.predictor.predict_one = slow
+    jid = c.post(f"/api/projects/{pid}/behaviors/{nb}/predict?videos=a,b,t").json()["job_id"]
+    time.sleep(0.1)
+    sw = next(b for b in c.get(f"/api/projects/{pid}/models").json()["behaviors"] if b["behavior_id"] == nb).get("sweep")
+    assert sw and sw["job_id"] == jid
+    c.post(f"/api/projects/{pid}/jobs/{jid}/cancel")
+    _wait(c, pid, jid)
+    assert "sweep" not in next(b for b in c.get(f"/api/projects/{pid}/models").json()["behaviors"] if b["behavior_id"] == nb)
+
+
+def test_native_sweep_follows_a_new_train_and_stops_if_bound_to_hidra():
+    c, app, store, pid, nb, _hb, _runs = _setup()
+    app.state.features.status = lambda p, v: {"status": "ready"}
+    md = store.get(pid).path / "model" / str(nb)
+    loads, seen = [], []
+
+    def load(p, b):
+        m = json.loads((md / "meta.json").read_text())
+        loads.append(m["version"])
+        return f"MODEL-{m['version']}", m
+    app.state.trainer.load_model_and_meta = load
+
+    def predict_one(p, vid, bid, model=None, meta=None):
+        seen.append((vid, model, meta["version"]))
+        if vid == "a":                                 # a Train finishes while clip a is predicted
+            (md / "meta.json").write_text(json.dumps({"version": "v3", "trained_at": "2026-11-12T00:00:00+00:00"}))
+        if vid == "b":                                 # then the behavior is bound to a HiDRA head
+            proj = store.get(pid)
+            next(x for x in proj.behaviors if x["id"] == nb)["hidra"] = {"lab": "Lab", "action": "rearing"}
+            proj.save()
+        return "ok"
+    app.state.predictor.predict_one = predict_one
+    jid = c.post(f"/api/projects/{pid}/behaviors/{nb}/predict?videos=a,b,c").json()["job_id"]
+    j = _wait(c, pid, jid)
+    assert seen == [("a", "MODEL-v2", "v2"), ("b", "MODEL-v3", "v3")]   # new model for b, nothing for c
+    assert j["result"]["videos"] == ["a", "b"] and j["result"]["skipped"][0]["video_id"] == "c"
+    assert loads == ["v2", "v3"]
+
+
+def test_sweep_events_do_not_carry_behavior_id():
+    """The event log's annotation rounds follow behavior_id; a background sweep of one behavior must
+    not split the round of the behavior being labeled."""
+    c, app, store, pid, nb, _hb, _runs = _setup()
+    app.state.trainer.load_model_and_meta = lambda p, b: ("MODEL", {"version": "v2"})
+    app.state.features.status = lambda p, v: {"status": "ready"}
+    app.state.predictor.predict_one = lambda p, vid, bid, model=None, meta=None: "ok"
+    _wait(c, pid, c.post(f"/api/projects/{pid}/behaviors/{nb}/predict?videos=a").json()["job_id"])
+    lines = [json.loads(x) for f in (store.get(pid).path / "events").glob("*.jsonl") for x in f.read_text().splitlines()]
+    sweep = [e for e in lines if e.get("kind") == "predict_clips"]
+    assert sweep and all("behavior_id" not in e and e.get("target_behavior_id") == nb for e in sweep)
