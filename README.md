@@ -269,6 +269,27 @@ ledger of every action and when, and then checks the rollup against it: counts, 
 attribution, round boundaries, dwell times, the break not being billed as work, and each surface
 (`/timing`, `/timing.csv`, `/events.jsonl`, the **⤓ rounds** button, `annotation_timing.py`).
 
+## Checking a tailreid run by eye
+
+`scripts/reid_spotcheck.py` measures how often a [tailreid](https://github.com/talmolab/tailreid) run
+gives the same mouse the same name. It's a lighter ground truth than labeling every switch of an hour
+with the switch labeler. It draws random frames from the run's decoded hours in which both tails are
+complete. For each frame it shows the two tails side by side, base on the left and enlarged, and asks
+one question: which tail carries a given tattoo (default "singles")? You answer with a key. The page
+never shows the re-ID's names, so the answers are blind to it.
+
+```bash
+uv run --no-project --python 3.12 --with numpy --with opencv-python-headless python scripts/reid_spotcheck.py ~/tailreid_runs/cam_05_b26
+uv run --no-project --python 3.12 --with numpy python scripts/reid_spotcheck.py ~/tailreid_runs/cam_05_b26 --score
+```
+
+Answers are saved after every key in `<run>/spotcheck/answers.csv`, so you can stop and resume. The
+score is the share of judged frames in which the tattoo's mouse got the run's majority name, with a
+95% interval. A tailreid run uses one name frame for all files, so this covers switches within hours
+and consistency across days in one number. With two mice, guessing scores 50%. A per-day table shows
+where names drift. Only frames with both tails visible can be judged by eye, so the sample is of those
+frames.
+
 ## History
 
 This started as a subdirectory of [talmolab/vibes](https://github.com/talmolab/vibes)
