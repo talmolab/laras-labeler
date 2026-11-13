@@ -113,6 +113,28 @@ When an HCM clip's outlines can't be loaded, the video toolbar shows **⚠ outli
 to see why. `uv run python scripts/check_hcm_roi.py --clip <part of the clip name>` walks the lookup
 one step at a time for that clip.
 
+## Pose data for tailcyclenet
+
+[tailcyclenet](https://github.com/AI-HHMI/tailcyclenet) is a video pose estimator, with a box
+detector and a label-free track-quality scorer. `scripts/slp_to_tailcycle.py` converts SLEAP `.slp`
+files into the dataset format it trains on. It is separate from the labeler: run it in the
+environment tailcyclenet is installed in.
+
+```bash
+# human-labelled frames (a SLEAP training project) -> a pose / detector training set
+python scripts/slp_to_tailcycle.py labels.v001.slp --out ~/tailcycle/hcm-mice \
+    --replace /old/video/prefix/ /where/the/videos/are/
+
+# SLEAP tracking over whole videos -> a "tracked" set, e.g. for `tailcyclenet score`
+python scripts/slp_to_tailcycle.py *.predictions.slp --out ~/tailcycle/hcm-tracked --tracked
+```
+
+It writes one 2D session per video, takes the keypoint names, edges and left/right symmetries from
+the SLEAP skeleton, and runs tailcyclenet's own validator at the end. The script's docstring says
+how occlusion, identity and unlabelled animals are carried over. Training then runs on a GPU
+(`tailcyclenet train --data ~/tailcycle/hcm-mice --out runs/hcm-pose`; about a day on one L4).
+`tests/test_slp_to_tailcycle.py` checks the converter and skips when tailcyclenet isn't installed.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
