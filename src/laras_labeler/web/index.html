@@ -1005,6 +1005,7 @@ let selectedSeg = null;                     // {bid, s, e, val} — a labeled ru
 let segTrim = null;                          // {s, e} editable bounds of the selected labeled bout (drag handles / [ ])
 let toolMode = "paint";                     // "paint" (drag a lane to label) | "select" (click to select any segment)
 let zoom = 1, panX = 0, panY = 0, stageDrag = null, panMoved = false;   // video zoom + pan
+let outlinePress = false;   // the last press on the video placed an outline point (the spout ends its mode on that press)
 let showPoses = true;                                                   // pose overlay toggle
 let spout = null, spoutRoi = null, cageRoi = null;    // this clip's arena landmark [x,y] and outlines [[x,y],...] (from the HCM DB)
 let showApproaches = false, approachBouts = null;                       // overlay: confirmed-positive nose approach paths to the spout (all tracks)
@@ -1110,8 +1111,10 @@ logEvent("session_start", { app_version: APP_VERSION, ua: navigator.userAgent,
 
 async function boot() {
   window.addEventListener("resize", renderTimeline);
-  overlay.addEventListener("click", ev => {   // click an animal in the video to annotate it (event-annotator style)
-    if (drawingRoi()) return;                     // placing a spout / ROI point, not selecting a track
+  // Click an animal in the video to annotate it (event-annotator style). Listened for on #stageInner, not the
+  // overlay canvas: a press there takes pointer capture (to pan), so the browser sends the click to #stageInner.
+  stageInner.addEventListener("click", ev => {
+    if (drawingRoi() || outlinePress) return;     // placing a spout / ROI point, not selecting a track
     if (panMoved) { panMoved = false; return; }   // that click was a pan drag, not a select
     if (!poses) return;
     const rect = overlay.getBoundingClientRect();
@@ -1233,6 +1236,8 @@ function clearStage() {
   octx.clearRect(0, 0, overlay.width, overlay.height);
   tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, tl.width, tl.height);
   renderClipBar(); renderTrackBar(); renderBehaviorBar();
+  updateRoiDraw(); updateTrackBadge();                 // no Outlines menu and no "track 1" badge on an empty stage
+  renderThreshReadout();                               // nor the last clip's "N bouts · x% of frames"
 }
 
 // the header's line about the open clip (also rewritten after its fps is corrected)
@@ -3386,8 +3391,8 @@ async function removeClip(vidId) {
 function nTracks() { return Math.max(1, poseShape[1] || 1); }
 function renderTrackBar() {
   const bar = el("trackBar"); if (!bar) return; bar.innerHTML = "";
-  if (!poseShape) { bar.style.display = "none"; return; }   // no clip loaded — nothing to pick a track from
-  bar.style.display = "";
+  el("trackCard").style.display = poseShape ? "" : "none";   // no clip loaded — nothing to pick a track from
+  if (!poseShape) return;
   const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Track:"; bar.appendChild(lab);
   const T = nTracks();
   for (let t = 0; t < T; t++) {
@@ -3482,7 +3487,11 @@ function showPanel(id, scroll = true) {
   for (const other of ANALYSIS_PANELS) if (other !== id && other !== PANEL_PAIR[id]) el(other).classList.remove("on");
   p.classList.add("on");
   if (!wasOn && scroll) p.scrollIntoView({ block: "start" });   // already open (a refresh, a toggle inside it): stay put
+  return !wasOn && scroll ? scrollY : null;                       // where it scrolled to, for settlePanel
 }
+// A panel shown before its content loads can only scroll as far as the page is tall, so it lands part way down.
+// Once the content is in, finish the scroll, unless the page was scrolled meanwhile.
+function settlePanel(id, y) { if (y != null && scrollY === y && el(id).classList.contains("on")) el(id).scrollIntoView({ block: "start" }); }
 async function openLabelsAndTrainset() {
   if (activeBid == null) { busy("select a behavior first"); return; }
   const wasOn = el("labelStatsPanel").classList.contains("on");
@@ -3940,8 +3949,9 @@ let modelsData = null, modelsPid = null, modelsGen = 0;
 const modelsScores = new Map();      // bid -> /compare result (or {error}), for project modelsPid
 const modelsSweeps = new Map();      // bid -> {jid, msg}, for project modelsPid
 async function openModels() {
-  showPanel("modelsPanel");
+  const y = showPanel("modelsPanel");
   await refreshModels(true);         // scores too: a Train, a new test clip or a Predict since last time changes them
+  settlePanel("modelsPanel", y);
 }
 async function refreshModels(rescore) {
   if (modelsPid !== PID) { modelsScores.clear(); modelsSweeps.clear(); modelsPid = PID; }   // another project
@@ -4372,8 +4382,9 @@ async function openFeatureDiff() {
   busy("computing feature differences…");
   const r = await api(`/behaviors/${activeBid}/feature-diff?top_n=12`);
   const d = r.ok ? await r.json() : { error: "request failed" };
-  showPanel("featDiffPanel");                      // show BEFORE drawing so canvases have a width
+  const y = showPanel("featDiffPanel");            // show BEFORE drawing so canvases have a width
   renderFeatureDiff(d);
+  settlePanel("featDiffPanel", y);
   busy("");
 }
 function drawHist(cv, h) {
@@ -5931,8 +5942,18 @@ function closeMenus(except = null) {
   if (!el("imgAdj").hidden && except !== el("imgAdj")) { setViewOpen(false); n++; }
   return n;
 }
+// An open menu stays inside the window: one that opens near the right edge (Review options when the Review
+// row runs long on a narrow window) is shifted left instead of being cut off; a right-aligned one, right.
+function fitMenu(d) {
+  const box = d.querySelector(".menu-items"); if (!box || !d.open) return;
+  box.style.transform = "";
+  const r = box.getBoundingClientRect(), W = document.documentElement.clientWidth, pad = 8;
+  const dx = r.right > W - pad ? Math.max(W - pad - r.right, pad - r.left) : r.left < pad ? pad - r.left : 0;
+  if (dx) box.style.transform = `translateX(${Math.round(dx)}px)`;
+}
+window.addEventListener("resize", () => document.querySelectorAll("details.menu[open]").forEach(fitMenu));
 function wireMenu(d) {
-  d.addEventListener("toggle", () => { if (d.open) closeMenus(d); });
+  d.addEventListener("toggle", () => { if (d.open) { closeMenus(d); fitMenu(d); } });
   const sum = d.querySelector("summary");
   sum.addEventListener("click", () => setTimeout(() => sum.blur()));   // give the keys back (Space plays, not re-toggles)
   const items = d.querySelector(".menu-items");
@@ -6020,6 +6041,7 @@ stageInner.addEventListener("wheel", ev => {
   setZoom(zoom * (ev.deltaY < 0 ? 1.12 : 1 / 1.12), ev.clientX - rect.left, ev.clientY - rect.top);
 }, { passive: false });
 stageInner.addEventListener("pointerdown", ev => {
+  outlinePress = drawingRoi();                     // placing the spout ends spout mode on this press, before its click
   if (drawingRoi() && ev.button !== 0) return;     // right-click while drawing: contextmenu drops the last point, adds none
   if (settingRoi) { ev.preventDefault(); addRoiPoint(ev.clientX, ev.clientY); return; }    // add a spout-ROI vertex, not pan
   if (settingCage) { ev.preventDefault(); addCagePoint(ev.clientX, ev.clientY); return; } // add a cage-ROI vertex, not pan
