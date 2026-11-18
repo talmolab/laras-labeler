@@ -104,12 +104,15 @@ This needs two things:
   uv run hidra-in-the-loop
   ```
 
-Clips from other experiments (not cut from an HCM recording) have no database to ask: the video
-toolbar shows **◎ Set spout**, **◇ Set spout ROI** and **▢ Set cage ROI** to draw them by hand, with
-a ✕ to clear. The default objects (feeder top / side, cage wall, spout) are HCM's arena. Remove the
-ones another experiment doesn't have with ✕ in the Objects card. Adding one back by name restores it.
+Clips from other experiments (not cut from an HCM recording) have no database to ask: the
+**Outlines ▾** menu at the top left of the video has **◎ Set spout**, **◇ Set spout ROI** and
+**▢ Set cage ROI** to draw them by hand, and items to clear them. **View** (top right of the video)
+shows or hides the outlines. The default objects (feeder top / side, cage wall, spout) are HCM's
+arena. The Objects card beside the video shows for a behavior marked *on object* (in its settings,
+the `<behavior> · … ▾` button in the Train row). Remove the objects another experiment doesn't have
+with the ✕ that appears when you point at a row. Adding one back by name restores it.
 
-When an HCM clip's outlines can't be loaded, the video toolbar shows **⚠ outlines not loaded from HCM**. Hover over it
+When an HCM clip's outlines can't be loaded, the top left of the video shows **⚠ outlines not loaded from HCM**. Hover over it
 to see why. `uv run python scripts/check_hcm_roi.py --clip <part of the clip name>` walks the lookup
 one step at a time for that clip.
 

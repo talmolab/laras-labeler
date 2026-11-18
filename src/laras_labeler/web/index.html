@@ -143,8 +143,6 @@
   .chip.active { border-color: #cfd6e0; background: #262c37; box-shadow: 0 0 0 1px rgba(207,214,224,.18); }
   .chip .sw { width: 11px; height: 11px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
   .chip .k { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
-  .chip .x { color: var(--mute); margin-left: 2px; transition: color .12s; }
-  .chip .x:hover { color: #e0777f; }
   #timeline { width: 100%; display: block; margin-top: 16px; border-radius: 10px; background: #0c0e13;
               cursor: crosshair; touch-action: none; border: 1px solid var(--border); box-shadow: var(--shadow); }
   #heatstrip { width: 100%; display: block; border-radius: 0 0 10px 10px; background: #0c0e13; }
@@ -168,7 +166,9 @@
   .objrow:hover { background: var(--surface); }
   .objrow.off { opacity: 0.55; cursor: default; }
   .objrow .od { margin-left: auto; color: #8b93a2; font-size: 11px; white-space: nowrap; }
-  .objrow .x { cursor: pointer; color: #8b93a2; }
+  .objrow .x { cursor: pointer; color: #8b93a2; visibility: hidden; }   /* the ✕ shows only on the row under the pointer */
+  .objrow:hover .x { visibility: visible; }
+  .objrow .x:hover { color: #e0777f; }
   /* condense the track/behavior rails: scroll internally past ~video height instead of stretching the
      stage row and pushing the rest of the GUI down as more behaviors are added */
   #behaviorCard, #trackCard { max-height: 56vh; overflow-y: auto; }
@@ -179,10 +179,9 @@
   #toolsCard  { order: -3; }                             /* paint / annotate tools */
   #actionRow  { order: -2; }                             /* train / predict / review / stats … */
   #hidraSetup { order: -1; }                             /* with the controls, not below the video */
-  #featSetHelp{ order: -1; }
   /* REVIEW view: pull video + rail + lanes to the top; the controls drop back below them */
   main.reviewing #clipBar, main.reviewing #mediaFix,
-  main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp,
+  main.reviewing #toolsCard, main.reviewing #actionRow,
   main.reviewing #hidraSetup { order: 0; }
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
   main.reviewing #stageRow { gap: 16px; align-items: stretch; order: -5; margin-top: 12px; }
@@ -214,9 +213,6 @@
   .sbar .track { flex: 1; max-width: 320px; height: 13px; border-radius: 7px; background: #2b313d; overflow: hidden; display: flex; }
   .sbar .track i { height: 13px; display: block; }
   .sbar .cnt { color: #c2c9d4; font-variant-numeric: tabular-nums; }
-  /* field labels in the action row: visible at all times, unlike a placeholder, which vanishes as
-     soon as the field is filled -- and every one of these is a model input worth naming. */
-  #hidraGroup label.status { margin-left: 4px; }
   .rvq { font-size: 15px; line-height: 1.55; }
   .rvq b { color: #fff; }
   .hint { color: var(--mute); font-size: 12px; margin-top: 16px; line-height: 1.6;
@@ -259,6 +255,53 @@
   details.menu > .menu-items .menu-sep { height: 1px; background: var(--border-strong); margin: 3px 6px; }
   details.menu > .menu-items > button.danger { color: #e0777f; }
   details.menu > .menu-items > button .mchk { color: #ffd24a; margin-left: 6px; }
+  /* settings popovers (<details class="menu"> with a form inside): the behavior settings, Review options */
+  details.menu > .menu-items.bset { width: 440px; max-width: calc(100vw - 40px); max-height: 76vh; overflow: auto;
+                                    padding: 10px 12px; gap: 7px; font-size: 13px; white-space: normal; line-height: 1.45; }
+  details.menu > .menu-items.bset.narrow { width: 300px; }
+  .bset .bset-hd { font-size: 13.5px; color: var(--text); }
+  .bset .bset-note { font-size: 12px; color: var(--dim); line-height: 1.45; }
+  .bset .bset-sec { font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #7b8494; margin-top: 2px; }
+  .bset .bset-grid { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+  .bset .bset-grid > label { color: #b8c0cc; font-size: 12.5px; }
+  .bset .bset-grid select { width: 100%; max-width: none; padding: 5px 8px; font-size: 13px; }
+  .bset .bset-grid input[type=number] { padding: 5px 8px; font-size: 13px; }
+  .bset .bset-grid button { justify-self: start; padding: 5px 11px; font-size: 12.5px; }
+  .bset .bset-chk { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #c2c9d4; cursor: pointer; user-select: none; }
+  .bset .bset-chk input { margin: 0; }
+  .bset .bset-hint { color: var(--mute); font-size: 11.5px; line-height: 1.45; margin: -4px 0 0 22px; }
+  .bset details.bsub > summary { cursor: pointer; padding: 6px 10px; border-radius: var(--radius); font-size: 13px; color: var(--text); }
+  .bset details.bsub > summary:hover { background: var(--btn-hover); }
+  .bset details.bsub[open] > summary { color: var(--dim); }
+  .bset details.bsub > button, .bset > button { display: block; width: 100%; text-align: left; background: none; border-color: transparent;
+                                                padding: 6px 10px; font-size: 13px; }
+  .bset details.bsub > button { padding-left: 22px; }
+  .bset details.bsub > button:hover:not(:disabled), .bset > button:hover:not(:disabled) { background: var(--btn-hover); border-color: transparent; }
+  .bset > button.danger { color: #e0777f; }
+  .bset .sub { display: block; color: var(--mute); font-size: 11.5px; font-weight: 400; }
+  #featSetHelp { margin: 0; }
+  #behSettingsSum.hidra { border-color: #4a5a78; }        /* a HiDRA classifier answers this behavior */
+  #hidraNote { color: #ffb347; }                          /* inline only for a warning */
+  #hidraNote:empty { display: none; }
+  /* on the video: Outlines (hand-drawn ROIs, non-HCM clips only) */
+  #poseCtl { display: flex; align-items: center; gap: 10px; }
+  #poseCtl details.menu { line-height: 1.3; }             /* #stage sets line-height: 0 */
+  #poseCtl details.menu > summary { padding: 2px 9px; font-size: 12px; border-radius: 6px; }
+  #poseCtl details.menu.on > summary { border-color: #6ea8fe; color: #9cc3ff; }   /* drawing an outline now */
+  #poseCtl details.menu > .menu-items { min-width: 210px; }
+  #poseCtl details.menu > .menu-items > button.on { background: #2f496f; border-color: #4a6da5; }
+  /* View popover (#imgAdj): what is drawn on the video, then brightness / contrast / gamma */
+  #imgAdj .vchk { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; color: #c2c9d4; }
+  #imgAdj .vchk input { margin: 0; width: 14px; height: 14px; cursor: pointer; }
+  #imgAdj .vsep { grid-column: 1 / -1; height: 1px; background: var(--border-strong); margin: 2px 0; }
+  #zoomCtl #imgAdjBtn { font-size: 12.5px; padding: 3px 9px; }
+  #zoomCtl #imgAdjBtn[aria-expanded="true"] { border-color: #6ea8fe; }
+  /* the action row reads as three rows: ③ Train, ④ Review, ⑤ Analyze (then the status line) */
+  #actionRow > .rowbreak { flex-basis: 100%; height: 0; }
+  #actionRow #predThresh { flex: 0 1 200px; min-width: 120px; }
+  #reviewOptsSum.on { border-color: #4a6da5; color: #9cc3ff; }   /* an order other than least confident */
+  /* Browse panel options (which bouts, order, labels source) */
+  #browseOpts select { padding: 4px 7px; font-size: 12.5px; max-width: 100%; }
 </style>
 </head>
 <body>
@@ -315,26 +358,32 @@
   <div id="stage">
     <div id="stageInner"><canvas id="frame"></canvas><canvas id="overlay"></canvas></div>
     <div id="trackBadge" hidden title="The animal you are labeling / reviewing. Switch with the track chips or number keys."></div>
+    <!-- Poses stays on the video; the arena outlines and approach paths are in View (#imgAdj). Outlines is the
+         hand-drawing menu, shown only on a clip that is not from an HCM recording (updateRoiDraw). -->
     <div id="poseCtl"><label><input type="checkbox" id="showPoses" checked> Poses</label>
-      <label title="Show the arena outlines on the video: cage wall (amber, dashed), spout (blue), feeder top / side (pink, dotted). They come from the HCM database when a clip opens. Hiding them changes only the view, not features or suggestions."><input type="checkbox" id="showRois" checked> ROIs</label>
-      <span id="roiDraw" style="display:none" title="This clip is not from an HCM recording, so its outlines are drawn by hand">
-        <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features.">◎ Set spout</button>
-        <button id="setSpoutRoi" title="Click to draw the spout ROI polygon for THIS clip — enables spout-ROI features. Enter to finish, Esc to cancel, right-click removes the last point.">◇ Set spout ROI</button>
-        <button id="setCageRoi" title="Click to draw the cage-boundary ROI polygon for THIS clip — enables cage-ROI features (distance-to-wall + cage position). Enter to finish, Esc to cancel, right-click removes the last point.">▢ Set cage ROI</button>
-        <button id="clearSpout" title="Clear this clip's spout point and spout ROI (to draw them again)">◇ spout ✕</button>
-        <button id="clearCage" title="Clear this clip's cage ROI (to draw it again)">▢ cage ✕</button>
-      </span>
+      <details class="menu" id="roiDraw" style="display:none">
+        <summary id="roiDrawSum" title="This clip is not from an HCM recording, so its spout and cage outlines are drawn by hand. They feed the spout and cage features.">Outlines</summary>
+        <div class="menu-items">
+          <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features.">◎ Set spout<span class="sub">click its spot on the video</span></button>
+          <button id="setSpoutRoi" title="Click to draw the spout ROI polygon for THIS clip — enables spout-ROI features. Enter to finish, Esc to cancel, right-click removes the last point.">◇ Set spout ROI<span class="sub">click the corners · Enter finishes · Esc cancels</span></button>
+          <button id="setCageRoi" title="Click to draw the cage-boundary ROI polygon for THIS clip — enables cage-ROI features (distance-to-wall + cage position). Enter to finish, Esc to cancel, right-click removes the last point.">▢ Set cage ROI<span class="sub">click the corners · Enter finishes · Esc cancels</span></button>
+          <button id="clearSpout" class="danger" title="Clear this clip's spout point and spout ROI (to draw them again)">◇ Clear the spout outlines</button>
+          <button id="clearCage" class="danger" title="Clear this clip's cage ROI (to draw it again)">▢ Clear the cage outline</button>
+        </div>
+      </details>
       <span id="hcmNote" style="display:none; color:#ffb347; font-size:12px; cursor:help"></span>
-      <button id="showApproaches" title="Overlay each confirmed-positive bout's nose approach path to the spout for the active behavior — all tracks, colored by track (○ = start of approach, ★ = at spout). Needs a spout/ROI set. Toggle off to hide.">→ Approaches</button>
     </div>
     <div id="zoomCtl">
       <button id="zOut" title="Zoom out (−)">−</button>
       <button id="zoomLabel" title="Zoom level. Click to reset (0)">1.0×</button>
       <button id="zIn" title="Zoom in (+)">＋</button>
       <button id="followBtn" title="Follow: while zoomed in, keep the animal you are labeling in frame (f). Turning it on at 1× zooms in on it. Dragging the video turns it off.">⌖</button>
-      <button id="imgAdjBtn" title="Brightness / contrast of the video (display only — poses, features and labels are unaffected)">☀</button>
+      <button id="imgAdjBtn" aria-expanded="false" title="View: the arena outlines and approach paths on the video, and its brightness / contrast (display only — poses, features and labels are unaffected)">View</button>
     </div>
     <div id="imgAdj" hidden>
+      <label class="vchk" title="Show the arena outlines on the video: cage wall (amber, dashed), spout (blue), feeder top / side (pink, dotted). They come from the HCM database when a clip opens, or are drawn with Outlines. Hiding them changes only the view, not features or suggestions."><input type="checkbox" id="showRois" checked> Arena outlines</label>
+      <label class="vchk" title="Overlay each confirmed-positive bout's nose approach path to the spout for the active behavior — all tracks, colored by track (○ = start of approach, ★ = at spout). Needs a spout/ROI set."><input type="checkbox" id="showApproaches"> Approach paths to the spout</label>
+      <div class="vsep"></div>
       <label for="imgBright">Brightness</label>
       <input type="range" id="imgBright" min="50" max="300" step="5" value="100" title="Double-click to reset">
       <span id="imgBrightVal">100%</span>
@@ -363,7 +412,7 @@
   </div>
   <aside id="behaviorRail" class="siderail">
     <div class="card railcard" id="behaviorCard"><div class="row" id="behaviorBar"></div>
-      <div class="row" id="objectBar" style="margin-top:8px"
+      <div class="row" id="objectBar" style="margin-top:8px; display:none"
            title="What a bout is ON, for behaviors marked 'on object': tick one or several for the bout under the playhead, the selected bout, or the candidate under review. The feeder, cage wall and spout are outlined by each clip's ROIs (filled from the HCM database), so the nearest one is suggested (★). Add anything else (an enrichment item, a nest) with ＋ object: it can be ticked, not suggested."></div></div>
   </aside>
   <div id="reviewPanel" class="panel review-rail">
@@ -405,6 +454,24 @@
       <button id="brNext" title="Next bout (⏎)">Next ▶ (⏎)</button>
       <div class="sep"></div>
       <button id="brStop" title="Stop browsing (Esc)">Done</button>
+    </div>
+    <!-- which bouts, their order, and (only when another project holds this clip) whose labels to compare with -->
+    <div class="row" id="browseOpts" style="margin-top:8px; gap:6px">
+      <select id="browseWhich" title="Which bouts to step through. 'Hit' means the detection overlaps a frame you labeled Happening. 'No label' means it overlaps none (a false alarm if this clip is fully labeled). 'Missed' steps through YOUR Happening bouts that no detection touches.">
+        <option value="all">all detections</option>
+        <option value="hit">detections on your labels</option>
+        <option value="nolabel">detections with no label</option>
+        <option value="missed">your bouts it missed</option>
+      </select>
+      <select id="browseOrder" title="Order to step through them. Random gives a fair sample if you only watch a few.">
+        <option value="time">order: time</option>
+        <option value="high">order: highest score</option>
+        <option value="low">order: lowest score</option>
+        <option value="random">order: random</option>
+      </select>
+      <select id="browseLabels" style="display:none" title="Labels to compare the detections with. Another project is listed only if it holds the same clip (same name, length, frame size, fps and window). Its labels are only read, never changed. Use this for a held-out clip whose hand labels live in a separate project.">
+        <option value="">labels: this project</option>
+      </select>
     </div>
     <div class="status" id="brProgress" style="margin-top:8px"></div>
   </div>
@@ -465,53 +532,95 @@
     <span class="stg">③ Train</span>
     <button id="train" class="primary" title="Fit the active behavior's model on every labeled clip (a held-out test clip never trains), then re-predict THIS clip. The other clips keep their predictions until you predict them: 🧠 Models → Bring every behavior up to date.">⚙ Train</button>
     <button id="stopTrain" style="display:none" title="Stop this training. Stopped while it trains: nothing changes, the previous model stays in use. Stopped after the new model is made (while it re-predicts clips): the new model is kept, and clips it hadn't reached keep the previous model's predictions.">■ Stop training</button>
-    <select id="featSet" title="Which features this behavior's model is trained on. A lean set can beat the full one (e.g. drinking does better on spout-only — pose/social features overfit). Retrain to apply.">
-      <option value="all">All features</option>
-      <option value="spout">Spout only</option>
-      <option value="spout_cage">Spout + cage</option>
-      <option value="cage">Cage only</option>
-      <option value="no_social">No social</option>
-      <option value="pose">Pose only</option>
-      <option value="social">Social only</option>
-      <option value="social_pose">Social + pose</option>
-    </select>
     <button id="predict" title="Apply the already-trained model(s) to THIS clip — builds its features first if needed. Use on a newly added clip. To update every clip: 🧠 Models → Bring every behavior up to date.">▶ Predict this video</button>
     <button id="stopJob" style="display:none" title="Stop this prediction. Clips (and behaviors) already predicted keep their new predictions; nothing else changes.">■ Stop</button>
-    <span class="sep"></span>
-    <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
-           title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
-      <input type="checkbox" id="dirToggle"> directed (actor→target)
-    </label>
-    <label class="status" id="objGroup" style="display:none; align-items:center; gap:4px"
-           title="Mark this behavior as object-directed: each Happening bout records what it is on (the feeder, the cage wall, the spout, or anything you added), one or several. Tick them in the Objects card on the right, for the bout under the playhead, the selected bout, or the candidate under review. A new bout starts with the object nearest the animal's nose (★).">
-      <input type="checkbox" id="objToggle"> on object
-    </label>
-    <!-- HiDRA. Hidden unless the server exposes /api/hidra/status, so a plain install is
-         unchanged and nothing here depends on HiDRA being present. -->
-    <span class="sep" id="hidraSep" style="display:none"></span>
-    <span id="hidraGroup" style="display:none; align-items:center; gap:6px; flex-wrap:wrap">
-      <span class="status">classifier:</span>
-      <select id="hidraHead" title="Which pretrained HiDRA classifier answers this behavior. Choosing one makes ▶ Predict run that classifier over this video instead of the project&#39;s own model, and ⚙ Train fine-tune it on your reviewed labels. Pick “— none —” to go back to the project&#39;s own model.\nThe listed heads are the ones HiDRA ships (lab · action). Their shipped thresholds are calibrated on the lab that trained them and are usually far off on new video, which is what the review rate handles."></select>
-      <label class="status" for="hidraCollapse">scores:</label>
-      <select id="hidraCollapse" title="HiDRA scores every ordered (subject → target) pair; a lane shows one number per animal. This decides which question that number answers, and every option looks plausible: self = is this animal doing it to itself · scene = is it happening at all (same value on every lane) · directed = is this animal the actor. scene and directed differ by more than 0.2 AUROC on the same head and labels.">
-        <option value="scene">scene: is it happening</option>
-        <option value="self">self-directed</option>
-        <option value="directed">directed: who is acting</option>
-      </select>
-      <label class="status" for="hidraRate">review rate:</label>
-      <input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
-             title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is.">
-      <label class="status" for="hidraTrainOn">train on:</label>
-      <select id="hidraTrainOn" title="Which frames the next ⚙ HiDRA fine-tune learns from.&#10;Every frame: anything you did not mark yes counts as NO, including time outside the clip's window and real approaches you never saw.&#10;Selected window only: the same, but only inside each clip's window (set with Window in the playbar); a clip with no window counts whole. Use it to leave out an empty cage, a stretch with one mouse, and so on.&#10;Reviewed frames only: only the yes and no answers you gave. Every other frame counts as neither.&#10;The last two need a HiDRA with the reviewed-frames change (scripts/hidra_patches/README.md).">
-        <option value="all">every frame</option>
-        <option value="window">selected window only</option>
-        <option value="reviewed">reviewed frames only</option>
-      </select>
-      <!-- the clip's px/cm (#hidraPpcWrap) is moved here from Clip ▾ → Clip calibration while it is missing (placePpc) -->
-      <span id="hidraPpcInline" style="display:inline-flex; align-items:center"></span>
-      <span class="status" id="hidraNote"></span>
-    </span>
-    <div class="sep"></div>
+    <!-- The active behavior's set-once settings. The summary always says what the behavior uses (filled by
+         syncBehSettings): 'drinking · HiDRA, fine-tuned' or 'rearing · project model, Spout only'. Every control
+         keeps its id, so hidraSyncBehavior / syncFeatSet / syncDirectedToggle fill them wherever they sit. -->
+    <details class="menu" id="behSettings" style="display:none">
+      <summary id="behSettingsSum" title="This behavior's settings">behavior settings</summary>
+      <div class="menu-items bset">
+        <div class="bset-hd"><b id="bsetTitle">Behavior settings</b></div>
+        <div class="bset-note" id="bsetNote"></div>
+        <!-- HiDRA: shown only when the server lists HiDRA heads (hidraInit), so a plain install is unchanged. -->
+        <div class="menu-sep" id="hidraSep" style="display:none"></div>
+        <div id="hidraGroup" class="bset-grid" style="display:none">
+          <label for="hidraHead">classifier</label>
+          <select id="hidraHead" title="Which pretrained HiDRA classifier answers this behavior. Choosing one makes ▶ Predict run that classifier over this video instead of the project&#39;s own model, and ⚙ Train fine-tune it on your reviewed labels. Pick “— none —” to go back to the project&#39;s own model.\nThe listed heads are the ones HiDRA ships (lab · action). Their shipped thresholds are calibrated on the lab that trained them and are usually far off on new video, which is what the review rate handles."></select>
+          <label for="hidraCollapse">scores</label>
+          <select id="hidraCollapse" title="HiDRA scores every ordered (subject → target) pair; a lane shows one number per animal. This decides which question that number answers, and every option looks plausible: self = is this animal doing it to itself · scene = is it happening at all (same value on every lane) · directed = is this animal the actor. scene and directed differ by more than 0.2 AUROC on the same head and labels.">
+            <option value="scene">scene: is it happening</option>
+            <option value="self">self-directed</option>
+            <option value="directed">directed: who is acting</option>
+          </select>
+          <label for="hidraRate">review rate</label>
+          <span><input type="number" id="hidraRate" value="0.15" min="0.01" max="0.9" step="0.01" style="width:58px"
+             title="Fraction of frames to offer as review candidates. HiDRA's probabilities are not on this GUI's 0.6 candidate scale out of domain, so they are rescaled monotonically (ranking untouched) to put this fraction above the cut. Set it AT OR ABOVE the behavior's prevalence — below that, no rate can surface most bouts however good the head is."></span>
+          <label for="hidraTrainOn">train on</label>
+          <select id="hidraTrainOn" title="Which frames the next ⚙ HiDRA fine-tune learns from.&#10;Every frame: anything you did not mark yes counts as NO, including time outside the clip's window and real approaches you never saw.&#10;Selected window only: the same, but only inside each clip's window (set with Window in the playbar); a clip with no window counts whole. Use it to leave out an empty cage, a stretch with one mouse, and so on.&#10;Reviewed frames only: only the yes and no answers you gave. Every other frame counts as neither.&#10;The last two need a HiDRA with the reviewed-frames change (scripts/hidra_patches/README.md).">
+            <option value="all">every frame</option>
+            <option value="window">selected window only</option>
+            <option value="reviewed">reviewed frames only</option>
+          </select>
+        </div>
+        <!-- the project's own model: its feature set and Feature diff (hidden while a HiDRA classifier answers) -->
+        <div id="bsetProj" class="bset-grid">
+          <label for="featSet">feature set</label>
+          <select id="featSet" title="Which features this behavior's model is trained on. A lean set can beat the full one (e.g. drinking does better on spout-only — pose/social features overfit). Retrain to apply.">
+            <option value="all">All features</option>
+            <option value="spout">Spout only</option>
+            <option value="spout_cage">Spout + cage</option>
+            <option value="cage">Cage only</option>
+            <option value="no_social">No social</option>
+            <option value="pose">Pose only</option>
+            <option value="social">Social only</option>
+            <option value="social_pose">Social + pose</option>
+          </select>
+          <span></span>
+          <button id="featDiffBtn" title="How keypoint features differ between positive and negative frames">📈 Feature diff</button>
+        </div>
+        <div id="featSetHelp" style="padding:9px 13px; background:#12151b; border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
+          <div class="help-hd"><b style="color:#cbd3df">Feature set help</b><button id="featHelpToggle" class="collapse-btn" data-keep-open data-target="featHelpBody">hide ▾</button></div>
+          <div id="featHelpBody" style="margin-top:6px">
+            <div><b style="color:#cbd3df">Feature set</b> — <span id="featSetDesc"></span></div>
+            <div style="margin-top:8px"><b style="color:#cbd3df">Which set for which behavior?</b> — a starting point; the only real test is to try a couple and compare AP/F1 (📊 Stats). Rules of thumb:
+              <table style="margin:5px 0 2px; border-collapse:collapse; font-size:11.5px; width:100%">
+                <tr style="color:#7b8494; text-align:left"><th style="padding:2px 8px 2px 0">If the behavior is defined by…</th><th style="padding:2px 8px">example</th><th style="padding:2px 0">try</th></tr>
+                <tr><td style="padding:2px 8px 2px 0; border-top:1px solid #232833">being <b>at a landmark</b> (needs a spout/ROI set)</td><td style="padding:2px 8px; border-top:1px solid #232833">drinking</td><td style="padding:2px 0; border-top:1px solid #232833"><b>Spout only</b></td></tr>
+                <tr><td style="padding:2px 8px 2px 0">position <b>at the cage wall/rim</b> (needs a cage ROI)</td><td style="padding:2px 8px">climbing, rearing on rim</td><td style="padding:2px 0"><b>No social</b> (cage + pose beats cage-only)</td></tr>
+                <tr><td style="padding:2px 8px 2px 0"><b>body motion/posture</b> alone, no landmark</td><td style="padding:2px 8px">grooming, freezing, locomotion</td><td style="padding:2px 0"><b>Pose only</b></td></tr>
+                <tr><td style="padding:2px 8px 2px 0"><b>interaction</b> between two mice</td><td style="padding:2px 8px">fighting, following, sniffing</td><td style="padding:2px 0"><b>Social + pose</b></td></tr>
+                <tr><td style="padding:2px 8px 2px 0">not sure yet</td><td style="padding:2px 8px">—</td><td style="padding:2px 0"><b>No social</b>, then trim down</td></tr>
+              </table>
+              <span style="color:#6b7280">Leaner usually beats “All”: extra columns can overfit &amp; dilute a clean signal. Adding a feature that <i>looks</i> discriminative alone (📈 Feature diff) may still not help if it’s redundant with signals already in the set — always confirm with AP/F1.</span>
+            </div>
+          </div>
+        </div>
+        <div class="menu-sep"></div>
+        <label class="bset-chk" id="dirGroup" style="display:none"
+               title="Mark this behavior as social/directed: each positive bout records WHO is acting (the track you paint) and WHO it is aimed at (after painting, press Shift + the target's track number, e.g. Shift+2). Needed for anogenital sniff. Works with or without a HiDRA classifier.">
+          <input type="checkbox" id="dirToggle"> directed (actor→target)
+        </label>
+        <label class="bset-chk" id="objGroup" style="display:none"
+               title="Mark this behavior as object-directed: each Happening bout records what it is on (the feeder, the cage wall, the spout, or anything you added), one or several. Tick them in the Objects card on the right, for the bout under the playhead, the selected bout, or the candidate under review. A new bout starts with the object nearest the animal's nose (★).">
+          <input type="checkbox" id="objToggle"> on object
+        </label>
+        <div class="bset-hint" id="objHint">Ticking it shows the Objects card beside the video, where you tick what each bout is on.</div>
+        <div class="menu-sep"></div>
+        <details class="bsub" id="bsetDup">
+          <summary title="A parallel copy of this behavior, to compare how many labels each way needs. The original is untouched.">Duplicate behavior…</summary>
+          <button id="cloneSeed" title="Parallel copy with only the INITIAL/seed labels (your hand-painted + imported bouts, NOT the candidate-review ones). Same starting point, but the copy runs its OWN candidate process + further labeling. (original untouched)">with its seed labels<span class="sub">hand-painted and imported bouts, not the reviewed ones</span></button>
+          <button id="cloneEmpty" title="Parallel copy with 0 labels — relabel from scratch to compare how many labels are needed to reach the same performance. (original untouched)">empty<span class="sub">0 labels, to relabel from scratch</span></button>
+        </details>
+        <button id="behDelete" class="danger" title="Delete this behavior and all its labels in this project">Delete behavior…<span class="sub">and all its labels in this project</span></button>
+      </div>
+    </details>
+    <!-- the clip's px/cm (#hidraPpcWrap) is moved here from Clip ▾ → Clip calibration while it is missing (placePpc) -->
+    <span id="hidraPpcInline" style="display:none; align-items:center"></span>
+    <!-- a warning only (inference unavailable, px/cm missing, the timeline shows an older model's predictions);
+         the rest of what Predict will use is in the behavior settings and Predict's tooltip -->
+    <span class="status" id="hidraNote"></span>
+    <div class="rowbreak"></div>
     <!-- ④ Review -->
     <span class="stg">④ Review</span>
     <!-- Detection threshold. Ann Kennedy's JAABA workflow: bias toward false positives with a low
@@ -526,46 +635,44 @@
     <label class="status" for="predMinBout" title="Shortest run of frames that counts as a bout, for BOTH the detected lane and the Review queue. Raise it to drop brief flickers; lower it to catch quick behaviours. Per behavior; persists with the project.">min bout</label>
     <input type="number" id="predMinBout" min="1" max="600" step="1" value="3" style="width:52px"
            title="Minimum bout length in frames. At this clip's fps, the seconds are shown in the status line when you change it. Applies to the timeline lane and the review candidates alike.">
-    <select id="candMode" title="What to review — newly-detected bouts, labeled bouts the model thinks you got wrong, or bouts the filters removed">
-      <option value="new">New detections</option>
-      <option value="mislabel">Correct mislabels</option>
-      <option value="dropped">Filtered out</option>
-    </select>
-    <select id="candOrder" title="WHICH of this clip+track's detected bouts to review (New detections only). Least confident is active learning — a borderline call teaches the model most. Half and half alternates least-confident with random picks: measured BEST for jump-down (0.77 AP vs 0.54 for pure uncertainty) in tools/acquisition_sim.py, though there is no universal winner — supported rearing preferred pure uncertainty, climb-up preferred random. The other two TEST the model rather than teach it: Most confident exposes false positives where it is surest (confident-first lost on every behavior as a LEARNING strategy), and Random is the only order giving an unbiased precision estimate, since every other order selects on the score being measured.">
-      <option value="uncertain">order: least confident</option>
-      <option value="mixed">order: half and half</option>
-      <option value="random">order: random</option>
-      <option value="confident">order: most confident</option>
-    </select>
-    <button id="review" disabled>Review candidates</button>
+    <!-- Review and its options wrap together. The queue and its order are set rarely: the Review button names a
+         queue other than New detections, and the summary names an order other than least confident. -->
+    <span id="reviewGrp" style="display:inline-flex; align-items:center; gap:6px">
+      <button id="review" disabled>Review candidates</button>
+      <details class="menu" id="reviewOpts">
+        <summary id="reviewOptsSum" title="What to review, and in which order">Review options</summary>
+        <div class="menu-items bset narrow">
+          <div class="bset-grid">
+            <label for="candMode">queue</label>
+            <select id="candMode" title="What to review — newly-detected bouts, labeled bouts the model thinks you got wrong, or bouts the filters removed">
+              <option value="new">New detections</option>
+              <option value="mislabel">Correct mislabels</option>
+              <option value="dropped">Filtered out</option>
+            </select>
+            <label for="candOrder">order</label>
+            <select id="candOrder" title="WHICH of this clip+track's detected bouts to review (New detections only). Least confident is active learning — a borderline call teaches the model most. Half and half alternates least-confident with random picks: measured BEST for jump-down (0.77 AP vs 0.54 for pure uncertainty) in tools/acquisition_sim.py, though there is no universal winner — supported rearing preferred pure uncertainty, climb-up preferred random. The other two TEST the model rather than teach it: Most confident exposes false positives where it is surest (confident-first lost on every behavior as a LEARNING strategy), and Random is the only order giving an unbiased precision estimate, since every other order selects on the score being measured.">
+              <option value="uncertain">order: least confident</option>
+              <option value="mixed">order: half and half</option>
+              <option value="random">order: random</option>
+              <option value="confident">order: most confident</option>
+            </select>
+          </div>
+          <div class="bset-hint" style="margin-left:0">The order applies to New detections. Least confident teaches the model most; random gives a fair sample.</div>
+        </div>
+      </details>
+    </span>
     <span class="status" id="candLeft" style="color:#8b93a2; font-variant-numeric:tabular-nums"
           title="New detections still unlabeled on this clip for the selected behavior, per animal, at the current thresholds — what each animal's Review queue still holds however many batches it takes. An animal is done when it reads 0."></span>
     <!-- Browse detections: look through what the model found on this clip and track without changing
-         anything. Uses the detect slider and min bout above. Meant for held-out test clips. -->
-    <select id="browseWhich" title="Which bouts to step through. 'Hit' means the detection overlaps a frame you labeled Happening. 'No label' means it overlaps none (a false alarm if this clip is fully labeled). 'Missed' steps through YOUR Happening bouts that no detection touches.">
-      <option value="all">all detections</option>
-      <option value="hit">detections on your labels</option>
-      <option value="nolabel">detections with no label</option>
-      <option value="missed">your bouts it missed</option>
-    </select>
-    <select id="browseOrder" title="Order to step through them. Random gives a fair sample if you only watch a few.">
-      <option value="time">order: time</option>
-      <option value="high">order: highest score</option>
-      <option value="low">order: lowest score</option>
-      <option value="random">order: random</option>
-    </select>
-    <select id="browseLabels" title="Labels to compare the detections with. Another project is listed only if it holds the same clip (same name, length, frame size, fps and window). Its labels are only read, never changed. Use this for a held-out clip whose hand labels live in a separate project.">
-      <option value="">labels: this project</option>
-    </select>
-    <button id="browseBtn" title="Step through the model's detected bouts on this clip and track (inside the clip's window), read only. No accept, reject or trim, so your labels and the training data are never touched. Esc closes it.">👁 Browse detections</button>
-    <div class="sep"></div>
+         anything. Uses the detect slider and min bout above; which bouts, their order and the labels to
+         compare with are chosen in the Browse panel. Meant for held-out test clips. -->
+    <button id="browseBtn" title="Step through the model's detected bouts on this clip and track (inside the clip's window), read only. No accept, reject or trim, so your labels and the training data are never touched. Which bouts (all, on your labels, with no label, your bouts it missed), their order and the labels to compare with are chosen in the panel that opens. Esc closes it.">👁 Browse detections</button>
+    <div class="rowbreak"></div>
     <!-- ⑤ Analyze -->
     <span class="stg">⑤ Analyze</span>
     <button id="modelsBtn" title="Every behavior's models in one place: which model is in use, what each one learned from, how they score on your test clips, and which clips still show an older model's predictions (with one click to bring them up to date)">🧠 Models</button>
     <button id="statsBtn" title="Precision stats + learning curve vs. how much you've labeled">📊 Stats</button>
-    <button id="trainsetBtn" title="Which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening) — and what the current model learned from">🗂 Training set</button>
-    <button id="labelStatsBtn" title="How many Happening / Not-happening bouts and frames each behavior has (enough to train?), and which you labeled by hand vs accepted from candidates">🏷 Label counts</button>
-    <button id="featDiffBtn" title="How keypoint features differ between positive and negative frames">📈 Feature diff</button>
+    <button id="labelStatsBtn" title="Your labels, and what training makes of them: how many Happening / Not-happening bouts and frames each behavior has (enough to train?) and which you labeled by hand vs accepted from candidates; then which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening), and what the current model learned from">🏷 Labels &amp; training set</button>
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
   </div>
 
@@ -618,23 +725,6 @@
       <div style="margin-top:7px; color:#6b7280">Saved to <b>&lt;your projects folder&gt;/settings.json</b>,
         so it survives a restart and travels with the projects folder. <code>HIDRA_HOME</code> /
         <code>HIDRA_PYTHON</code> still work and are used when nothing is set here.</div>
-    </div>
-  </div>
-  <div id="featSetHelp" style="margin:2px 0 8px; padding:9px 13px; background:#12151b; border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
-    <div class="help-hd"><b style="color:#cbd3df">Feature set help</b><button id="featHelpToggle" class="collapse-btn" data-target="featHelpBody">hide ▾</button></div>
-    <div id="featHelpBody" style="margin-top:6px">
-      <div><b style="color:#cbd3df">Feature set</b> — <span id="featSetDesc"></span></div>
-      <div style="margin-top:8px"><b style="color:#cbd3df">Which set for which behavior?</b> — a starting point; the only real test is to try a couple and compare AP/F1 (📊 Stats). Rules of thumb:
-        <table style="margin:5px 0 2px; border-collapse:collapse; font-size:11.5px; width:100%">
-          <tr style="color:#7b8494; text-align:left"><th style="padding:2px 8px 2px 0">If the behavior is defined by…</th><th style="padding:2px 8px">example</th><th style="padding:2px 0">try</th></tr>
-          <tr><td style="padding:2px 8px 2px 0; border-top:1px solid #232833">being <b>at a landmark</b> (needs a spout/ROI set)</td><td style="padding:2px 8px; border-top:1px solid #232833">drinking</td><td style="padding:2px 0; border-top:1px solid #232833"><b>Spout only</b></td></tr>
-          <tr><td style="padding:2px 8px 2px 0">position <b>at the cage wall/rim</b> (needs a cage ROI)</td><td style="padding:2px 8px">climbing, rearing on rim</td><td style="padding:2px 0"><b>No social</b> (cage + pose beats cage-only)</td></tr>
-          <tr><td style="padding:2px 8px 2px 0"><b>body motion/posture</b> alone, no landmark</td><td style="padding:2px 8px">grooming, freezing, locomotion</td><td style="padding:2px 0"><b>Pose only</b></td></tr>
-          <tr><td style="padding:2px 8px 2px 0"><b>interaction</b> between two mice</td><td style="padding:2px 8px">fighting, following, sniffing</td><td style="padding:2px 0"><b>Social + pose</b></td></tr>
-          <tr><td style="padding:2px 8px 2px 0">not sure yet</td><td style="padding:2px 8px">—</td><td style="padding:2px 0"><b>No social</b>, then trim down</td></tr>
-        </table>
-        <span style="color:#6b7280">Leaner usually beats “All”: extra columns can overfit &amp; dilute a clean signal. Adding a feature that <i>looks</i> discriminative alone (📈 Feature diff) may still not help if it’s redundant with signals already in the set — always confirm with AP/F1.</span>
-      </div>
     </div>
   </div>
 
@@ -692,6 +782,18 @@
     <div class="status" id="statsNote" style="margin-top:8px"></div>
   </div>
 
+  <!-- 🏷 Labels & training set opens these two together, Label counts on top -->
+  <div id="labelStatsPanel" class="panel">
+    <div class="row" style="margin-top:0; justify-content:space-between">
+      <b style="font-size:14px">Label counts</b>
+      <button id="labelStatsClose">✕ Close</button>
+    </div>
+    <div class="status" style="color:#6b7280; margin:10px 0 6px">Per behavior, every track and clip pooled, whatever the source. A <b style="color:#cbd3df">bout</b> is one unbroken run of the same label on one animal. The held-out test clip is left out (it never trains a model).</div>
+    <div id="labelSummary" style="overflow-x:auto"></div>
+    <div class="status" style="color:#6b7280; margin:16px 0 8px; border-top:1px solid #2a2e35; padding-top:10px">Where they came from: <b style="color:#cbd3df">by hand</b> vs <b style="color:#cbd3df">accepted from candidates</b> (and imported), per clip and animal track. Happening bouts shown, Not-happening in parentheses.</div>
+    <div id="labelStatsList" style="max-height:360px; overflow:auto"></div>
+  </div>
+
   <div id="trainsetPanel" class="panel">
     <div class="row" style="margin-top:0; justify-content:space-between">
       <span>
@@ -709,17 +811,6 @@
     <div id="trainsetSummary" class="status" style="margin:12px 0 6px"></div>
     <div id="trainsetNote" class="status" style="color:#6b7280; margin-bottom:8px"></div>
     <div id="trainsetList" style="max-height:420px; overflow:auto"></div>
-  </div>
-
-  <div id="labelStatsPanel" class="panel">
-    <div class="row" style="margin-top:0; justify-content:space-between">
-      <b style="font-size:14px">Label counts</b>
-      <button id="labelStatsClose">✕ Close</button>
-    </div>
-    <div class="status" style="color:#6b7280; margin:10px 0 6px">Per behavior, every track and clip pooled, whatever the source. A <b style="color:#cbd3df">bout</b> is one unbroken run of the same label on one animal. The held-out test clip is left out (it never trains a model).</div>
-    <div id="labelSummary" style="overflow-x:auto"></div>
-    <div class="status" style="color:#6b7280; margin:16px 0 8px; border-top:1px solid #2a2e35; padding-top:10px">Where they came from: <b style="color:#cbd3df">by hand</b> vs <b style="color:#cbd3df">accepted from candidates</b> (and imported), per clip and animal track. Happening bouts shown, Not-happening in parentheses.</div>
-    <div id="labelStatsList" style="max-height:360px; overflow:auto"></div>
   </div>
 
   <div id="featDiffPanel" class="panel">
@@ -741,7 +832,7 @@
     </div>
     <div class="hint-box">
       <h4>Tracks &amp; behaviors</h4>
-      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>1–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track.</p>
+      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>1–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track. Click a behavior chip to work on it; its settings (classifier or feature set, directed, on object, duplicate, delete) are under <b>&lt;behavior&gt; · … ▾</b> in the ③ Train row.</p>
     </div>
     <div class="hint-box">
       <h4>Painting labels</h4>
@@ -757,7 +848,7 @@
     </div>
     <div class="hint-box">
       <h4>Video &amp; keys</h4>
-      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>◀ ▶</b> beside the clip picker change clip · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
+      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. <b>View</b> (top right of the video) shows or hides the arena outlines and approach paths and sets brightness / contrast; on a clip not from HCM, <b>Outlines ▾</b> (top left) draws them. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>◀ ▶</b> beside the clip picker change clip · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
   </div>
 
@@ -1344,11 +1435,15 @@ function drawSpoutRoi() {
 // from any other experiment has no database to ask, so its spout and cage outlines are drawn here.
 let settingSpout = false, settingRoi = false, settingCage = false, roiPts = [], cagePts = [];
 const drawingRoi = () => settingSpout || settingRoi || settingCage;
+// The tools are the Outlines menu on the video (#roiDraw); while one is drawing, its summary says so.
 function updateRoiDraw() {
   const box = el("roiDraw"); if (!box) return;
   const show = !!meta && !meta.hcm_clip;
   box.style.display = show ? "" : "none";
-  if (!show) return;
+  if (!show) { box.open = false; return; }
+  box.classList.toggle("on", drawingRoi());
+  el("roiDrawSum").textContent = settingSpout ? "Outlines · click the spout" : settingRoi ? "Outlines · drawing the spout ROI"
+    : settingCage ? "Outlines · drawing the cage" : "Outlines";
   const vis = (id, on) => { el(id).style.display = on ? "" : "none"; };
   vis("setSpout", (!spout && !spoutRoi) || settingSpout);
   vis("setSpoutRoi", !spoutRoi || settingRoi);
@@ -1514,9 +1609,9 @@ async function loadConfirmedBouts(bid) {   // confirmed-positive bouts (value==1
 }
 async function toggleApproaches(on = !showApproaches) {
   showApproaches = on;
-  el("showApproaches").classList.toggle("on", on);
+  el("showApproaches").checked = on;              // View → Approach paths to the spout
   if (on) {
-    if (activeBid == null) { showApproaches = false; el("showApproaches").classList.remove("on"); return busy("select a behavior first"); }
+    if (activeBid == null) { showApproaches = false; el("showApproaches").checked = false; return busy("select a behavior first"); }
     approachBouts = await loadConfirmedBouts(activeBid);
     busy(approachBouts.length ? `showing ${approachBouts.length} nose→spout approach path(s) for ${bname(activeBid)} · colored by track`
                               : `no confirmed-positive ${bname(activeBid)} bouts yet — accept some in Review first`);
@@ -2342,13 +2437,13 @@ async function redo() { if (browseBlocked()) return; const op = redoStack.pop();
 
 // ---------- directed (actor -> target) helpers ----------
 function isDirected(bid) { const b = behaviors.find(x => x.id === (bid ?? activeBid)); return !!(b && (b.directed === true || (b.hidra && b.hidra.collapse === "directed"))); }
-function syncDirectedToggle() {   // reflect the active behavior's `directed` flag in the toolbar checkbox
+function syncDirectedToggle() {   // reflect the active behavior's `directed` / `on object` flags in its settings
   const grp = el("dirGroup"), cb = el("dirToggle"); if (!grp || !cb) return;
   const b = behaviors.find(x => x.id === activeBid);
-  grp.style.display = b ? "inline-flex" : "none";
+  grp.style.display = b ? "flex" : "none";
   if (b) cb.checked = !!b.directed;
   const og = el("objGroup"), oc = el("objToggle");
-  if (og && oc) { og.style.display = b ? "inline-flex" : "none"; if (b) oc.checked = !!b.object_directed; }
+  if (og && oc) { og.style.display = b ? "flex" : "none"; if (b) oc.checked = !!b.object_directed; }
 }
 async function setBoutTarget(track) {   // assign the recipient of the just-painted (or selected) directed bout
   const a = awaitTarget; if (!a) return;
@@ -2482,7 +2577,11 @@ async function addObject() {   // ＋ object: a project object by name (an enric
 // an "on object" behavior is under review (the rail is hidden then).
 function renderObjectBar(t = objTarget()) {
   const bar = el("objectBar"), rv = el("rvObjects");
-  if (bar) fillObjectList(bar, t);
+  if (bar) {                                         // only for an "on object" behavior (its settings → on object)
+    const on = !!t || isObjDirected(activeBid);
+    bar.style.display = on ? "" : "none";
+    if (on) fillObjectList(bar, t); else bar.innerHTML = "";
+  }
   if (rv) {
     const on = !!t && t.kind === "review";
     rv.style.display = on ? "" : "none";
@@ -2644,31 +2743,48 @@ function renderBehaviorBar() {
   const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Behavior:"; bar.appendChild(lab);
   for (const b of behaviors) {
     // The whole chip selects the behavior (it used to hold a checkbox, which read as if several could be ticked).
+    // Duplicate and Delete are in the behavior's settings (the Train row), not on every chip.
     const chip = document.createElement("button");
     chip.className = "chip" + (b.id === activeBid ? " active" : "");
     chip.title = `Label, train and review ${b.name}` + (b.key ? ` (its hotkey ${b.key} starts and ends a paint)` : "");
     chip.innerHTML = `<span class="sw" style="background:${esc(b.color)}"></span><span class="bname">${esc(b.name)}</span>`
-      + `${b.key ? `<span class="k">${esc(b.key)}</span>` : ""}<span class="x" title="delete">✕</span>`;
+      + `${b.key ? `<span class="k">${esc(b.key)}</span>` : ""}`;
     chip.onclick = () => { chip.blur(); if (b.id !== activeBid) selectBehavior(b.id); };   // blur: Space plays, not re-clicks
-    chip.querySelector(".x").onclick = ev => {
-      ev.preventDefault(); ev.stopPropagation();
-      if (!confirm(`Delete behavior "${b.name}" and its labels?`)) return;
-      api(`/behaviors/${b.id}`, { method: "DELETE" }).then(reloadBehaviors);
-    };
     bar.appendChild(chip);
   }
   const add = document.createElement("button"); add.textContent = "＋ behavior"; add.onclick = addBehavior; bar.appendChild(add);
   refreshObjects(true);
-  if (activeBid != null) {
-    const cSame = document.createElement("button");
-    cSame.textContent = "⎘ clone (seed labels)";
-    cSame.title = "Parallel copy with only the INITIAL/seed labels (your hand-painted + imported bouts, NOT the candidate-review ones). Same starting point, but the copy runs its OWN candidate process + further labeling. (original untouched)";
-    cSame.onclick = () => cloneBehavior(true); bar.appendChild(cSame);
-    const cEmpty = document.createElement("button");
-    cEmpty.textContent = "⎘ clone (empty)";
-    cEmpty.title = "Parallel copy with 0 labels — relabel from scratch to compare how many labels are needed to reach the same performance. (original untouched)";
-    cEmpty.onclick = () => cloneBehavior(false); bar.appendChild(cEmpty);
-  }
+  syncBehSettings();
+}
+// ---------- the active behavior's settings (the popover in the Train row) ----------
+// Its summary always says what the behavior uses: 'drinking · HiDRA, fine-tuned' or 'rearing · project
+// model, Spout only'. behNoteFull is hidraReflect's sentence about what Predict will use and which model
+// drew the trace on screen; inline (#hidraNote) only its warnings are shown.
+let behNoteFull = "";
+function featSetName(v) {
+  const o = [...el("featSet").options].find(x => x.value === (v || "all"));
+  return o ? o.textContent : v;
+}
+function behEngine(b) {
+  const h = b && b.hidra && b.hidra.action ? b.hidra : null;
+  return h ? `HiDRA, ${h.weights ? "fine-tuned" : "zero-shot"}` : `project model, ${featSetName(b.feature_set)}`;
+}
+function syncBehSettings() {
+  const d = el("behSettings"), b = behOf(activeBid);
+  d.style.display = b ? "" : "none";
+  if (!b) { d.open = false; return; }
+  syncFeatDiffBtn();                                  // feature set, Feature diff and Stats: the project model only
+  const h = b.hidra && b.hidra.action ? b.hidra : null, sum = el("behSettingsSum");
+  sum.textContent = `${b.name} · ${behEngine(b)}`;
+  sum.classList.toggle("hidra", !!h);
+  sum.title = `${b.name} settings: ` + (h ? `the HiDRA classifier (${h.action} · ${h.lab}), its scores, review rate and training frames`
+                                          : "the project model's feature set and Feature diff")
+    + ", directed, on object, duplicate, delete" + (behNoteFull ? `\n\nNow: ${behNoteFull}` : "");
+  el("bsetTitle").textContent = `${b.name} settings`;
+  el("bsetNote").textContent = behNoteFull;
+  el("objHint").textContent = b.object_directed
+    ? "The Objects card beside the video records what each bout is on."
+    : "Ticking it shows the Objects card beside the video, where you tick what each bout is on.";
 }
 async function cloneBehavior(withLabels) {
   if (activeBid == null) return;
@@ -2687,12 +2803,13 @@ async function cloneBehavior(withLabels) {
 }
 async function selectBehavior(bid) {
   if (browse && bid !== browse.bid) closeBrowse();   // the list belongs to one behavior
-  if (bid !== activeBid) logEvent("behavior_select", { behavior_id: bid, name: bname(bid) });
+  if (bid !== activeBid) { logEvent("behavior_select", { behavior_id: bid, name: bname(bid) }); behNoteFull = ""; }
   activeBid = bid; renderBehaviorBar();
   invalidateTlCache();                 // don't let playback blit the previous behavior's cached base during the awaits
   await loadModel(); await loadCandidates(bid);
   if (showApproaches) { approachBouts = await loadConfirmedBouts(bid); drawPose(); }   // refresh the approach overlay for the new behavior
   hidraSyncBehavior();                 // no-op unless the HiDRA API is present
+  if (!HIDRA) hidraReflect();          // what this behavior's Predict uses, and any warning about the trace on screen
   syncFeatDiffBtn();
   syncDirectedToggle();                // reflect this behavior's directed flag
   renderThreshReadout();               // this behavior's own detection cut
@@ -2750,7 +2867,12 @@ async function hidraSaveTrainOn() {
 // run HiDRA when the behavior is unbound, or offer inference the runtime cannot do.
 function hidraReflect() {
   const pick = hidraPick(), bound = !!pick;
-  for (const id of ["hidraCollapse", "hidraRate", "hidraTrainOn"]) el(id).disabled = !bound;
+  for (const id of ["hidraCollapse", "hidraRate", "hidraTrainOn"]) {
+    el(id).disabled = !bound;
+    // in the behavior settings, a behavior on the project's own model ('— none —') shows only the classifier row
+    const ctl = el(id).parentNode === el("hidraGroup") ? el(id) : el(id).parentNode;
+    for (const n of [document.querySelector(`#hidraGroup label[for="${id}"]`), ctl]) if (n) n.style.display = bound ? "" : "none";
+  }
 
   // Once this behavior's head has been fine-tuned on reviewed labels it stops being the shipped
   // zero-shot head — a Predict now loads the adapted weights — so the label must say so.
@@ -2793,29 +2915,43 @@ function hidraReflect() {
     train.disabled = false;
   }
 
-  const base =
-    !bound ? "using this project's own model"
-    : !HIDRA_RT?.can_infer ? "⚠ inference unavailable — hover Predict"
-    : needScale ? (auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres")
-    : ftMode ? `fine-tuned on your labels (${ftMode}) · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
-    : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  // What Predict will use, and which model drew the trace on screen: the whole sentence goes in the behavior
+  // settings (and their tooltip, and Predict's); only its warnings stay inline (#hidraNote).
+  const bh = beh && beh.hidra && beh.hidra.action ? beh.hidra : null;
+  const warns = [];
+  let base;
+  if (bound) {
+    if (!HIDRA_RT?.can_infer) { base = "⚠ HiDRA inference unavailable — hover Predict"; warns.push(base); }
+    else if (needScale) { base = auto && !auto.usable ? "⚠ " + auto.why : "⚠ set px/cm — HiDRA measures in centimetres"; warns.push(base); }
+    else base = ftMode ? `fine-tuned on your labels${ftMode === "fine-tuned" ? "" : ` (${ftMode})`} · no longer zero-shot · recalibrated to ${el("hidraRate").value} of frames`
+      : `shipped threshold ${pick.threshold.toFixed(2)} · zero-shot · recalibrated to ${el("hidraRate").value} of frames`;
+  } else if (bh && !HIDRA) {                      // bound on a machine with HiDRA; here no heads are listed
+    base = `bound to the HiDRA classifier ${bh.action} · ${bh.lab}, which is not set up here` + (HIDRA_RT && HIDRA_RT.why ? ` (${HIDRA_RT.why})` : "");
+  } else base = "using this project's own model";
   // What the configuration above says Predict WILL use can differ from what made the trace on screen
   // (a fine-tune that was not applied yet) — say which one you are looking at, loudly when it's stale.
   const info = predInfoByBeh.get(activeBid);
-  const shown = !info ? (predsByBeh.has(activeBid) ? "" : " · no predictions on this clip yet")
-    : info.stale ? ` · ⚠ timeline shows ${info.label || "older"} predictions (${hhmm(info.predicted_at)}), ${info.why}`
+  const stale = info && info.stale
+    ? `⚠ timeline shows ${info.label || "older"} predictions (${hhmm(info.predicted_at)}), ${info.why}`
         + (info.no_model ? " — press ⚙ Train to fit this project's own model (there is none yet to Predict with)"
            : /checkpoints are missing/.test(info.why || "") ? "" : " — press ▶ Predict to apply the current model")
-    : ` · timeline shows ${info.label} predictions (${hhmm(info.predicted_at)})`;
+    : null;
+  if (stale) warns.push(stale);
+  const shown = !info ? (predsByBeh.has(activeBid) ? "" : " · no predictions on this clip yet")
+    : stale ? " · " + stale : ` · timeline shows ${info.label} predictions (${hhmm(info.predicted_at)})`;
   const autoScale = bound && autoOk && !(ppc > 0) && HIDRA_RT?.can_infer
     ? ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)` : "";
-  el("hidraNote").textContent = base + autoScale + shown;
-  el("hidraNote").style.color = info && info.stale ? "#ffb347" : "";
+  behNoteFull = activeBid == null ? "" : base + autoScale + shown;
+  el("hidraNote").textContent = activeBid == null ? "" : warns.join(" · ");
   for (const b of [predict, train]) if (b.dataset.baseTip == null) b.dataset.baseTip = b.title;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
-  } else { predict.title = predict.dataset.baseTip; train.title = train.dataset.baseTip; }
+  } else {
+    predict.title = predict.dataset.baseTip + (behNoteFull ? `\n\n${bname(activeBid)}: ${behNoteFull}` : "");
+    train.title = train.dataset.baseTip;
+  }
+  syncBehSettings();
 }
 
 async function hidraSaveScale() {
@@ -2826,7 +2962,7 @@ async function hidraSaveScale() {
     body: JSON.stringify({ pix_per_cm: raw === "" ? null : parseFloat(raw) }),
   });
   if (!r.ok) {
-    el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "bad px/cm";
+    busy("could not set px/cm: " + ((await r.json().catch(() => ({}))).detail || "bad px/cm"));   // hidraReflect below rewrites #hidraNote
   } else {
     // Keep the in-memory manifest in step, or switching clips and back would show the old value.
     const stored = (await r.json()).pix_per_cm;
@@ -2878,7 +3014,7 @@ async function hidraSave() {
     const h = await r.json();
     const b = (behaviors || []).find(x => x.id === activeBid);
     if (b) { if (h && h.action) b.hidra = h; else delete b.hidra; }
-    syncFeatDiffBtn();
+    syncBehSettings();                                  // the summary says HiDRA or the project model now
   } else {
     el("hidraNote").textContent = (await r.json().catch(() => ({}))).detail || "could not save";
     return;
@@ -2967,7 +3103,7 @@ async function hidraSaveSetup() {
       note.textContent = `found ${st.heads} classifiers`;
       el("hidraSetup").style.display = "none";
       await hidraInit();                                     // populate the picker for real
-      busy(st.can_infer ? `HiDRA ready (${st.backend}) — pick a classifier for a behavior`
+      busy(st.can_infer ? `HiDRA ready (${st.backend}) — pick a classifier in the behavior's settings (the ▾ button in the Train row)`
                         : `${st.heads} classifiers listed, but Predict will not run yet: ${st.why}`);
     } else {
       note.textContent = "";
@@ -2985,8 +3121,8 @@ el("objToggle").onchange = async () => {   // mark this behavior object-directed
   const r = await api(`/behaviors/${activeBid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object_directed: val }) }).catch(() => null);
   if (!r || !r.ok) { b.object_directed = !val; el("objToggle").checked = !val; busy("couldn't save the 'on object' flag"); return; }
   logEvent("behavior_object_directed", { behavior_id: activeBid, object_directed: val });
-  busy(val ? `${bname(activeBid)} is on an object — tick what each bout is on under Objects (a new bout starts with the nearest ★)` : `${bname(activeBid)} no longer records an object`);
-  renderTimeline(); refreshObjects(true);
+  busy(val ? `${bname(activeBid)} is on an object — tick what each bout is on under Objects, beside the video (a new bout starts with the nearest ★)` : `${bname(activeBid)} no longer records an object`);
+  renderTimeline(); refreshObjects(true); syncBehSettings();
 };
 el("dirToggle").onchange = async () => {   // mark this behavior directed (actor->target) — no classifier needed
   const b = behaviors.find(x => x.id === activeBid); if (!b) { el("dirToggle").checked = false; return; }
@@ -3036,8 +3172,8 @@ async function hidraInit() {
     order.map(c => {
       const hs = byCat.get(c).slice().sort((a, b) =>
         a.action.localeCompare(b.action) || a.lab.localeCompare(b.lab));
-      return `<optgroup label="${c}">` + hs.map(h =>
-        `<option value="${h.lab}|${h.action}">${h.action} · ${h.lab}</option>`).join("") +
+      return `<optgroup label="${esc(c)}">` + hs.map(h =>
+        `<option value="${esc(h.lab)}|${esc(h.action)}">${esc(h.action)} · ${esc(h.lab)}</option>`).join("") +
         `</optgroup>`;
     }).join("");
 
@@ -3049,7 +3185,7 @@ async function hidraInit() {
   if (brand) brand.textContent = "hidra-in-the-loop";
   document.title = "hidra-in-the-loop";
 
-  el("hidraGroup").style.display = "inline-flex";
+  el("hidraGroup").style.display = "";                     // the HiDRA section of the behavior settings
   el("hidraSep").style.display = "";
   el("hidraHead").onchange = () => {
     // A newly chosen head brings its own sensible collapse; the user can still override it.
@@ -3059,16 +3195,9 @@ async function hidraInit() {
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraTrainOn").onchange = hidraSaveTrainOn;
-  // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
-  // so this same file still serves the general-purpose labeler unchanged — a plain install returns
-  // early above and never reaches here.
-  //   featSet / featSetHelp  pick which of the labeler's own 608 pose features a RandomForest is
-  //                          fitted on. A HiDRA head brings its own learned representation and
-  //                          never reads those features, so the control is inert here.
-  for (const id of ["featSet", "featSetHelp"]) {
-    const n = el(id);
-    if (n) n.style.display = "none";
-  }
+  // The feature set, its help and Feature diff are the project model's: they hide per behavior, while the
+  // ACTIVE behavior is bound to a head (syncFeatDiffBtn), not for the whole install -- a behavior set to
+  // '— none —' trains the project's own model and needs its feature set here too.
 
   hidraSyncVideo();
   hidraSyncBehavior();
@@ -3344,12 +3473,23 @@ function showDowngrade(msg) {
 // ---------- analysis panels: one open at a time, scrolled into view ----------
 // They open below the timeline, so on a long page a click used to look as if nothing happened; and with
 // several open at once the one just asked for could be far down the page.
-const ANALYSIS_PANELS = ["modelsPanel", "statsPanel", "trainsetPanel", "labelStatsPanel", "featDiffPanel"];
-function showPanel(id) {
+const ANALYSIS_PANELS = ["modelsPanel", "statsPanel", "labelStatsPanel", "trainsetPanel", "featDiffPanel"];
+// Label counts and the Training set answer one question ('what are my labels, and what will train?'), so
+// 🏷 Labels & training set opens both, stacked; switching the Training set's view keeps Label counts open.
+const PANEL_PAIR = { labelStatsPanel: "trainsetPanel", trainsetPanel: "labelStatsPanel" };
+function showPanel(id, scroll = true) {
   const p = el(id), wasOn = p.classList.contains("on");
-  for (const other of ANALYSIS_PANELS) if (other !== id) el(other).classList.remove("on");
+  for (const other of ANALYSIS_PANELS) if (other !== id && other !== PANEL_PAIR[id]) el(other).classList.remove("on");
   p.classList.add("on");
-  if (!wasOn) p.scrollIntoView({ block: "start" });   // already open (a refresh, a toggle inside it): stay put
+  if (!wasOn && scroll) p.scrollIntoView({ block: "start" });   // already open (a refresh, a toggle inside it): stay put
+}
+async function openLabelsAndTrainset() {
+  if (activeBid == null) { busy("select a behavior first"); return; }
+  const wasOn = el("labelStatsPanel").classList.contains("on");
+  await Promise.all([openLabelStats(false), openTrainset(false)]);
+  for (const other of ANALYSIS_PANELS) if (!PANEL_PAIR[other]) el(other).classList.remove("on");
+  el("labelStatsPanel").classList.add("on"); el("trainsetPanel").classList.add("on");
+  if (!wasOn) el("labelStatsPanel").scrollIntoView({ block: "start" });   // Label counts on top, the Training set below
 }
 let statsCompareBid = null, statsCompare = null, statsSources = null;   // A/B comparison + label-source breakdown
 async function openStats() {
@@ -3572,11 +3712,11 @@ function drawStatsPlot(history, compare) {
 }
 // ---------- training set: what the NEXT Train will use, and what THIS model learned from ----------
 let trainsetView = "next";
-async function openTrainset() {
+async function openTrainset(show = true) {
   if (activeBid == null) { busy("select a behavior first"); return; }
-  await showTrainsetView(trainsetView, activeBid);        // the 🗂 button always means the active behavior
+  await showTrainsetView(trainsetView, activeBid, show);   // 🏷 Labels & training set always means the active behavior
 }
-async function showTrainsetView(view, bid = lastTrainsetBid ?? activeBid) {   // the toggle keeps the panel's own
+async function showTrainsetView(view, bid = lastTrainsetBid ?? activeBid, show = true) {   // the toggle keeps the panel's own
   if (bid == null) { busy("select a behavior first"); return; }
   trainsetView = view;
   el("tsNextBtn").classList.toggle("on", view === "next");
@@ -3600,7 +3740,7 @@ async function showTrainsetView(view, bid = lastTrainsetBid ?? activeBid) {   //
       el("trainsetNote").textContent = ""; el("trainsetList").innerHTML = "";
     }
   }
-  showPanel("trainsetPanel");
+  if (show) showPanel("trainsetPanel");
 }
 // One clip x mouse row of the next-Train table: what it contributes, and why not when it doesn't.
 function renderNextTrain(d) {
@@ -4108,11 +4248,11 @@ async function modelsScore(bid, model, btn) {
 // ---------- label provenance (by-hand vs from-candidates, per track) ----------
 const SOURCE_LABELS = { manual: "By hand", candidate: "From candidates", imported: "Imported" };
 const SOURCE_ORDER = ["manual", "candidate", "imported"];
-async function openLabelStats() {
+async function openLabelStats(show = true) {
   const r = await api(`/label-stats`);
   if (!r.ok) { busy("could not load label counts"); return; }
   renderLabelStats(await r.json());
-  showPanel("labelStatsPanel");
+  if (show) showPanel("labelStatsPanel");
 }
 function lsCell(c) {
   if (!c || !(c.pos_bouts || c.neg_bouts)) return `<span style="color:#4b5563">·</span>`;
@@ -4214,16 +4354,18 @@ function renderLabelStats(d) {
 }
 
 // ---------- feature differences: how keypoint features separate positive vs negative frames ----------
-// These are the project model's own features; a HiDRA classifier never sees them, so the button is
-// hidden while the active behavior is bound to HiDRA (and its panel closed). The same goes for 📊 Stats:
-// only the project's own model writes the training history it plots, so a HiDRA behavior would show dashes
-// and '0 pos / 0 neg' whatever it has labeled. HiDRA behaviors are scored in 🧠 Models.
+// These are the project model's own features; a HiDRA classifier never sees them, so the feature set, its
+// help and Feature diff (in the behavior settings) are hidden while the ACTIVE behavior is bound to HiDRA
+// (and the Feature diff panel closed); a behavior set to '— none —' keeps them on a HiDRA install too. The
+// same goes for 📊 Stats: only the project's own model writes the training history it plots, so a HiDRA
+// behavior would show dashes and '0 pos / 0 neg' whatever it has labeled. HiDRA behaviors are scored in 🧠 Models.
 function syncFeatDiffBtn() {
   const b = behaviors.find(x => x.id === activeBid), hidra = !!(b && b.hidra && b.hidra.action);
   for (const [btn, panel] of [["featDiffBtn", "featDiffPanel"], ["statsBtn", "statsPanel"]]) {
     el(btn).style.display = hidra ? "none" : "";
     if (hidra) el(panel).classList.remove("on");
   }
+  for (const id of ["bsetProj", "featSetHelp"]) el(id).style.display = hidra ? "none" : "";
 }
 async function openFeatureDiff() {
   if (activeBid == null) { busy("select a behavior first"); return; }
@@ -4433,11 +4575,12 @@ function scheduleRemaining() {   // one decision is several label writes: count 
 }
 function renderRemaining(rem) {   // "left: animal 1: 0 · animal 2: 12 · animal 3: 5", the active animal in bold
   const ts = rem && rem.tracks ? Object.keys(rem.tracks).map(Number).sort((a, b) => a - b) : [];
-  const html = !ts.length ? "" : "new detections left: " + ts.map(t => {
+  const html = !ts.length ? "" : ts.map(t => {
     const txt = `animal ${t + 1}: ${rem.tracks[t]}`;
     return t === activeTrack ? `<b style="color:${rem.tracks[t] ? "#e7eaf1" : "#7fb069"}">${txt}</b>` : txt;
   }).join(" · ");
-  for (const id of ["candLeft", "rvLeft"]) { const n = el(id); if (n) n.innerHTML = html; }
+  // the Review row is short of room: 'left:' there (its tooltip says what), the review panel spells it out
+  for (const [id, lead] of [["candLeft", "left: "], ["rvLeft", "new detections left: "]]) { const n = el(id); if (n) n.innerHTML = html && lead + html; }
 }
 const skipKey = (bid, s, e) => `${bid}:${s}:${e}`;
 // `skip` is set only by a mid-review refill: the keys of items skipped in this sitting. It over-asks by
@@ -5190,6 +5333,7 @@ async function browseRefreshSources() {
   if (PID !== forPid || vid !== forVid) return;   // another project or clip opened meanwhile
   sel.innerHTML = opts.join("");
   sel.value = [...sel.options].some(o => o.value === keep) ? keep : "";
+  sel.style.display = sel.options.length > 1 ? "" : "none";   // a choice only when another project holds this clip
 }
 async function browseLoadRef(src, track) {        // another project's labels for this clip, GET only, kept apart from labelState
   const [pid, rbid] = src.split("|");
@@ -5207,20 +5351,22 @@ function browseCanStart() {                       // checked before and after an
   return true;
 }
 // While browsing, every control that could change something is made inert (no clicks, no focus), so no
-// write can start and no control can show a value the server never got. Browse's own controls, the detect
-// slider and min bout stay live. Clip and project switching stay live too and simply close browse.
-// (px/cm in the Train row while it is missing is inside #hidraGroup, so it is locked with the action row.)
-const BROWSE_LIVE = new Set(["browseWhich", "browseOrder", "browseLabels", "browseBtn", "predThresh", "predThreshVal",
-                             "predThreshCount", "predMinBout", "metrics"]);
+// write can start and no control can show a value the server never got. Browse's own controls (its panel:
+// which bouts, order, labels source), the detect slider and min bout stay live. Clip and project switching
+// stay live too and simply close browse. The behavior settings and Review options popovers are children of
+// the action row, so they are locked with it (and so is px/cm while it sits in the Train row); the Outlines
+// menu on the video is #roiDraw.
+const BROWSE_LIVE = new Set(["browseBtn", "predThresh", "predThreshVal", "predThreshCount", "predMinBout", "metrics"]);
 function setBrowseLock(on) {
   document.querySelector("main").classList.toggle("browsing", on);
   const pn = el("projNew"); if (pn) pn.disabled = on;   // "New project…" in the picker (switching project stays live)
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
+  closeMenus();                                        // an open menu would stay open but dead
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
   // the clip menu and its dialogs (Add clip, calibration) are locked; the picker and ◀ ▶ stay live (a switch closes browse)
-  for (const id of ["clipMenu", "clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix"]) lock(el(id));
+  for (const id of ["clipMenu", "clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "mediaFix"]) lock(el(id));
   for (const n of el("actionRow").children) {
-    const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
+    const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("rowbreak") || n.classList.contains("stg");
     if (!live) lock(n);
   }
 }
@@ -5238,23 +5384,39 @@ async function browseStart() {                    // the Browse button, and a re
     if (!browse && !browseCanStart()) return;
   }
   const labels = ref || labelState.get(bid), anyLabels = !!labels && labels.some(v => v !== 0);
-  const items = browseItems(bid, which, order, labels);
+  let items = browseItems(bid, which, order, labels), widened = "";
   const hint = !anyLabels && srcSel.options.length > 1 ? ` No labels for this clip in ${srcName}. Try another "labels:" source.` : "";
+  const none = w => (w === "missed" ? (anyLabels ? "the model touches every Happening bout labeled on this clip and track" : "no labeled bouts to check")
+    : `no ${w === "all" ? "" : "matching "}detections on track ${track + 1} at detect ≥ ${behThresh(bid).toFixed(2)}`);
+  if (!items.length && browse) {
+    // a setting changed in the open panel and nothing matches: keep browsing the list on screen, so the
+    // settings (which live in the panel) stay in reach
+    el("browseWhich").value = browse.which; el("browseOrder").value = browse.order;
+    if ([...srcSel.options].some(o => o.value === browse.src)) srcSel.value = browse.src;
+    busy(none(which) + ", so the list stays as it was." + hint);
+    return;
+  }
+  if (!items.length && which !== "all") {
+    // which bouts is chosen in the Browse panel, which only shows while browsing: fall back to every
+    // detection rather than refuse to open the panel where the choice can be changed
+    const all = browseItems(bid, "all", order, labels);
+    if (all.length) { items = all; widened = `${none(which)}, so showing all detections.`; el("browseWhich").value = "all"; }
+  }
   if (!items.length) {
     closeBrowse();
-    busy((which === "missed" ? (anyLabels ? "the model touches every Happening bout labeled on this clip and track" : "no labeled bouts to check")
-          : `no ${which === "all" ? "" : "matching "}detections on track ${track + 1} at detect ≥ ${behThresh(bid).toFixed(2)}`) + "." + hint);
+    busy(none(which) + "." + hint);
     return;
   }
   const fresh = !browse;
   if (fresh) { stop(); painting = null; awaitTarget = null; clearSel(); }
-  browse = { bid, track, which, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
-             srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
-  logEvent("browse_start", { behavior_id: bid, name: bname(bid), which, order, threshold: browse.thr, labels_from: src || "this project",
+  const w = widened ? "all" : which;
+  browse = { bid, track, which: w, order, thr: behThresh(bid), minBout: behMinBout(bid), items, idx: 0,
+             src, srcName, anyLabels, refRuns: ref ? runsOf(ref).filter(r => r[2] === 1 || r[2] === 2) : null };
+  logEvent("browse_start", { behavior_id: bid, name: bname(bid), which: w, order, threshold: browse.thr, labels_from: src || "this project",
                              min_bout: browse.minBout, n: items.length, held_out: isTestClip() });
   if (fresh) { el("browsePanel").classList.add("on"); setBrowseLock(true); setReviewLayout(true); }
   browseShow(0);
-  if (hint) busy(hint.trim());
+  if (widened || hint) busy((widened + hint).trim());
 }
 function browseShow(i) {
   if (!browse) return;
@@ -5624,8 +5786,27 @@ el("train").onclick = train; el("predict").onclick = predictVideo; el("stopJob")
 el("predThresh").oninput = onThreshInput;
 el("predThresh").onchange = onThreshCommit;
 el("predMinBout").onchange = onMinBoutChange;
-el("candMode").onchange = async e => { candidateMode = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
-el("candOrder").onchange = async e => { candidateOrder = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
+// Review options (the queue and its order). The Review button names a queue other than New detections
+// (loadCandidates); the summary names an order other than least confident.
+function syncReviewOpts() {
+  const o = el("candOrder"), def = candidateMode !== "new" || candidateOrder === "uncertain";
+  el("reviewOptsSum").textContent = def ? "Review options" : `Review options · ${o.selectedOptions[0].textContent.replace(/^order: /, "")}`;
+  el("reviewOptsSum").classList.toggle("on", !def);
+}
+el("candMode").onchange = async e => { candidateMode = e.target.value; syncReviewOpts(); if (activeBid != null) await loadCandidates(activeBid); };
+el("candOrder").onchange = async e => { candidateOrder = e.target.value; syncReviewOpts(); if (activeBid != null) await loadCandidates(activeBid); };
+// the behavior settings: Duplicate (the labeling-cost A/B) and Delete
+el("behSettings").addEventListener("toggle", () => { if (!el("behSettings").open) el("bsetDup").open = false; });   // reopen folded
+el("cloneSeed").onclick = () => cloneBehavior(true);
+el("cloneEmpty").onclick = () => cloneBehavior(false);
+el("behDelete").onclick = async () => {
+  const b = behOf(activeBid); if (!b || browseBlocked()) return;
+  if (!confirm(`Delete behavior "${b.name}" and its labels?`)) return;
+  const r = await api(`/behaviors/${b.id}`, { method: "DELETE" });
+  if (!r.ok) { busy("could not delete: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+  await reloadBehaviors();
+  busy(`deleted behavior "${b.name}"`);
+};
 el("featSet").onchange = async e => {   // set the active behavior's feature subset; retrain to apply
   if (activeBid == null) { syncFeatSet(); return; }
   const fs = e.target.value;
@@ -5634,6 +5815,7 @@ el("featSet").onchange = async e => {   // set the active behavior's feature sub
   const b = behaviors.find(x => x.id === activeBid); if (b) b.feature_set = fs;
   const d = el("featSetDesc"); if (d) d.innerHTML = (FEATSET_DESC[fs] || FEATSET_DESC.all) + featSetComposition(fs);
   busy(`${bname(activeBid)} feature set → ${fs === "all" ? "all features" : fs} · Train to apply`);
+  syncBehSettings();
 };
 el("timingExport").onclick = async () => {   // per-round annotation timings (events.py rollup)
   await flushEvents();                       // include everything up to this click
@@ -5664,12 +5846,11 @@ el("statsExport").onclick = () => {   // download the full precision-stats histo
 };
 el("statsXMode").onchange = e => { statsXMode = e.target.value; drawStatsPlot(lastStatsHistory, statsCompare); };
 el("statsCompare").onchange = async e => { statsCompareBid = e.target.value ? parseInt(e.target.value, 10) : null; await refreshStats(); };
-el("trainsetBtn").onclick = openTrainset;
 el("tsNextBtn").onclick = () => showTrainsetView("next");
 el("tsLastBtn").onclick = () => showTrainsetView("last");
 el("trainsetClose").onclick = () => el("trainsetPanel").classList.remove("on");
 el("trainsetCopy").onclick = copyTrainset;
-el("labelStatsBtn").onclick = openLabelStats;
+el("labelStatsBtn").onclick = openLabelsAndTrainset;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("modelsBtn").onclick = openModels;
 el("modelsRefresh").onclick = () => refreshModels(true);
@@ -5733,6 +5914,7 @@ function wireCollapse(btnId, collapsedByDefault = false) {
   try { saved = localStorage.getItem(key); } catch (e) { /* no storage: the default */ }
   apply(saved == null ? collapsedByDefault : saved === "1");
   btn.onclick = () => {
+    btn.blur();                                     // give the keys back (Space plays, not re-toggles)
     const c = !target.classList.contains("is-collapsed"); apply(c);
     try { localStorage.setItem(key, c ? "1" : "0"); } catch (e) { /* not remembered */ }
   };
@@ -5740,24 +5922,35 @@ function wireCollapse(btnId, collapsedByDefault = false) {
 wireCollapse("featHelpToggle", true); wireCollapse("hintsToggle");
 // ---------- drop-down menus (<details class="menu">): one open at a time; an outside click, Esc or
 // picking an item closes them ----------
+// The View popover on the video (#imgAdj) is not a <details> (its button sits in the zoom bar) but closes the
+// same way. `except` is the menu or popover the click landed in, kept open.
+function setViewOpen(on) { el("imgAdj").hidden = !on; el("imgAdjBtn").setAttribute("aria-expanded", on ? "true" : "false"); }
 function closeMenus(except = null) {
   let n = 0;
   for (const d of document.querySelectorAll("details.menu[open]")) if (d !== except) { d.open = false; n++; }
+  if (!el("imgAdj").hidden && except !== el("imgAdj")) { setViewOpen(false); n++; }
   return n;
 }
 function wireMenu(d) {
   d.addEventListener("toggle", () => { if (d.open) closeMenus(d); });
   const sum = d.querySelector("summary");
   sum.addEventListener("click", () => setTimeout(() => sum.blur()));   // give the keys back (Space plays, not re-toggles)
-  d.querySelector(".menu-items").addEventListener("click", e => { if (e.target.closest("button")) d.open = false; });
+  const items = d.querySelector(".menu-items");
+  // picking an item closes the menu; a settings form stays open (its help toggle is a button too)
+  items.addEventListener("click", e => { const b = e.target.closest("button"); if (b && !b.hasAttribute("data-keep-open")) d.open = false; });
+  // a changed <select> hands the keys back, or the next letter typed would pick an option instead of painting
+  items.addEventListener("change", e => { if (e.target.tagName === "SELECT") e.target.blur(); });
 }
 document.querySelectorAll("details.menu").forEach(wireMenu);
-document.addEventListener("pointerdown", e => closeMenus(e.target.closest ? e.target.closest("details.menu") : null), true);
+document.addEventListener("pointerdown", e => {
+  const t = e.target.closest ? e.target : null;
+  closeMenus(t && (t.closest("details.menu") || t.closest("#imgAdj, #imgAdjBtn") && el("imgAdj")));
+}, true);
 // capture, ahead of the shortcut handler: Esc closes an open menu and does nothing else
 window.addEventListener("keydown", e => {
   if (e.key === "Escape" && closeMenus()) { e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
-el("showApproaches").onclick = () => toggleApproaches();
+el("showApproaches").onchange = e => { e.target.blur(); toggleApproaches(e.target.checked); };   // View → Approach paths
 el("zIn").onclick = () => setZoom(zoom * 1.3);
 el("zOut").onclick = () => setZoom(zoom / 1.3);
 el("zoomLabel").onclick = () => { setZoom(1); el("zoomLabel").blur(); };   // the readout resets the zoom (so does 0)
@@ -5805,10 +5998,10 @@ function autoLevels() {   // 0.5th..99.5th luminance percentile of the frame on 
   imgLevels = { lo, hi }; applyImgAdj();
   busy(`auto levels: ${lo}–${hi} stretched to full range`);
 }
-el("imgAdjBtn").onclick = () => { el("imgAdj").hidden = !el("imgAdj").hidden; el("imgAdjBtn").blur(); };   // else Space/Enter re-toggle it
+el("imgAdjBtn").onclick = () => { setViewOpen(el("imgAdj").hidden); el("imgAdjBtn").blur(); };   // blur, else Space/Enter re-toggle it
 // A click on a slider's <label> would focus the slider without any pointerup/change on it, trapping focus
-// (the shortcuts skip INPUT targets) — keep the captions as captions.
-document.querySelectorAll("#imgAdj label").forEach(l => { l.onmousedown = e => e.preventDefault(); l.onclick = e => e.preventDefault(); });
+// (the shortcuts skip INPUT targets) — keep the captions as captions. (The two checkboxes' labels toggle them.)
+document.querySelectorAll("#imgAdj label[for]").forEach(l => { l.onmousedown = e => e.preventDefault(); l.onclick = e => e.preventDefault(); });
 for (const [id, k] of [["imgBright", "b"], ["imgContrast", "c"], ["imgGamma", "g"]]) {
   const s = el(id);
   s.oninput = () => { imgAdj[k] = +s.value; applyImgAdj(); };

@@ -293,8 +293,11 @@ def run_session(ui: Ui, led: Ledger, truth: dict, behavior: str, n_hand: int) ->
     # annotator already painted, which an honest reviewer rejects every time -- so the run would
     # never exercise an accept. Mixing in random picks brings up the bouts the model found on its
     # own, which is what the workflow is actually for.
+    # The queue and its order are in the Review options popover next to the Review button.
+    ui.page.click("#reviewOptsSum")
     ui.page.select_option("#candOrder", "mixed")
     ui.page.wait_for_timeout(1200)
+    ui.page.keyboard.press("Escape")               # closes the popover (and only that)
     led.add("review_click")
     ui.page.click("#review")
     ui.page.wait_for_timeout(2500)
