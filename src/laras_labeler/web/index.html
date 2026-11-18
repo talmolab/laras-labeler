@@ -1211,6 +1211,7 @@ function resetWorkspaceState() {
   closeReview(); closeBrowse();
   el("modelsPanel").classList.remove("on"); modelsData = null;   // the 🧠 Models panel belongs to the old project
   activeBid = null; selectedSeg = null; segTrim = null; tlView = null; showDelSeg(false);
+  el("hidraHead").value = "";                     // the old behavior's classifier: Train / Predict must not keep its labels
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   el("clipFilter").value = "";                    // a filter typed for the old project's clip names
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
