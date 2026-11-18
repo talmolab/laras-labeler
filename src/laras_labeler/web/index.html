@@ -48,8 +48,9 @@
   #imgAdj .imgAdjBtns { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; }
   #imgAdj .imgAdjBtns button { padding: 2px 10px; font-size: 12px; }
   #imgAdj #imgAuto.on { border-color: #ffd24a; color: #ffd24a; }   /* auto levels in effect */
-  #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center;
-                        font-variant-numeric: tabular-nums; }
+  #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center; padding: 2px 4px;
+                        font-variant-numeric: tabular-nums; background: none; border-color: transparent; }   /* the readout resets the zoom */
+  #zoomCtl #zoomLabel:hover:not(:disabled) { background: var(--btn-hover); border-color: var(--border-strong); color: var(--text); }
   #modelCompare h4 { margin: 0 0 6px; font-size: 11px; color: #7b8494; text-transform: uppercase; letter-spacing: .5px; }
   #modelCompare table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
   #modelCompare th, #modelCompare td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border, #262b33); white-space: nowrap; }
@@ -146,16 +147,14 @@
   .chip.active { border-color: #cfd6e0; background: #262c37; box-shadow: 0 0 0 1px rgba(207,214,224,.18); }
   .chip .sw { width: 11px; height: 11px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
   .chip .k { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
-  .chip .behcheck { width: 15px; height: 15px; cursor: pointer; margin: 0; }
   .chip .x { color: var(--mute); margin-left: 2px; transition: color .12s; }
   .chip .x:hover { color: #e0777f; }
   #timeline { width: 100%; display: block; margin-top: 16px; border-radius: 10px; background: #0c0e13;
               cursor: crosshair; touch-action: none; border: 1px solid var(--border); box-shadow: var(--shadow); }
   #heatstrip { width: 100%; display: block; border-radius: 0 0 10px 10px; background: #0c0e13; }
-  #features { width: 100%; display: block; margin-top: 6px; border-radius: 10px; background: #0c0e13;
-              border: 1px solid var(--border); box-shadow: var(--shadow); }
   .panel { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
-           background: var(--surface); display: none; box-shadow: var(--shadow); }
+           background: var(--surface); display: none; box-shadow: var(--shadow);
+           scroll-margin-top: 64px; }                    /* scrollIntoView lands below the sticky header */
   .panel.on { display: block; }
   /* --- layout: main is a vertical flex so views can reorder blocks with `order` --- */
   main { display: flex; flex-direction: column; }
@@ -178,15 +177,16 @@
      stage row and pushing the rest of the GUI down as more behaviors are added */
   #behaviorCard, #trackCard { max-height: 56vh; overflow-y: auto; }
   /* ANNOTATE view (default): tool/action controls ABOVE the video, annotation lanes right below it.
-     stageRow/playbar/overviewWrap/timeline/features/panels/hints keep order 0 (DOM order). */
+     stageRow/playbar/overviewWrap/timeline/panels/hints keep order 0 (DOM order). */
   #loadbar    { order: -6; }
   #clipBar    { order: -5; }
+  #mediaFix   { order: -4; }                             /* missing-media banner: right under the clips it is about */
   #toolsCard  { order: -3; }                             /* paint / annotate tools */
   #actionRow  { order: -2; }                             /* train / predict / review / stats … */
   #hidraSetup { order: -1; }                             /* with the controls, not below the video */
   #featSetHelp{ order: -1; }
   /* REVIEW view: pull video + rail + lanes to the top; the controls drop back below them */
-  main.reviewing #loadbar, main.reviewing #clipBar,
+  main.reviewing #loadbar, main.reviewing #clipBar, main.reviewing #mediaFix,
   main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp,
   main.reviewing #hidraSetup { order: 0; }
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
@@ -242,32 +242,42 @@
   .frow { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
   .frow label { width: 96px; color: #b8c0cc; font-size: 13px; }
   .frow input[type=file] { flex: 1; color: var(--text); font-size: 13px; }
+  /* drop-down menus: a native <details class="menu"> whose <summary> looks like a button. Closed on an
+     outside click, Esc or picking an item (wireMenu / closeMenus). */
+  details.menu { position: relative; display: inline-block; }
+  details.menu > summary { list-style: none; cursor: pointer; user-select: none; background: var(--btn); color: var(--text);
+                           border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 7px 13px;
+                           font-size: 13.5px; font-weight: 500; white-space: nowrap; }
+  details.menu > summary::-webkit-details-marker { display: none; }
+  details.menu > summary::after { content: " ▾"; color: var(--dim); font-size: 11px; }
+  details.menu > summary:hover { background: var(--btn-hover); border-color: #47505f; }
+  details.menu > summary:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(110,168,254,.55); }
+  details.menu[open] > summary { background: var(--btn-hover); border-color: #4a6da5; }
+  details.menu > .menu-items { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; min-width: 240px;
+                               display: flex; flex-direction: column; gap: 2px; padding: 5px; background: var(--surface-2);
+                               border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); }
+  details.menu.right > .menu-items { left: auto; right: 0; }
+  details.menu > .menu-items > button { text-align: left; background: none; border-color: transparent; padding: 6px 10px;
+                                        font-size: 13px; white-space: nowrap; }
+  details.menu > .menu-items > button:hover:not(:disabled) { background: var(--btn-hover); border-color: transparent; }
+  details.menu > .menu-items .sub { display: block; color: var(--mute); font-size: 11.5px; font-weight: 400; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="brand">laras-labeler</h1>
-  <select id="projSel" title="Switch project (workspace). Each project is a separate set of behaviors + labels + models, sharing the same clips."
+  <!-- the last option, "New project…" (#projNew), is added with the projects in initWorkspace -->
+  <select id="projSel" title="Switch project (workspace). Each project is a separate set of behaviors + labels + models, sharing the same clips. The last option creates a new project."
           style="margin-left:4px; padding:2px 6px; font-size:12px; background:var(--surface); color:#e7eaf1; border:1px solid var(--border); border-radius:5px"></select>
-  <button id="projNew" title="Create a new project (workspace): its own behaviors, labels and models, sharing the same clips folder."
-          style="padding:2px 8px; font-size:12px">＋ project</button>
   <span class="meta" id="meta">loading…</span>
-  <span style="margin-left:auto; display:flex; align-items:center; gap:10px">
-  <span id="sessionTimer" title="Session stopwatch (testing aid). ⏸ pause/resume · ⟲ reset. Logs the model's AP at each Train, so you can see how long it takes to reach good performance."
-        style="display:flex; align-items:center; gap:6px; font-size:13px; color:#aeb6c2; white-space:nowrap">
-    <span>⏱ <b id="timerClock" style="color:#e7eaf1; font-variant-numeric:tabular-nums">0:00</b></span>
-    <button id="timerToggle" style="padding:1px 7px; font-size:12px">⏸</button>
-    <button id="timerReset" style="padding:1px 7px; font-size:12px">⟲</button>
-    <span id="timerLog" class="status" style="color:#7b8494; font-size:11px"></span>
-  </span>
-  <!-- the exports sit outside #sessionTimer: the HiDRA build hides the timer, and took these with it -->
-  <span id="exportBtns" style="display:flex; align-items:center; gap:6px; white-space:nowrap">
-    <button id="timingExport" title="Download the per-round annotation-timing table (CSV): how long each round took, split into hand-labeling vs candidate review, what each produced, and the model that came out. Derived from the event log this session writes to &lt;project&gt;/events/*.jsonl."
-            style="padding:1px 7px; font-size:12px">⤓ rounds</button>
-    <button id="labelsExport" title="Export ALL labels for this project as a CSV: one row per bout across every clip, track and behavior, with names, frame span, and seconds. Only the current labels (never the .bak backups). Hold Shift to also include Not-happening/Unknown bouts."
-            style="padding:1px 7px; font-size:12px">⬇ labels CSV</button>
-  </span>
-  </span>
+  <details class="menu right" id="exportMenu" style="margin-left:auto; align-self:center">
+    <summary style="padding:2px 9px; font-size:12px" title="Download this project's labels, or the annotation-timing table">⬇ Export</summary>
+    <div class="menu-items">
+      <button id="labelsExport" title="Export ALL labels for this project as a CSV: one row per bout across every clip, track and behavior, with names, frame span, and seconds. Only the current labels (never the .bak backups). Shift-click = the option below.">Labels CSV<span class="sub">Happening bouts, every clip, track and behavior</span></button>
+      <button id="labelsExportAll" title="The same CSV, with the Not-happening and Unknown bouts too">Labels CSV, including Not-happening and Unknown<span class="sub">every labeled bout, whatever its label</span></button>
+      <button id="timingExport" title="Download the per-round annotation-timing table (CSV): how long each round took, split into hand-labeling vs candidate review, what each produced, and the model that came out. Derived from the event log this session writes to &lt;project&gt;/events/*.jsonl.">Annotation timing (rounds)<span class="sub">time per round: hand-labeling vs candidate review</span></button>
+    </div>
+  </details>
 </header>
 <main>
   <div class="row" id="loadbar">
@@ -302,9 +312,8 @@
     </div>
     <div id="zoomCtl">
       <button id="zOut" title="Zoom out (−)">−</button>
-      <span id="zoomLabel">1.0×</span>
+      <button id="zoomLabel" title="Zoom level. Click to reset (0)">1.0×</button>
       <button id="zIn" title="Zoom in (+)">＋</button>
-      <button id="zReset" title="Reset zoom (0)">⤢</button>
       <button id="followBtn" title="Follow: while zoomed in, keep the animal you are labeling in frame (f). Turning it on at 1× zooms in on it. Dragging the video turns it off.">⌖</button>
       <button id="imgAdjBtn" title="Brightness / contrast of the video (display only — poses, features and labels are unaffected)">☀</button>
     </div>
@@ -393,9 +402,9 @@
     <button id="next" title="Next frame (→)">▶</button>
     <button id="last" title="Last frame (End)">⏭</button>
     <input type="range" id="scrub" min="0" max="0" value="0">
-    <span class="counter" id="counter">0 / 0</span>
     <span class="status">Frame</span>
-    <input type="number" id="frameInput" min="0" step="1" title="Type a frame number and press Enter">
+    <input type="number" id="frameInput" min="0" step="1" title="The frame on screen. Type a frame number and press Enter">
+    <span class="counter" id="counter" style="min-width:0" title="last frame of this clip">/ 0</span>
     <span class="status">Speed</span>
     <select id="speedSel">
       <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
@@ -426,10 +435,11 @@
       <button id="mNeg">Not happening (n)</button>
       <button id="mErase">Unknown (u)</button>
       <div class="sep"></div>
-      <button id="delSeg" class="no" disabled title="Select an annotation in a lane, then delete it (Delete)">🗑 Delete</button>
-      <div class="sep"></div>
       <button id="undo">↶ Undo</button>
       <button id="redo">↷ Redo</button>
+      <!-- shown only while a labeled segment is selected (updateSelStatus) -->
+      <div class="sep" id="delSegSep" hidden></div>
+      <button id="delSeg" class="no" hidden title="Delete the selected annotation (Delete)">🗑 Delete</button>
     </div>
   </div>
 
@@ -518,8 +528,6 @@
       <option value="random">order: random</option>
       <option value="confident">order: most confident</option>
     </select>
-    <input type="number" id="candN" value="10" min="1" max="50" step="1" style="width:52px"
-           title="Max candidates to suggest per review, best-ranked first (retrain or reopen the dropdown above to apply a change)">
     <button id="review" disabled>Review candidates</button>
     <span class="status" id="candLeft" style="color:#8b93a2; font-variant-numeric:tabular-nums"
           title="New detections still unlabeled on this clip for the selected behavior, per animal, at the current thresholds — what each animal's Review queue still holds however many batches it takes. An animal is done when it reads 0."></span>
@@ -557,7 +565,7 @@
        project folder carried to another machine (or a share mounted somewhere else) opens with every
        path dead. The labels, features and models are all keyed by clip id and are fine — only the
        pointer to the pixels is stale — so the repair is to say where the files are now. -->
-  <div id="mediaFix" style="display:none; margin:2px 0 8px; padding:9px 13px; background:#1b1613;
+  <div id="mediaFix" style="display:none; margin:10px 0 0; padding:9px 13px; background:#1b1613;
        border:1px solid #4a3a24; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
     <div class="help-hd"><b style="color:#e8a33d">Media not found on this computer</b>
       <button id="mediaFixToggle" class="collapse-btn" data-target="mediaFixBody">hide &#9662;</button></div>
@@ -605,7 +613,7 @@
     </div>
   </div>
   <div id="featSetHelp" style="margin:2px 0 8px; padding:9px 13px; background:#12151b; border:1px solid #232833; border-radius:8px; color:#9aa3b2; font-size:12px; line-height:1.55">
-    <div class="help-hd"><b style="color:#cbd3df">Feature set &amp; stats help</b><button id="featHelpToggle" class="collapse-btn" data-target="featHelpBody">hide ▾</button></div>
+    <div class="help-hd"><b style="color:#cbd3df">Feature set help</b><button id="featHelpToggle" class="collapse-btn" data-target="featHelpBody">hide ▾</button></div>
     <div id="featHelpBody" style="margin-top:6px">
       <div><b style="color:#cbd3df">Feature set</b> — <span id="featSetDesc"></span></div>
       <div style="margin-top:8px"><b style="color:#cbd3df">Which set for which behavior?</b> — a starting point; the only real test is to try a couple and compare AP/F1 (📊 Stats). Rules of thumb:
@@ -619,7 +627,6 @@
         </table>
         <span style="color:#6b7280">Leaner usually beats “All”: extra columns can overfit &amp; dilute a clean signal. Adding a feature that <i>looks</i> discriminative alone (📈 Feature diff) may still not help if it’s redundant with signals already in the set — always confirm with AP/F1.</span>
       </div>
-      <div style="margin-top:8px"><b style="color:#cbd3df">How the stats are computed</b> — cross-validated with <b>StratifiedGroupKFold</b> where each CV group is a labeled <b>bout</b>, so adjacent frames never leak between train and test (an honest, not-optimistic estimate). <b>AP</b> = area under the precision–recall curve (threshold-free). <b>Frame P/R/F1</b> are at probability ≥ 0.5: precision = of frames the model calls the behavior, how many you labeled it; recall = of your positive frames, how many it caught. <b>Bout P/R</b> scores whole bouts — a labeled bout counts as caught if its mean cross-validated probability ≥ 0.5. Needs ≥ 2 labeled bouts per class to report.</div>
     </div>
   </div>
 
@@ -629,12 +636,6 @@
   </div>
 
   <canvas id="timeline" title="per behavior: manual lane (your labels) + auto lane (classifier)"></canvas>
-
-  <div class="row" style="margin-top:8px">
-    <span class="status">Features · <b id="featTrackLabel">track 1</b></span>
-    <span class="status" style="color:#6b7280">per-frame feature time-series for the selected track (synced to the playhead)</span>
-  </div>
-  <canvas id="features" title="per-frame feature time-series"></canvas>
 
   <div id="modelsPanel" class="panel">
     <div class="row" style="margin-top:0; justify-content:space-between">
@@ -658,6 +659,10 @@
         <button id="statsClose">✕ Close</button>
       </span>
     </div>
+    <details id="statsHow" style="margin:8px 0 0; font-size:12px; color:#9aa3b2; line-height:1.55">
+      <summary style="cursor:pointer; color:#8b93a2">How the stats are computed</summary>
+      <div style="margin:4px 0 0 14px">Cross-validated with <b>StratifiedGroupKFold</b> where each CV group is a labeled <b>bout</b>, so adjacent frames never leak between train and test (an honest, not-optimistic estimate). <b>AP</b> = area under the precision–recall curve (threshold-free). <b>Frame P/R/F1</b> are at probability ≥ 0.5: precision = of frames the model calls the behavior, how many you labeled it; recall = of your positive frames, how many it caught. <b>Bout P/R</b> scores whole bouts — a labeled bout counts as caught if its mean cross-validated probability ≥ 0.5. Needs ≥ 2 labeled bouts per class to report.</div>
+    </details>
     <div id="modelCompare" style="margin:12px 0 4px"></div>
     <div id="statsBreakdown" style="margin:12px 0 4px"></div>
     <div class="row" style="margin:10px 0 4px; justify-content:space-between; align-items:center">
@@ -734,15 +739,15 @@
     </div>
     <div class="hint-box">
       <h4>Tools</h4>
-      <p><b>✏ Paint (b)</b> drags a lane to label. <b>☝ Select (v)</b>: <b>drag along the bar to scrub</b> to a bout, click a bout to select + play it (then drag the ▮ handles or [ / ] to adjust, <b>Delete</b>/🗑 to remove). Picking a paint action switches back to Paint.</p>
+      <p><b>✏ Paint (b)</b> drags a lane to label. <b>☝ Select (v)</b>: <b>drag along the bar to scrub</b> to a bout, click a bout to select + play it (then drag the ▮ handles or [ / ] to adjust, <b>Delete</b> key or 🗑 button to remove). Picking a paint action switches back to Paint.</p>
     </div>
     <div class="hint-box">
       <h4>Annotation timing</h4>
-      <p>Every label, review decision, and Train is logged with a timestamp to <b>&lt;project&gt;/events/*.jsonl</b>. <b>⤓ rounds</b> (top right) downloads the per-round table: human time split into <b>hand-labeling vs candidate review</b>, machine time, and the model each round produced — that is how the human-in-the-loop cost gets compared with annotating manually. Breaks are not counted as work.</p>
+      <p>Every label, review decision, and Train is logged with a timestamp to <b>&lt;project&gt;/events/*.jsonl</b>. <b>⬇ Export → Annotation timing</b> (top right) downloads the per-round table: human time split into <b>hand-labeling vs candidate review</b>, machine time, and the model each round produced — that is how the human-in-the-loop cost gets compared with annotating manually. Breaks are not counted as work.</p>
     </div>
     <div class="hint-box">
       <h4>Video &amp; keys</h4>
-      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
+      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
   </div>
 
@@ -781,22 +786,21 @@ const stage = el("stage"), stageInner = el("stageInner");
 const frameEl = el("frame"), vctx = frameEl.getContext("2d");
 const overlay = el("overlay"), octx = overlay.getContext("2d");
 const tl = el("timeline"), tctx = tl.getContext("2d");
-const fc = el("features"), fctx = fc.getContext("2d");
-const FEAT_H = 34, OVER_H = 34;
+const OVER_H = 34;
 const ov = el("overview"), ovctx = ov ? ov.getContext("2d") : null;   // whole-video overview strip (shown when zoomed)
-// Offscreen bitmaps of the timeline/feature "base" (everything but the moving playhead) so playback
-// frames blit instead of recomputing the heatstrip + feature min/max every frame.
-const tlBase = document.createElement("canvas"), featBase = document.createElement("canvas"), ovBase = document.createElement("canvas");
-let tlBaseW = 0, tlBaseH = 0, featBaseW = 0, featBaseH = 0, ovBaseW = 0, ovBaseH = 0;
+// Offscreen bitmaps of the timeline/overview "base" (everything but the moving playhead) so playback
+// frames blit instead of recomputing the heatstrip every frame.
+const tlBase = document.createElement("canvas"), ovBase = document.createElement("canvas");
+let tlBaseW = 0, tlBaseH = 0, ovBaseW = 0, ovBaseH = 0;
 let tlBaseVS = 0, tlBaseVE = 0, tlBaseDpr = 0;   // zoom-window + dpr the base was captured at (fast path invalidates if these move)
-function invalidateTlCache() { tlBaseW = 0; ovBaseW = 0; featBaseW = 0; }
+function invalidateTlCache() { tlBaseW = 0; ovBaseW = 0; }
 function fitCanvas(c, W, H, dpr) {   // size to W×H CSS px @dpr WITHOUT reallocating (which clears) when unchanged
   const w = Math.round(W * dpr), h = Math.round(H * dpr);
   if (c.width !== w) c.width = w;
   if (c.height !== h) c.height = h;
   c.style.height = H + "px";
 }
-let featureSeries = { names: [], data: {} }, activeTrack = 0;
+let activeTrack = 0;
 let predictedBouts = new Map(), reviewCurrent = null;   // bid -> [{s,e,p}], and the bout under review
 const DEFAULT_THRESH = 0.6, DEFAULT_MINBOUT = 3;       // match boutsFromProba's / predict.py's defaults
 const behOf = bid => (behaviors || []).find(x => x.id === bid) || null;
@@ -958,7 +962,9 @@ document.addEventListener("visibilitychange", () => {
   logEvent(visible ? "tab_visible" : "tab_hidden", { visible });
   visible ? flushEvents() : flushEventsSync();
 });
-window.addEventListener("pagehide", () => { logEvent("session_end", { elapsed_ms: timerElapsedMs() }); flushEventsSync(); });
+// elapsed_ms: how long this page was open (ms since it loaded). It was the stopwatch's reading, which
+// could be paused or reset; the rollup never read it, and the active-time numbers come from the heartbeats.
+window.addEventListener("pagehide", () => { logEvent("session_end", { elapsed_ms: Math.round(performance.now()) }); flushEventsSync(); });
 logEvent("session_start", { app_version: APP_VERSION, ua: navigator.userAgent,
                             screen: `${screen.width}x${screen.height}`, tz_offset_min: new Date().getTimezoneOffset() });
 
@@ -999,17 +1005,23 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
   let projects = await (await fetch("/api/projects")).json();
   if (!projects.length) projects = [await (await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "default" }) })).json()];
   const sel = el("projSel");
-  sel.innerHTML = projects.map(p => `<option value="${esc(p.pid)}">${esc(p.name)}</option>`).join("");
+  // The last option creates a project (people do that a few times a year, so it is not a button of its own).
+  // Its value can't collide with a real pid: slugify() strips leading and trailing underscores.
+  sel.innerHTML = projects.map(p => `<option value="${esc(p.pid)}">${esc(p.name)}</option>`).join("")
+    + `<option id="projNew" value="__new__" title="Create a new project (workspace): its own behaviors, labels and models, sharing the same clips folder.">New project…</option>`;
   const want = new URLSearchParams(location.search).get("pid");
   const start = projects.find(p => p.pid === want) ? want : (projects.find(p => p.pid === "default") ? "default" : projects[0].pid);
   sel.value = start;
   sel.onchange = () => {                            // switch workspace: reflect in URL so it's shareable/refresh-safe
+    sel.blur();                                     // give the keys back (arrows scrub, not switch project)
+    if (sel.value === "__new__") { sel.value = PID; newProject(); return; }   // the picker keeps showing the open project
     const u = new URL(location); u.searchParams.set("pid", sel.value); history.replaceState(null, "", u);
     selectProject(sel.value);
   };
   // Creating a workspace used to be impossible from the browser -- POST /api/projects was only
   // called as a fallback when there were zero projects, so a second one needed curl.
-  el("projNew").onclick = async () => {
+  const newProject = async () => {
+    if (browse) { busy("Browse is open. Press Done (Esc) before creating a project."); return; }
     const name = prompt("New project name");
     if (!name || !name.trim()) return;
     const r = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1017,7 +1029,7 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
     if (!r.ok) { busy("could not create project: " + r.status); return; }
     const p = await r.json();
     const opt = document.createElement("option");
-    opt.value = p.pid; opt.textContent = p.name; sel.appendChild(opt);
+    opt.value = p.pid; opt.textContent = p.name; sel.insertBefore(opt, el("projNew"));
     sel.value = p.pid;
     const u = new URL(location); u.searchParams.set("pid", p.pid); history.replaceState(null, "", u);
     logEvent("project_create", { pid: p.pid, name: p.name });
@@ -1054,7 +1066,7 @@ async function selectProject(pid) {
 function resetWorkspaceState() {
   closeReview(); closeBrowse();
   el("modelsPanel").classList.remove("on"); modelsData = null;   // the 🧠 Models panel belongs to the old project
-  activeBid = null; selectedSeg = null; segTrim = null; tlView = null;
+  activeBid = null; selectedSeg = null; segTrim = null; tlView = null; showDelSeg(false);
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
 }
@@ -1073,7 +1085,7 @@ function clearStage() {
   reviewQueue = []; reviewIdx = 0; activeTrack = 0;
   el("review").disabled = true; el("review").textContent = "Review candidates"; renderRemaining(null);
   metricsEl.textContent = "";                          // the old project's model scores are not this one's
-  cur = 0; scrub.value = 0; scrub.max = 0; counter.textContent = "0 / 0";
+  cur = 0; scrub.value = 0; scrub.max = 0; counter.textContent = "/ 0";
   const fi = el("frameInput"); fi.value = ""; fi.max = 0;
   vctx.clearRect(0, 0, frameEl.width, frameEl.height);
   octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -1082,7 +1094,16 @@ function clearStage() {
 }
 
 async function openVideo(vidId) {
+  // A review belongs to the clip being left: left open, y/n would paint the old candidate's frame range
+  // onto the new clip (applyPaint writes to the global vid).
+  closeReview();
   closeBrowse();                // the list belongs to the clip being left
+  // Undo entries don't record their clip, and applyOp writes to the current one, so after a switch
+  // Ctrl+Z would rewrite the new clip's frames with the old clip's labels. Undo stops at a clip switch.
+  undoStack.length = 0; redoStack.length = 0; clearReviewUndo();
+  // The same for a half-done anchor paint and a pending directed-target pick (logged like an Esc cancel).
+  if (painting) logEvent("paint_cancel", { behavior_id: painting.bid, anchor: painting.anchor, reason: "clip_switch" });
+  painting = null; awaitTarget = null;
   renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
   stop();                       // don't carry playback (or its stale wall-clock anchor) across a clip switch
   if (imgLevels) { imgLevels = null; applyImgAdj(); }   // auto levels were measured on the old clip's lighting
@@ -1106,6 +1127,7 @@ async function openVideo(vidId) {
   el("stage").style.maxWidth = `calc(58vh * ${meta.width} / ${meta.height})`;
   setZoom(1);
   scrub.max = meta.n_frames - 1; el("frameInput").max = meta.n_frames - 1;
+  counter.textContent = `/ ${meta.n_frames - 1}`;   // "Frame [n] / last": the input shows the frame on screen
   metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${meta.fps.toFixed(1)} fps · `
     + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
   await loadVideoBackend();
@@ -1118,7 +1140,6 @@ async function openVideo(vidId) {
   // screen (or a blank where one was set) -- and a scale you believe is set but is not, or belongs
   // to another clip, is exactly the failure the "never defaulted" rule exists to prevent.
   hidraSyncVideo();
-  await loadSeries();
   await loadLabels();
   await loadAllPredictions();
   renderBehaviorBar();
@@ -1204,7 +1225,7 @@ async function maybeUpload() {
 }
 
 async function loadLabels() {
-  selectedSeg = null; const db = el("delSeg"); if (db) db.disabled = true;
+  selectedSeg = null; showDelSeg(false);
   const runs = await (await api(`/labels/${vid}?track=${activeTrack}`)).json();   // runs are [start, end, value, source, target, object]
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); objectState = new Map(); objSug = { key: null, rows: [], suggested: null };
   for (const b of behaviors) { labelState.set(b.id, new Int8Array(meta.n_frames)); sourceState.set(b.id, new Int8Array(meta.n_frames)); targetState.set(b.id, new Int16Array(meta.n_frames).fill(NO_TARGET)); objectState.set(b.id, new Int16Array(meta.n_frames)); }
@@ -1744,8 +1765,8 @@ async function show(i) {
   cur = Math.max(0, Math.min(meta.n_frames - 1, i));
   evCounts.frames++;                       // rolled into the heartbeat, never logged per frame
   const seq = ++showSeq, target = cur;
-  // UI chrome (playhead, counter) tracks the request immediately — responsive while the frame decodes.
-  scrub.value = cur; counter.textContent = `${cur} / ${meta.n_frames - 1}`;
+  // UI chrome (playhead, frame number) tracks the request immediately — responsive while the frame decodes.
+  scrub.value = cur;
   refreshObjects();                        // the Objects card shows the bout under the playhead
   if (document.activeElement !== el("frameInput")) el("frameInput").value = cur;
   // While playing zoomed-in, keep the playhead in view: PAGE the zoom window forward when it nears an
@@ -2031,7 +2052,6 @@ function renderTimeline() {
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   refreshObjects();                        // labels, selection or review changed: the Objects card follows
   drawTimelineOverlay(W, H, rh);
-  drawFeatures(W, dpr);
   renderOverview();
 }
 function captureTimelineBase(W, H, dpr) {
@@ -2050,7 +2070,6 @@ function repaintTimeline() {   // playback fast path: blit cached base + only th
   tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, tl.width, tl.height); tctx.drawImage(tlBase, 0, 0);
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawTimelineOverlay(W, H, rh);
-  repaintFeatures(W, dpr);
   repaintOverview();
 }
 function drawTimelineOverlay(W, H, rh) {
@@ -2148,62 +2167,6 @@ function drawTimelineOverlay(W, H, rh) {
       }
     }
   }
-}
-
-async function loadSeries() {
-  if (!vid) return;
-  const r = await api(`/features/${vid}/series?track=${activeTrack}`);
-  if (!r.ok) { featureSeries = { names: [], data: {} }; return; }
-  const names = r.headers.get("X-Series").split(","), F = +r.headers.get("X-Frames");
-  const buf = new Float32Array(await r.arrayBuffer());
-  const data = {}; names.forEach((n, i) => data[n] = buf.subarray(i * F, (i + 1) * F));
-  featureSeries = { names, data };
-}
-
-function drawFeatures(W, dpr) {
-  const S = featureSeries, H = Math.max(FEAT_H, S.names.length * FEAT_H);
-  fitCanvas(fc, W, H, dpr);
-  fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  fctx.fillStyle = "#0f1115"; fctx.fillRect(0, 0, W, H);
-  if (!S.names.length) {
-    featBaseW = 0;                                  // invalidate cache so playback doesn't blit stale series
-    fctx.fillStyle = "#6b7280"; fctx.font = "11px system-ui"; fctx.textBaseline = "top";
-    fctx.fillText("feature time-series appear here", 6, 12); return;
-  }
-  const F = meta.n_frames;
-  S.names.forEach((name, i) => {
-    const arr = S.data[name], y0 = i * FEAT_H;
-    let mn = Infinity, mx = -Infinity;
-    for (let k = 0; k < arr.length; k++) { const v = arr[k]; if (!Number.isNaN(v)) { if (v < mn) mn = v; if (v > mx) mx = v; } }
-    const rng = (mx - mn) || 1;
-    fctx.strokeStyle = "#2a2e35"; fctx.lineWidth = 1; fctx.beginPath(); fctx.moveTo(0, y0); fctx.lineTo(W, y0); fctx.stroke();
-    fctx.strokeStyle = "#6ea8ff"; fctx.lineWidth = 1; fctx.beginPath(); let started = false;
-    for (let x = TL_GUT; x < W; x++) {                                // start after the gutter so curves + playhead (xOf) line up with the timeline
-      const v = arr[Math.min(F - 1, Math.floor(viewS() + (x - TL_GUT) / plotW(W) * (viewE() - viewS())))];
-      if (Number.isNaN(v)) { started = false; continue; }
-      const yy = y0 + FEAT_H - 3 - ((v - mn) / rng) * (FEAT_H - 12);
-      if (!started) { fctx.moveTo(x, yy); started = true; } else fctx.lineTo(x, yy);
-    }
-    fctx.stroke();
-    fctx.fillStyle = "#9aa3b2"; fctx.font = "10px system-ui"; fctx.textBaseline = "top"; fctx.fillText(name, 4, y0 + 2);
-  });
-  captureFeatureBase(W, H, dpr);
-  drawFeaturePlayhead(W, H);
-}
-function captureFeatureBase(W, H, dpr) {
-  fitCanvas(featBase, W, H, dpr);
-  const bx = featBase.getContext("2d");
-  bx.setTransform(1, 0, 0, 1, 0, 0); bx.clearRect(0, 0, featBase.width, featBase.height); bx.drawImage(fc, 0, 0);
-  featBaseW = W; featBaseH = H;
-}
-function drawFeaturePlayhead(W, H) {
-  const px = xOf(cur, W);
-  fctx.strokeStyle = "#ffd24a"; fctx.lineWidth = 1; fctx.beginPath(); fctx.moveTo(px, 0); fctx.lineTo(px, H); fctx.stroke();
-}
-function repaintFeatures(W, dpr) {   // playback: reuse the cached series, redraw only the playhead
-  if (!featBaseW || featBaseW !== W) return drawFeatures(W, dpr);
-  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.clearRect(0, 0, fc.width, fc.height); fctx.drawImage(featBase, 0, 0);
-  fctx.setTransform(dpr, 0, 0, dpr, 0, 0); drawFeaturePlayhead(W, featBaseH);
 }
 
 // ---------- whole-video overview strip (shown while zoomed/reviewing so you see WHERE the clip is) ----------
@@ -2551,8 +2514,9 @@ function setTool(t) {
   renderTimeline();
 }
 function clearSel() { if (selectedSeg) { selectedSeg = null; updateSelStatus(); renderTimeline(); } }
+// 🗑 Delete is there only while a labeled segment is selected (the Delete / Backspace keys work the same).
+function showDelSeg(on) { el("delSeg").hidden = !on; el("delSegSep").hidden = !on; }
 function updateSelStatus() {
-  const btn = el("delSeg");
   segTrim = selectedSeg ? { s: selectedSeg.s, e: selectedSeg.e } : null;   // editable bounds mirror the selection
   if (selectedSeg) {
     const b = behaviors.find(x => x.id === selectedSeg.bid);
@@ -2567,8 +2531,8 @@ function updateSelStatus() {
       dir += oid ? ` · on ${objName(oid)}` : " · no object yet (tick it under Objects)";
     }
     busy(`Selected ${b ? b.name : "?"} · ${kind} · track ${activeTrack + 1}${dir} · frames ${selectedSeg.s}–${selectedSeg.e} — drag the ▮ handles or [ / ] to adjust · Delete to remove`);
-    btn.disabled = false;
-  } else { btn.disabled = true; busy(""); }   // nothing selected -> drop the stale "Selected …" message
+    showDelSeg(true);
+  } else { showDelSeg(false); busy(""); }   // nothing selected -> drop the stale "Selected …" message
   refreshObjects();
 }
 async function deleteSelectedSeg() {
@@ -2576,7 +2540,7 @@ async function deleteSelectedSeg() {
   const { bid, s, e } = selectedSeg;
   logEvent("label_delete", { behavior_id: bid, name: bname(bid), start: s, end: e, n_frames: e - s,
                              value: selectedSeg.val });
-  selectedSeg = null; el("delSeg").disabled = true;
+  selectedSeg = null; showDelSeg(false);
   await applyPaint(bid, s, e, 0);             // erase the run (undoable)
   busy(`deleted label · frames ${s}–${e}`);
 }
@@ -2613,12 +2577,13 @@ function renderBehaviorBar() {
   const bar = el("behaviorBar"); bar.innerHTML = "";
   const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Behavior:"; bar.appendChild(lab);
   for (const b of behaviors) {
-    const chip = document.createElement("label");   // whole chip is clickable; the checkbox = selected behavior
+    // The whole chip selects the behavior (it used to hold a checkbox, which read as if several could be ticked).
+    const chip = document.createElement("button");
     chip.className = "chip" + (b.id === activeBid ? " active" : "");
-    chip.innerHTML = `<input type="checkbox" class="behcheck" style="accent-color:${b.color}" ${b.id === activeBid ? "checked" : ""}>`
-      + `<span class="sw" style="background:${b.color}"></span><span class="bname">${b.name}</span>`
-      + `${b.key ? `<span class="k">${b.key}</span>` : ""}<span class="x" title="delete">✕</span>`;
-    chip.querySelector(".behcheck").onchange = () => selectBehavior(b.id);
+    chip.title = `Label, train and review ${b.name}` + (b.key ? ` (its hotkey ${b.key} starts and ends a paint)` : "");
+    chip.innerHTML = `<span class="sw" style="background:${esc(b.color)}"></span><span class="bname">${esc(b.name)}</span>`
+      + `${b.key ? `<span class="k">${esc(b.key)}</span>` : ""}<span class="x" title="delete">✕</span>`;
+    chip.onclick = () => { chip.blur(); if (b.id !== activeBid) selectBehavior(b.id); };   // blur: Space plays, not re-clicks
     chip.querySelector(".x").onclick = ev => {
       ev.preventDefault(); ev.stopPropagation();
       if (!confirm(`Delete behavior "${b.name}" and its labels?`)) return;
@@ -2970,7 +2935,7 @@ async function hidraInit() {
   HIDRA_RT = st;
   if (el("hidraSave") && !el("hidraSave").onclick) {
     el("hidraSave").onclick = hidraSaveSetup;
-    wireCollapse("hidraSetupToggle");
+    wireCollapse("hidraSetupToggle", true);
   }
   if (!st.heads) { hidraShowSetup(st); return; }              // configurable, not absent
   el("hidraSetup").style.display = "none";
@@ -3026,9 +2991,7 @@ async function hidraInit() {
   //   featSet / featSetHelp  pick which of the labeler's own 608 pose features a RandomForest is
   //                          fitted on. A HiDRA head brings its own learned representation and
   //                          never reads those features, so the control is inert here.
-  //   sessionTimer           a stopwatch and AP log, described in its own tooltip as a testing
-  //                          aid. Noise for someone labelling their own recordings.
-  for (const id of ["featSet", "featSetHelp", "sessionTimer"]) {
+  for (const id of ["featSet", "featSetHelp"]) {
     const n = el(id);
     if (n) n.style.display = "none";
   }
@@ -3119,11 +3082,10 @@ function renderTrackBar() {
     chip.onclick = () => setActiveTrack(t);
     bar.appendChild(chip);
   }
-  const fl = el("featTrackLabel"); if (fl) fl.textContent = "track " + (activeTrack + 1);
 }
 async function onTrackChange() {
   invalidateTlCache();                 // the new track's labels/heatstrip load async — don't blit the old track's base meanwhile
-  await loadLabels(); await loadAllPredictions(); await loadSeries();
+  await loadLabels(); await loadAllPredictions();
   if (activeBid != null) await loadCandidates(activeBid);
   drawPose(); renderTimeline();
 }
@@ -3157,8 +3119,16 @@ async function reloadBehaviors() {
 function busy(msg) { metricsEl.textContent = msg; }
 function fmt2(x) { return (x == null) ? "—" : Number(x).toFixed(2); }
 async function loadModel() {
-  const r = await api(`/behaviors/${activeBid}/model`);
-  if (!r.ok) { metricsEl.textContent = "no model yet — Train to build one"; return; }
+  const bid = activeBid, r = await api(`/behaviors/${bid}/model`);
+  if (bid !== activeBid) return;                      // another behavior was picked meanwhile: its own call writes the line
+  if (!r.ok) {
+    // /model is the project's own model. A behavior bound to a HiDRA classifier predicts without one (the
+    // pretrained head works zero-shot), so "no model yet" would be wrong there; the HiDRA note says what it uses.
+    const h = (behOf(bid) || {}).hidra;
+    metricsEl.textContent = h && h.action ? "" : "no model yet — Train to build one";
+    showDowngrade(null);
+    return;
+  }
   const m = await r.json(), x = m.metrics || {};
   const fs = (m.feature_set && m.feature_set !== "all") ? ` · ${m.feature_set} feats (${m.n_features})` : "";
   metricsEl.textContent = x.warning
@@ -3181,6 +3151,16 @@ function showDowngrade(msg) {
   el0.style.display = msg ? "block" : "none";
   el0.textContent = msg ? `⚠ ${msg}` : "";
 }
+// ---------- analysis panels: one open at a time, scrolled into view ----------
+// They open below the timeline, so on a long page a click used to look as if nothing happened; and with
+// several open at once the one just asked for could be far down the page.
+const ANALYSIS_PANELS = ["modelsPanel", "statsPanel", "trainsetPanel", "labelStatsPanel", "featDiffPanel"];
+function showPanel(id) {
+  const p = el(id), wasOn = p.classList.contains("on");
+  for (const other of ANALYSIS_PANELS) if (other !== id) el(other).classList.remove("on");
+  p.classList.add("on");
+  if (!wasOn) p.scrollIntoView({ block: "start" });   // already open (a refresh, a toggle inside it): stay put
+}
 let statsCompareBid = null, statsCompare = null, statsSources = null;   // A/B comparison + label-source breakdown
 async function openStats() {
   if (activeBid == null) { busy("select a behavior first"); return; }
@@ -3191,7 +3171,7 @@ async function openStats() {
   sel.value = statsCompareBid != null && behaviors.some(b => b.id === statsCompareBid) ? String(statsCompareBid) : "";
   statsCompareBid = sel.value ? parseInt(sel.value, 10) : null;
   await refreshStats();
-  el("statsPanel").classList.add("on");
+  showPanel("statsPanel");
 }
 async function refreshStats() {
   if (activeBid == null) return;
@@ -3490,7 +3470,7 @@ async function showTrainsetView(view, bid = lastTrainsetBid ?? activeBid) {   //
       el("trainsetNote").textContent = ""; el("trainsetList").innerHTML = "";
     }
   }
-  el("trainsetPanel").classList.add("on");
+  showPanel("trainsetPanel");
 }
 // One clip x mouse row of the next-Train table: what it contributes, and why not when it doesn't.
 function renderNextTrain(d) {
@@ -3689,7 +3669,7 @@ let modelsData = null, modelsPid = null, modelsGen = 0;
 const modelsScores = new Map();      // bid -> /compare result (or {error}), for project modelsPid
 const modelsSweeps = new Map();      // bid -> {jid, msg}, for project modelsPid
 async function openModels() {
-  el("modelsPanel").classList.add("on");
+  showPanel("modelsPanel");
   await refreshModels(true);         // scores too: a Train, a new test clip or a Predict since last time changes them
 }
 async function refreshModels(rescore) {
@@ -3897,7 +3877,7 @@ async function openLabelStats() {
   const r = await api(`/label-stats`);
   if (!r.ok) { busy("could not load label counts"); return; }
   renderLabelStats(await r.json());
-  el("labelStatsPanel").classList.add("on");
+  showPanel("labelStatsPanel");
 }
 function lsCell(c) {
   if (!c || !(c.pos_bouts || c.neg_bouts)) return `<span style="color:#4b5563">·</span>`;
@@ -4011,7 +3991,7 @@ async function openFeatureDiff() {
   busy("computing feature differences…");
   const r = await api(`/behaviors/${activeBid}/feature-diff?top_n=12`);
   const d = r.ok ? await r.json() : { error: "request failed" };
-  el("featDiffPanel").classList.add("on");          // show BEFORE drawing so canvases have a width
+  showPanel("featDiffPanel");                      // show BEFORE drawing so canvases have a width
   renderFeatureDiff(d);
   busy("");
 }
@@ -4196,7 +4176,7 @@ async function onMinBoutChange() {
 }
 
 // Remaining 'new' proposals per animal on this clip x behavior (GET .../remaining/<vid>). The Review
-// queue serves candN at a time, so a batch running out says nothing about the queue; this count is what
+// queue serves CAND_BATCH at a time, so a batch running out says nothing about the queue; this count is what
 // says an animal is done. Refreshed with every queue load and, debounced, after every label write.
 let remainingSeq = 0, remainingTimer = null, candSeq = 0;
 async function fetchRemaining(bid) {
@@ -4226,9 +4206,13 @@ const skipKey = (bid, s, e) => `${bid}:${s}:${e}`;
 // Returns the server's list (before that filter), or null if the server refused (so a refill can tell a
 // failed load from an empty queue). A load overtaken by a newer one (track/behavior/clip switch) changes
 // nothing, so a slow refill for the old animal can't overwrite the new animal's queue.
+// Proposals load CAND_BATCH at a time; refillReview fetches the next batch as one runs out, so this sets
+// only how many load at once (and how far back review Undo can go, since a refill clears it), not how
+// many you review.
+const CAND_BATCH = 10;
 async function loadCandidates(bid, skip = null) {
   const seq = ++candSeq;
-  const n = Math.max(1, Math.min(50, parseInt(el("candN").value, 10) || 10));
+  const n = CAND_BATCH;
   const ask = skip ? n + skip.size : n;
   const [r, rem] = await Promise.all([
     api(`/behaviors/${bid}/candidates/${vid}?track=${activeTrack}&n=${ask}&mode=${candidateMode}&order=${candidateOrder}`),
@@ -4252,38 +4236,6 @@ function pollJob(jid, onDone) {
     if (s.status === "done" || s.status === "error" || s.status === "cancelled") { clearInterval(t); onDone(s); }
   }, 500);
 }
-// ---- session timer (testing aid): a stopwatch + a log of the model's AP at each Train, so you can
-// see how long it takes to reach good performance (target: a usable model in ~5 min). Self-contained.
-let timerRunning = true, timerAccum = 0, timerStart = Date.now(), timerMarks = [];
-function timerElapsedMs() { return timerAccum + (timerRunning ? Date.now() - timerStart : 0); }
-function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
-function tickTimer() { const c = el("timerClock"); if (c) c.textContent = fmtDur(timerElapsedMs()); }
-setInterval(tickTimer, 1000);
-function toggleTimer() {
-  if (timerRunning) { timerAccum += Date.now() - timerStart; timerRunning = false; }
-  else { timerStart = Date.now(); timerRunning = true; }
-  el("timerToggle").textContent = timerRunning ? "⏸" : "▶"; tickTimer();
-}
-function resetTimer() {
-  timerAccum = 0; timerStart = Date.now(); timerRunning = true; timerMarks = [];
-  el("timerToggle").textContent = "⏸"; el("timerLog").textContent = ""; el("timerLog").title = ""; tickTimer();
-}
-function timerMark(ap, bid, name, trainMs, nCand) {   // called on each Train: log this round's duration, AP, and candidate-bout count, tagged with the model
-  if (ap == null || !isFinite(ap)) return;
-  const nm = name || (behaviors.find(x => x.id === bid) || {}).name || `beh ${bid}`;
-  const sessionMs = timerElapsedMs();
-  const prev = [...timerMarks].reverse().find(m => m.bid === bid);   // previous mark for THIS model -> this round's duration
-  const roundMs = prev ? sessionMs - prev.sessionMs : sessionMs;
-  timerMarks.push({ t: fmtDur(sessionMs), sessionMs, ap, bid, name: nm, trainMs, roundMs, nCand });
-  const short = s => s.split(" ")[0];
-  el("timerLog").textContent = "· " + timerMarks.slice(-3).map(m =>
-    `${short(m.name)} +${fmtDur(m.roundMs)}→${m.ap.toFixed(2)}${m.nCand != null ? `(${m.nCand}c)` : ""}`).join("  ");
-  el("timerLog").title = "each Train — model · this round's duration (train compute) · candidate bouts → AP  @session:\n"
-    + timerMarks.map(m => `  ${m.name} · +${fmtDur(m.roundMs)}`
-        + `${m.trainMs != null ? ` (train ${(m.trainMs / 1000).toFixed(1)}s)` : ""}`
-        + `${m.nCand != null ? ` · ${m.nCand} cand bouts` : ""} → AP ${m.ap.toFixed(3)}  @ ${m.t}`).join("\n");
-}
-if (el("timerToggle")) { el("timerToggle").onclick = toggleTimer; el("timerReset").onclick = resetTimer; }
 let jobsRunning = 0;   // Train or Predict still going. Browse waits so their later writes are not refused.
 async function train() { jobsRunning++; try { await trainJob(); } finally { jobsRunning--; } }
 // ■ Stop training: the Train jobs running now (jid -> {bid, bname, stop}). Usually one; with several
@@ -4356,7 +4308,6 @@ async function trainJob() {
                                  downgrade: !!q.downgrade_warning }); }
     await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
     const r = s.result;
-    if (r && r.metrics) timerMark(r.metrics.average_precision, bid, bname, trainMs, r.n_candidate_bouts);   // round duration + candidate-bout count, tagged with THIS model
     if (r && r.lab && r.action) {
       // A HiDRA fine-tune returns what the adaptation produced (lab/action/bouts/clips), not the
       // project model's frame/bout counts, so the native branch below would read "Trained on
@@ -4869,7 +4820,7 @@ function nextCandidate() {   // advance without writing (e.g. after painting ins
   if (o) reviewSkipped.add(skipKey(reviewCurrent.bid, o.s, o.e));
   advanceReview();
 }
-// The loaded batch is used up, but the queue is per clip x behavior x animal and loads only candN at a
+// The loaded batch is used up, but the queue is per clip x behavior x animal and loads only CAND_BATCH at a
 // time — closing here (as this used to, with "reviewed — Train again") is how whole queues were left
 // unworked. Fetch what is left and carry on; close only when the server has nothing left for this
 // animal, or when everything left was already skipped in this sitting (so ⏎ can't loop forever).
@@ -5023,9 +4974,10 @@ const BROWSE_LIVE = new Set(["browseWhich", "browseOrder", "browseLabels", "brow
                              "predThreshCount", "predMinBout", "metrics"]);
 function setBrowseLock(on) {
   document.querySelector("main").classList.toggle("browsing", on);
+  const pn = el("projNew"); if (pn) pn.disabled = on;   // "New project…" in the picker (switching project stays live)
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
-  for (const id of ["loadbar", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix", "projNew"]) lock(el(id));
+  for (const id of ["loadbar", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix"]) lock(el(id));
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
     if (!live) lock(n);
@@ -5433,11 +5385,6 @@ el("predThresh").onchange = onThreshCommit;
 el("predMinBout").onchange = onMinBoutChange;
 el("candMode").onchange = async e => { candidateMode = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
 el("candOrder").onchange = async e => { candidateOrder = e.target.value; if (activeBid != null) await loadCandidates(activeBid); };
-el("candN").value = localStorage.getItem("ll_candN") || "10";
-el("candN").onchange = async e => {
-  localStorage.setItem("ll_candN", e.target.value);
-  if (activeBid != null) await loadCandidates(activeBid);
-};
 el("featSet").onchange = async e => {   // set the active behavior's feature subset; retrain to apply
   if (activeBid == null) { syncFeatSet(); return; }
   const fs = e.target.value;
@@ -5453,13 +5400,14 @@ el("timingExport").onclick = async () => {   // per-round annotation timings (ev
   a.href = `/api/projects/${PID}/timing.csv`; a.download = `${PID}-rounds.csv`; a.click();
   busy("downloaded per-round timing CSV — raw event log: <project>/events/*.jsonl · full rollup: /api/projects/" + PID + "/timing");
 };
-el("labelsExport").onclick = (ev) => {   // export all project labels as one CSV (Shift = include Not-happening/Unknown)
+function exportLabels(all) {   // export all project labels as one CSV (all = include Not-happening/Unknown)
   if (!PID) return busy("open a project first");
-  const all = ev.shiftKey;
   const a = document.createElement("a");
   a.href = `/api/projects/${PID}/labels.csv${all ? "?value=all" : ""}`; a.download = `${PID}-labels.csv`; a.click();
-  busy(all ? "exported all labels (incl. Not-happening/Unknown) as CSV" : "exported label CSV (Happening bouts) — Shift-click for all values");
-};
+  busy(all ? "exported all labels (incl. Not-happening/Unknown) as CSV" : "exported label CSV (Happening bouts)");
+}
+el("labelsExport").onclick = ev => exportLabels(ev.shiftKey);   // Shift-click still means "all values"
+el("labelsExportAll").onclick = () => exportLabels(true);
 el("statsBtn").onclick = openStats; el("statsClose").onclick = () => el("statsPanel").classList.remove("on");
 el("statsExport").onclick = () => {   // download the full precision-stats history for the active behavior as CSV
   const h = lastStatsHistory || [];
@@ -5531,19 +5479,45 @@ el("showRois").onchange = () => {
   try { localStorage.setItem("laras.showRois", el("showRois").checked ? "1" : "0"); } catch (e) { /* view still changes */ }
   el("showRois").blur(); drawPose();
 };
-// collapsible help / "direction" boxes (state persisted per box)
-function wireCollapse(btnId) {
+// collapsible help / "direction" boxes (state persisted per box). A help box that is set-once reading
+// (collapsedByDefault) starts as its one-line title until someone opens it; whoever already chose keeps
+// their choice.
+function wireCollapse(btnId, collapsedByDefault = false) {
   const btn = el(btnId); if (!btn) return;
   const target = el(btn.dataset.target); const key = "ll_collapse_" + btn.dataset.target;
   const apply = c => { target.classList.toggle("is-collapsed", c); btn.textContent = c ? "show ▸" : "hide ▾"; };
-  apply(localStorage.getItem(key) === "1");
-  btn.onclick = () => { const c = !target.classList.contains("is-collapsed"); apply(c); localStorage.setItem(key, c ? "1" : "0"); };
+  let saved = null;
+  try { saved = localStorage.getItem(key); } catch (e) { /* no storage: the default */ }
+  apply(saved == null ? collapsedByDefault : saved === "1");
+  btn.onclick = () => {
+    const c = !target.classList.contains("is-collapsed"); apply(c);
+    try { localStorage.setItem(key, c ? "1" : "0"); } catch (e) { /* not remembered */ }
+  };
 }
-wireCollapse("featHelpToggle"); wireCollapse("hintsToggle");
+wireCollapse("featHelpToggle", true); wireCollapse("hintsToggle");
+// ---------- drop-down menus (<details class="menu">): one open at a time; an outside click, Esc or
+// picking an item closes them ----------
+function closeMenus(except = null) {
+  let n = 0;
+  for (const d of document.querySelectorAll("details.menu[open]")) if (d !== except) { d.open = false; n++; }
+  return n;
+}
+function wireMenu(d) {
+  d.addEventListener("toggle", () => { if (d.open) closeMenus(d); });
+  const sum = d.querySelector("summary");
+  sum.addEventListener("click", () => setTimeout(() => sum.blur()));   // give the keys back (Space plays, not re-toggles)
+  d.querySelector(".menu-items").addEventListener("click", e => { if (e.target.closest("button")) d.open = false; });
+}
+document.querySelectorAll("details.menu").forEach(wireMenu);
+document.addEventListener("pointerdown", e => closeMenus(e.target.closest ? e.target.closest("details.menu") : null), true);
+// capture, ahead of the shortcut handler: Esc closes an open menu and does nothing else
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && closeMenus()) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 el("showApproaches").onclick = () => toggleApproaches();
 el("zIn").onclick = () => setZoom(zoom * 1.3);
 el("zOut").onclick = () => setZoom(zoom / 1.3);
-el("zReset").onclick = () => setZoom(1);
+el("zoomLabel").onclick = () => { setZoom(1); el("zoomLabel").blur(); };   // the readout resets the zoom (so does 0)
 el("followBtn").onclick = () => { setFollow(!follow); el("followBtn").blur(); if (!follow) busy("follow off"); };
 el("followBtn").classList.toggle("on", follow);
 // Video display adjustments: brightness / contrast / gamma, plus one-click auto levels. Applied as a CSS
@@ -5643,7 +5617,7 @@ window.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); return closeBrowse(); }
     if (e.key === "Enter") { e.preventDefault(); return browseStep(e.shiftKey ? -1 : 1); }
     if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); return browseReplay(); }
-    if (!["ArrowLeft", "ArrowRight", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End", " ", "+", "=", "-", "_", "0"].includes(e.key)) return;
   }
   const reviewing = el("reviewPanel").classList.contains("on");
   if (settingRoi && e.key === "Enter") { e.preventDefault(); finishRoi(); return; }         // finish drawing the spout ROI
@@ -5681,6 +5655,9 @@ window.addEventListener("keydown", e => {
   if (reviewing && e.key === "Enter") return nextCandidate();
   if (e.key === "ArrowLeft") { stop(); show(cur - (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }       // arrows scrub frames (Ctrl ±30, Shift ±5), even in review
   else if (e.key === "ArrowRight") { stop(); show(cur + (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }
+  else if ((e.key === "Home" || e.key === "End") && e.target.tagName !== "SELECT") {   // first / last frame (the ⏮ ⏭ buttons); not the page scroll
+    e.preventDefault(); if (meta) { stop(); show(e.key === "Home" ? 0 : meta.n_frames - 1); }
+  }
   else if (e.key === " ") { e.preventDefault(); play(); }
   else if (e.key === "p") setMode("pos");
   else if (e.key === "n" && !reviewing) setMode("neg");

@@ -180,10 +180,10 @@ class Ui:
                                     arg=f, timeout=15000)
 
     def select_behavior(self, name: str) -> None:
-        # the chip is a <label> holding the checkbox that selects it -- click it like a person does
-        self.page.click(f"#behaviorBar label.chip:has(.bname:text-is('{name}')) .behcheck")
+        # clicking the chip selects the behavior -- click it like a person does (on the name, not its ✕)
+        self.page.click(f"#behaviorBar .chip:has(.bname:text-is('{name}')) .bname")
         self.page.wait_for_selector(
-            f"#behaviorBar label.chip.active:has(.bname:text-is('{name}'))", timeout=15000)
+            f"#behaviorBar .chip.active:has(.bname:text-is('{name}'))", timeout=15000)
         self.beat(0.1, 0.3)
 
     def paint(self, start: int, end: int, kind: str = "pos") -> None:
@@ -294,8 +294,6 @@ def run_session(ui: Ui, led: Ledger, truth: dict, behavior: str, n_hand: int) ->
     # never exercise an accept. Mixing in random picks brings up the bouts the model found on its
     # own, which is what the workflow is actually for.
     ui.page.select_option("#candOrder", "mixed")
-    ui.page.fill("#candN", "14")
-    ui.page.dispatch_event("#candN", "change")
     ui.page.wait_for_timeout(1200)
     led.add("review_click")
     ui.page.click("#review")
@@ -495,7 +493,7 @@ def verify(base: str, pid: str, projects_root: Path, led: Ledger, events: list[d
     head, *body = [ln for ln in csv.splitlines() if ln.strip()]
     ck(head.startswith("round,behavior_id,behavior"), "timing.csv header")
     ck(button_csv.splitlines()[:1] == [head],
-       "the header's \u2913 rounds button downloads that same table",
+       "the header's Export -> Annotation timing item downloads that same table",
        f"{len(button_csv.splitlines())} lines")
     ck(len(body) == len(rounds), "timing.csv has a row per round", f"{len(body)} rows")
     sess = _req(f"{base}/api/projects/{pid}/events/sessions")["sessions"]
@@ -605,7 +603,7 @@ def main(argv=None) -> int:
             page.route(re.compile(r"^https://esm\.sh/"), cdn)
 
             page.goto(f"{base}/?pid={pid}", wait_until="domcontentloaded")
-            page.wait_for_function("() => /\\d+ \\/ [1-9]/.test(document.getElementById"
+            page.wait_for_function("() => /\\/ [1-9]/.test(document.getElementById"
                                    "('counter').textContent)", timeout=120000)
             page.wait_for_timeout(1500)
             print(f"UI loaded: {page.inner_text('#meta')[:100]}", flush=True)
@@ -613,7 +611,8 @@ def main(argv=None) -> int:
             ui = Ui(page, led, rng)
             run_session(ui, led, truth, a.behavior, a.hand_bouts)
 
-            # the ⤓ rounds button: the only surface a user reaches without touching the API
+            # Export → Annotation timing: the only surface a user reaches without touching the API
+            page.click("#exportMenu > summary")
             with page.expect_download(timeout=30000) as dl:
                 page.click("#timingExport")
             download = dl.value

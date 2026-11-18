@@ -218,7 +218,7 @@ IN REVIEW  14 decisions (11 accepted) on 41s of proposed video in 3:04  ->  13.1
 
 It also prints accuracy against **cumulative minutes of annotation** — the axis that actually answers
 "how long to a usable model", where the Stats panel's learning curve plots accuracy per *bout*. In the app,
-**⤓ rounds** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
+**⬇ Export → Annotation timing (rounds)** (top right) downloads the same per-round table; `GET /api/projects/{pid}/timing` returns
 the full rollup as JSON.
 
 Time that is neither labeling nor reviewing — opening the project, picking a clip, reading Stats,
@@ -253,7 +253,7 @@ uv run python scripts/verify_event_log.py /tmp/synth
 review the model's candidates, Train again — with a break in the middle), keeps its own independent
 ledger of every action and when, and then checks the rollup against it: counts, per-phase
 attribution, round boundaries, dwell times, the break not being billed as work, and each surface
-(`/timing`, `/timing.csv`, `/events.jsonl`, the **⤓ rounds** button, `annotation_timing.py`).
+(`/timing`, `/timing.csv`, `/events.jsonl`, the **Export → Annotation timing** menu item, `annotation_timing.py`).
 
 ## History
 
