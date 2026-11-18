@@ -12,7 +12,7 @@ One row per (project, behavior):
   * its labels: positive bouts split by where they came from (painted by hand, accepted in
     review, imported), negative bouts, and how far they spread over clips and animals
   * the native model's own grouped-CV AP, when one has been trained
-  * when the project holds a clip out as its TEST clip (clip bar → test), every stored model's
+  * when the project holds a clip out as its TEST clip (Clip menu → Use as test clip), every stored model's
     AP / AUROC on that clip's reviewed frames: zero-shot head, each fine-tune, each native version.
     A model that trained on the test clip is marked in-sample, not hidden.
   * a suggested starting point from the behavior's name: a HiDRA head, a bake-off between a head
@@ -44,7 +44,7 @@ try:
 except ImportError:                                   # scores are reported as blank, never guessed
     average_precision_score = roc_auc_score = None
 
-MIN_PER_CLASS = 5          # as the Model comparison panel: fewer reviewed frames per class is "thin"
+MIN_PER_CLASS = 5          # as the Models panel: fewer reviewed frames per class is "thin"
 SOURCES = {"manual": "hand", "candidate": "review", "imported": "import"}
 
 

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import hidra, poseio
 
-HELD_OUT = "test clip (held out) — scored by the model comparison, never trained on"
+HELD_OUT = "test clip (held out) — scored in 🧠 Models, never trained on"
 
 
 def _n_animals(entry: dict) -> int:
@@ -77,7 +77,7 @@ def preview(store, labels, predictor, features, pid: str, bid: int) -> dict:
         n_tracks = max(n_animals[vid], predictor.n_tracks(pid, vid, bid), max(label_tracks, default=-1) + 1)
         left = predictor.remaining(pid, vid, bid)["tracks"] if predictor.n_tracks(pid, vid, bid) else {}
         slp_ok = bool(v.get("slp_path")) and Path(v["slp_path"]).exists()
-        held_out = v.get("role") == "test"             # the test clip: scored by the model comparison, never trained on
+        held_out = v.get("role") == "test"             # the test clip: scored in 🧠 Models, never trained on
 
         tracks = []
         for t in range(n_tracks):

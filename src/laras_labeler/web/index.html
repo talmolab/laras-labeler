@@ -51,21 +51,16 @@
   #zoomCtl #zoomLabel { font-size: 12px; color: #b8c0cc; min-width: 38px; text-align: center; padding: 2px 4px;
                         font-variant-numeric: tabular-nums; background: none; border-color: transparent; }   /* the readout resets the zoom */
   #zoomCtl #zoomLabel:hover:not(:disabled) { background: var(--btn-hover); border-color: var(--border-strong); color: var(--text); }
-  #modelCompare h4 { margin: 0 0 6px; font-size: 11px; color: #7b8494; text-transform: uppercase; letter-spacing: .5px; }
-  #modelCompare table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
-  #modelCompare th, #modelCompare td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border, #262b33); white-space: nowrap; }
-  #modelCompare th { color: #8b93a2; font-weight: 600; }
-  #modelCompare td.m, #modelCompare th.m { text-align: left; white-space: normal; }
-  #modelCompare .ins { color: #6b7382; font-style: italic; }
-  #modelCompare .cur { color: #9cc3ff; font-weight: 700; }
-  #modelCompare .note { color: #8b93a2; font-size: 11.5px; line-height: 1.45; margin-top: 6px; }
-  #modelCompare .warn { color: #ffb347; }
-  #modelCompare .callout { border-left: 3px solid #6ea8fe; background: rgba(110,168,254,0.08); padding: 7px 10px; border-radius: 4px; font-size: 12px; line-height: 1.45; margin: 6px 0; }
-  #modelCompare .bars { margin: 8px 0 2px; }
-  #modelCompare .bar { display: grid; grid-template-columns: minmax(120px, 34%) 1fr 48px; gap: 8px; align-items: center; font-size: 12px; margin: 3px 0; }
-  #modelCompare .bar .fill { height: 12px; border-radius: 3px; background: #6ea8fe; }
-  #modelCompare .bar .track { background: rgba(255,255,255,0.06); border-radius: 3px; }
-  .chip .testtag { margin-left: 6px; font-size: 10.5px; color: #ffd24a; }
+  /* ① Clip row */
+  #clipPick { min-width: 220px; max-width: 460px; }
+  #clipBar .clipstep { padding: 6px 10px; }
+  #clipTestBadge { font-size: 12px; color: #ffd24a; border: 1px solid #5c5022; background: #26220f; border-radius: 999px;
+                   padding: 2px 9px; white-space: nowrap; cursor: help; }
+  #clipFilter { width: 150px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong);
+                border-radius: var(--radius-sm); padding: 6px 9px; font-size: 13px; }
+  #clipFilter::placeholder { color: var(--mute); }
+  #hidraPpcHome label { display: none; }                 /* in the dialog the row's own label names it */
+  .modal .calnote { color: var(--mute); font-size: 11.5px; line-height: 1.5; margin: -6px 0 10px 108px; }
   /* 🧠 Models overview */
   #modelsBody { max-height: 72vh; overflow: auto; }
   #modelsPanel .mcard { border: 1px solid var(--border, #262b33); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
@@ -92,6 +87,7 @@
   #modelsPanel .cur { color: #9cc3ff; font-weight: 700; }
   #modelsPanel .ins { color: #6b7382; font-style: italic; }
   #modelsPanel .note { color: #8b93a2; font-size: 11.5px; line-height: 1.45; margin-top: 6px; }
+  #modelsPanel .warn { color: #ffb347; }
   #trackBadge { position: absolute; left: 10px; bottom: 10px; z-index: 5; display: flex; align-items: center; gap: 7px;
                 background: rgba(14,17,23,0.78); border: 1px solid var(--border-strong); border-radius: 9px;
                 padding: 4px 10px; font: 600 13px system-ui; color: #e6edf5; line-height: 1.3; pointer-events: none; }
@@ -178,15 +174,14 @@
   #behaviorCard, #trackCard { max-height: 56vh; overflow-y: auto; }
   /* ANNOTATE view (default): tool/action controls ABOVE the video, annotation lanes right below it.
      stageRow/playbar/overviewWrap/timeline/panels/hints keep order 0 (DOM order). */
-  #loadbar    { order: -6; }
-  #clipBar    { order: -5; }
+  #clipBar    { order: -5; }                             /* ① Clip: picker row + clip menu */
   #mediaFix   { order: -4; }                             /* missing-media banner: right under the clips it is about */
   #toolsCard  { order: -3; }                             /* paint / annotate tools */
   #actionRow  { order: -2; }                             /* train / predict / review / stats … */
   #hidraSetup { order: -1; }                             /* with the controls, not below the video */
   #featSetHelp{ order: -1; }
   /* REVIEW view: pull video + rail + lanes to the top; the controls drop back below them */
-  main.reviewing #loadbar, main.reviewing #clipBar, main.reviewing #mediaFix,
+  main.reviewing #clipBar, main.reviewing #mediaFix,
   main.reviewing #toolsCard, main.reviewing #actionRow, main.reviewing #featSetHelp,
   main.reviewing #hidraSetup { order: 0; }
   main.reviewing #trackRail, main.reviewing #behaviorRail { display: none; }   /* selectors hidden while reviewing */
@@ -236,7 +231,7 @@
                    align-items: center; justify-content: center; z-index: 50; }
   .modal-overlay.on { display: flex; }
   .modal { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px;
-           padding: 22px 24px; min-width: 440px; box-shadow: 0 24px 64px rgba(0,0,0,.55); }
+           padding: 22px 24px; min-width: min(440px, 94vw); max-width: min(580px, 94vw); box-shadow: 0 24px 64px rgba(0,0,0,.55); }
   .modal h3 { font-size: 15px; margin: 0 0 6px; }
   .modal .sub { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
   .frow { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
@@ -261,6 +256,9 @@
                                         font-size: 13px; white-space: nowrap; }
   details.menu > .menu-items > button:hover:not(:disabled) { background: var(--btn-hover); border-color: transparent; }
   details.menu > .menu-items .sub { display: block; color: var(--mute); font-size: 11.5px; font-weight: 400; }
+  details.menu > .menu-items .menu-sep { height: 1px; background: var(--border-strong); margin: 3px 6px; }
+  details.menu > .menu-items > button.danger { color: #e0777f; }
+  details.menu > .menu-items > button .mchk { color: #ffd24a; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -280,16 +278,35 @@
   </details>
 </header>
 <main>
-  <div class="row" id="loadbar">
-    <span class="stg">① Load</span>
-    <button id="loadVideoBtn">Load Video</button>
-    <button id="loadSlpBtn">Load SLP</button>
-    <span class="status" id="loadStatus"></span>
-    <input type="file" id="impVideo" accept="video/mp4,video/*" style="display:none">
-    <input type="file" id="impSlp" accept=".slp,.h5" style="display:none">
+  <!-- ① Clip: one row however many clips the project has. Previous / the picker / next, where you are, a
+       badge on a held-out test clip, and the clip menu with the rare actions (Add clip, Import labels, the
+       test-clip switch, calibration, Remove). Filled by renderClipBar. An empty project shows Add clip…
+       directly; a project with many clips also gets a filter box for the picker. -->
+  <div class="row" id="clipBar">
+    <span class="stg">① Clip</span>
+    <span id="clipNav" style="display:inline-flex; align-items:center; gap:6px">
+      <button id="clipPrev" class="clipstep" title="Previous clip (of the clips the picker lists)">◀</button>
+      <select id="clipPick" title="The clip on screen. Every clip in the project is listed as 'short name · full name'; 🧪 marks a held-out test clip. With many clips, type in the filter box to narrow the list."></select>
+      <button id="clipNext" class="clipstep" title="Next clip (of the clips the picker lists)">▶</button>
+      <span class="status" id="clipPos" style="font-variant-numeric:tabular-nums; white-space:nowrap"></span>
+      <span id="clipTestBadge" style="display:none" title="This clip is held out of all training (HiDRA fine-tunes and the project model) and is used to score models fairly in 🧠 Models. Clip ▾ → Use as test clip turns it off.">🧪 test clip</span>
+    </span>
+    <details class="menu" id="clipMenu">
+      <summary title="Add a clip, or act on the one on screen: import labels, use it as the test clip, its frame rate and scale, remove it">Clip</summary>
+      <div class="menu-items">
+        <button id="clipAddBtn" title="Add a video and its SLEAP tracking file to this project">Add clip…<span class="sub">a video and its SLEAP tracking file</span></button>
+        <button id="importBtn" title="Import labels for THIS clip from a file on the server: an event-annotator export (.json) or an interval CSV (behavior,start,end in frames)">Import labels into this clip…<span class="sub">event-annotator .json or interval .csv, by path</span></button>
+        <button id="clipTestToggle">Use as test clip<span class="sub" id="clipTestSub"></span></button>
+        <button id="clipCalibBtn" title="This clip's frame rate and, for HiDRA, its pixels per centimetre">Clip calibration…<span class="sub">frame rate · px/cm</span></button>
+        <div class="menu-sep"></div>
+        <button id="clipRemoveBtn" class="danger" title="Remove this clip from the project: its labels, cached features and predictions here. The video and tracking files on disk are kept.">Remove clip…<span class="sub">its labels and predictions in this project</span></button>
+      </div>
+    </details>
+    <input type="search" id="clipFilter" placeholder="find a clip…" autocomplete="off" spellcheck="false" style="display:none"
+           title="Narrow the clip picker to the clips whose name contains this text (any part of the full name). Enter opens the next match; Esc clears it.">
+    <span class="status" id="clipEmpty" style="display:none">No clips in this project yet.</span>
+    <button id="clipAddFirst" class="primary" style="display:none" title="Add a video and its SLEAP tracking file to this project">＋ Add clip…</button>
   </div>
-
-  <div class="row" id="clipBar"></div>
 
   <div id="stageRow">
   <aside id="trackRail" class="siderail">
@@ -446,7 +463,7 @@
   <div class="row" id="actionRow" style="flex-wrap:wrap; row-gap:8px">
     <!-- ③ Train -->
     <span class="stg">③ Train</span>
-    <button id="train" class="primary">⚙ Train</button>
+    <button id="train" class="primary" title="Fit the active behavior's model on every labeled clip (a held-out test clip never trains), then re-predict THIS clip. The other clips keep their predictions until you predict them: 🧠 Models → Bring every behavior up to date.">⚙ Train</button>
     <button id="stopTrain" style="display:none" title="Stop this training. Stopped while it trains: nothing changes, the previous model stays in use. Stopped after the new model is made (while it re-predicts clips): the new model is kept, and clips it hadn't reached keep the previous model's predictions.">■ Stop training</button>
     <select id="featSet" title="Which features this behavior's model is trained on. A lean set can beat the full one (e.g. drinking does better on spout-only — pose/social features overfit). Retrain to apply.">
       <option value="all">All features</option>
@@ -458,11 +475,7 @@
       <option value="social">Social only</option>
       <option value="social_pose">Social + pose</option>
     </select>
-    <select id="trainScope" title="After fitting, which clips to re-predict. Fitting always pools every labeled clip — this only controls how far the fresh model is applied. On a project with many (or long) clips the sweep costs far more than the fit, so 'this clip' keeps a label→train→review round fast; use 'all clips' before reading Stats, so no clip is left showing an older model's predictions.">
-      <option value="clip">predict: this clip</option>
-      <option value="all">predict: all clips</option>
-    </select>
-    <button id="predict" title="Apply the already-trained model(s) to THIS video — builds its features first if needed. Use on a newly loaded clip.">▶ Predict this video</button>
+    <button id="predict" title="Apply the already-trained model(s) to THIS clip — builds its features first if needed. Use on a newly added clip. To update every clip: 🧠 Models → Bring every behavior up to date.">▶ Predict this video</button>
     <button id="stopJob" style="display:none" title="Stop this prediction. Clips (and behaviors) already predicted keep their new predictions; nothing else changes.">■ Stop</button>
     <span class="sep"></span>
     <label class="status" id="dirGroup" style="display:none; align-items:center; gap:4px"
@@ -494,12 +507,8 @@
         <option value="window">selected window only</option>
         <option value="reviewed">reviewed frames only</option>
       </select>
-      <label class="status" for="hidraFps">fps:</label>
-      <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:62px"
-             title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. HiDRA's features are in centimetres and SECONDS, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache, because the labeler's own feature windows are specified in seconds too.">
-      <label class="status" for="hidraPpc">px/cm:</label>
-      <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:88px"
-             title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
+      <!-- the clip's px/cm (#hidraPpcWrap) is moved here from Clip ▾ → Clip calibration while it is missing (placePpc) -->
+      <span id="hidraPpcInline" style="display:inline-flex; align-items:center"></span>
       <span class="status" id="hidraNote"></span>
     </span>
     <div class="sep"></div>
@@ -557,7 +566,6 @@
     <button id="trainsetBtn" title="Which clips, mice and bouts the NEXT Train will learn from (and, for a HiDRA fine-tune, how many never-reviewed frames will train as Not-happening) — and what the current model learned from">🗂 Training set</button>
     <button id="labelStatsBtn" title="How many Happening / Not-happening bouts and frames each behavior has (enough to train?), and which you labeled by hand vs accepted from candidates">🏷 Label counts</button>
     <button id="featDiffBtn" title="How keypoint features differ between positive and negative frames">📈 Feature diff</button>
-    <button id="importBtn">Import…</button>
     <span class="status" id="metrics" style="flex-basis:100%; margin-top:2px"></span>
   </div>
 
@@ -641,10 +649,13 @@
     <div class="row" style="margin-top:0; justify-content:space-between">
       <b style="font-size:14px">🧠 Models</b>
       <span>
+        <button id="modelsAllBtn" title="Predict every out-of-date clip of every behavior with the model it uses now, one behavior after another (each one's test clips first). Clips that can't be predicted, and behaviors with no model yet, are skipped. ■ Stop keeps what is already done.">⟳ Bring every behavior up to date</button>
+        <button id="modelsAllStop" style="display:none" title="Stop the clip being predicted now and the behaviors still waiting. Clips already predicted keep their new predictions.">■ Stop</button>
         <button id="modelsRefresh" title="Read everything again (after a Train elsewhere, or a long sweep)">↻ Refresh</button>
         <button id="modelsClose">✕ Close</button>
       </span>
     </div>
+    <div class="status" id="modelsAllNote" style="display:none; margin:6px 0 0; color:#9cc3ff"></div>
     <div class="status" style="color:#6b7280; margin:8px 0 2px">Per behavior: the model in use and every earlier one, how they score, and which clips show the model in use.
       Squares are clips: <span style="color:#5fbf7f">■</span> up to date · <span style="color:#e8a33d">■</span> older model · <span style="color:#596170">■</span> never predicted · <span style="color:#a04a4a">■</span> can't predict;
       <span style="color:#ffd24a">yellow outline</span> = test clip, white ring = the clip open now. Click a square to open that clip.</div>
@@ -663,7 +674,6 @@
       <summary style="cursor:pointer; color:#8b93a2">How the stats are computed</summary>
       <div style="margin:4px 0 0 14px">Cross-validated with <b>StratifiedGroupKFold</b> where each CV group is a labeled <b>bout</b>, so adjacent frames never leak between train and test (an honest, not-optimistic estimate). <b>AP</b> = area under the precision–recall curve (threshold-free). <b>Frame P/R/F1</b> are at probability ≥ 0.5: precision = of frames the model calls the behavior, how many you labeled it; recall = of your positive frames, how many it caught. <b>Bout P/R</b> scores whole bouts — a labeled bout counts as caught if its mean cross-validated probability ≥ 0.5. Needs ≥ 2 labeled bouts per class to report.</div>
     </details>
-    <div id="modelCompare" style="margin:12px 0 4px"></div>
     <div id="statsBreakdown" style="margin:12px 0 4px"></div>
     <div class="row" style="margin:10px 0 4px; justify-content:space-between; align-items:center">
       <span class="status" style="color:#7b8494; font-size:11px; text-transform:uppercase; letter-spacing:.5px; font-weight:700" title="Observational: each point is a real past training. Lines are split by feature set (a line never joins points from different configs). For a controlled sample-efficiency curve, subsample training size with everything else fixed.">Learning curve — metric vs. labeled (by feature set)</span>
@@ -727,7 +737,7 @@
   <div class="hints" id="hintsGrid" style="margin-top:12px">
     <div class="hint-box">
       <h4>Workflow</h4>
-      <p>Import prior annotations (or paint a few) → <b>Train</b> → the model proposes bouts → <b>Review</b> each one (the timeline zooms to it): <b>[</b>/<b>]</b> trim the accept range at the playhead, <b>y</b> accept · <b>n</b> reject · <b>⏎</b> next, or paint the zoomed lane to fix specific frames → <b>Train</b> again to refine.</p>
+      <p>Import prior annotations (<b>Clip ▾ → Import labels</b>) or paint a few → <b>Train</b> → the model proposes bouts → <b>Review</b> each one (the timeline zooms to it): <b>[</b>/<b>]</b> trim the accept range at the playhead, <b>y</b> accept · <b>n</b> reject · <b>⏎</b> next, or paint the zoomed lane to fix specific frames → <b>Train</b> again to refine.</p>
     </div>
     <div class="hint-box">
       <h4>Tracks &amp; behaviors</h4>
@@ -747,11 +757,50 @@
     </div>
     <div class="hint-box">
       <h4>Video &amp; keys</h4>
-      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
+      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>◀ ▶</b> beside the clip picker change clip · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
   </div>
 
 </main>
+
+<!-- Clip ▾ → Add clip…: pick the video and its tracking file; the upload starts once both are chosen
+     (maybeUpload) and the new clip opens. Closed by Close, Esc or a click outside it. -->
+<div class="modal-overlay" id="addClipDlg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addClipTitle">
+    <h3 id="addClipTitle">Add a clip</h3>
+    <div class="sub">Choose the video and its SLEAP tracking file. Both are copied into this project's media folder, and the clip opens as soon as both are chosen.</div>
+    <div class="frow"><label>Video</label><button id="loadVideoBtn">Choose video…</button><span class="status" id="addClipVideoName"></span></div>
+    <div class="frow"><label>Tracking</label><button id="loadSlpBtn">Choose .slp / .h5…</button><span class="status" id="addClipSlpName"></span></div>
+    <div class="status" id="loadStatus" style="min-height:1.5em"></div>
+    <input type="file" id="impVideo" accept="video/mp4,video/*" style="display:none">
+    <input type="file" id="impSlp" accept=".slp,.h5" style="display:none">
+    <div class="row" style="justify-content:flex-end"><button id="addClipClose">Close</button></div>
+  </div>
+</div>
+<!-- Clip ▾ → Clip calibration…: the open clip's frame rate and (HiDRA only) pixels per centimetre. Both are
+     per clip and are model inputs. #hidraPpcWrap is moved, never copied: it sits in the Train row instead
+     while a HiDRA behavior needs the scale and the clip has none (placePpc). -->
+<div class="modal-overlay" id="clipCalibDlg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clipCalibTitle">
+    <h3 id="clipCalibTitle">Clip calibration</h3>
+    <div class="sub" id="clipCalibName" style="word-break:break-all"></div>
+    <div class="frow"><label for="hidraFps">Frame rate</label>
+      <input type="number" id="hidraFps" min="0.1" max="1000" step="0.1" placeholder="fps" style="width:88px"
+             title="Frame rate for THIS clip. Read from the container at import, and containers can be wrong — ours declares 30 for 50 fps video. Feature windows are in SECONDS, and HiDRA's features are in centimetres and seconds, so a wrong rate puts every speed and duration out by the same factor and reads as a bad classifier rather than a bad number.&#10;Changing it rebuilds this clip's feature cache.">
+      <span class="status">fps</span></div>
+    <div class="calnote">Read from the video file when the clip was added, and files can be wrong. Feature windows (and HiDRA's speeds and durations) are in seconds, so a wrong rate skews all of them. Changing it rebuilds this clip's features.</div>
+    <div id="clipCalibPpcRow">
+      <div class="frow"><label for="hidraPpc">Scale</label><span id="hidraPpcHome">
+        <span id="hidraPpcWrap" style="display:inline-flex; align-items:center; gap:5px">
+          <label class="status" for="hidraPpc">px/cm:</label>
+          <input type="number" id="hidraPpc" min="0.1" max="9999" step="0.1" placeholder="px/cm" style="width:88px"
+                 title="Pixels per centimetre for THIS clip. Required — HiDRA measures distance and speed in centimetres, so this is a model input, not a display setting, and HiDRA refuses to run without it.&#10;Never guessed for you: a plausible wrong scale changes every distance the classifier sees and the result looks like a poor classifier rather than a bad number. Measure it from something of known size in frame — a cage wall is the usual choice.">
+        </span></span><span class="status">px/cm</span></div>
+      <div class="calnote">HiDRA measures distance and speed in centimetres, so it needs this clip's scale and will not run without it. Measure it from something of known size in frame, such as a cage wall. When an automatic scale is shown in the box, leave it empty to use that.</div>
+    </div>
+    <div class="row" style="justify-content:flex-end"><button id="clipCalibClose">Done</button></div>
+  </div>
+</div>
 
 <script type="module">
 // sleap-io.js is the in-browser frame-accurate decoder. It came from a CDN as a STATIC import,
@@ -996,8 +1045,9 @@ async function boot() {
   });
   el("loadVideoBtn").onclick = () => el("impVideo").click();
   el("loadSlpBtn").onclick = () => el("impSlp").click();
-  el("impVideo").onchange = e => { pendingVideo = e.target.files[0] || null; maybeUpload(); };
-  el("impSlp").onchange = e => { pendingSlp = e.target.files[0] || null; maybeUpload(); };
+  // value reset after reading, so choosing the same file again (after a failed upload) still fires change
+  el("impVideo").onchange = e => { pendingVideo = e.target.files[0] || pendingVideo; e.target.value = ""; maybeUpload(); };
+  el("impSlp").onchange = e => { pendingSlp = e.target.files[0] || pendingSlp; e.target.value = ""; maybeUpload(); };
   await initWorkspace();
 }
 
@@ -1034,7 +1084,7 @@ async function initWorkspace() {   // multi-project: dropdown switcher + ?pid= U
     const u = new URL(location); u.searchParams.set("pid", p.pid); history.replaceState(null, "", u);
     logEvent("project_create", { pid: p.pid, name: p.name });
     await selectProject(p.pid);
-    busy(`created project "${p.name}" — load a video + SLP to begin`);
+    busy(`created project "${p.name}" — Add clip… to begin`);
   };
 
   await selectProject(start);
@@ -1057,7 +1107,7 @@ async function selectProject(pid) {
                              n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
   hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
   if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);   // most recently loaded
-  else { clearStage(); metaEl.textContent = "Load a video + SLP to begin."; }
+  else { clearStage(); metaEl.textContent = "No clips yet — Add clip… to begin."; }
 }
 
 // Nothing from the previous workspace may survive a switch: behavior ids are per-project integers, so a
@@ -1068,6 +1118,7 @@ function resetWorkspaceState() {
   el("modelsPanel").classList.remove("on"); modelsData = null;   // the 🧠 Models panel belongs to the old project
   activeBid = null; selectedSeg = null; segTrim = null; tlView = null; showDelSeg(false);
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
+  el("clipFilter").value = "";                    // a filter typed for the old project's clip names
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
 }
 
@@ -1093,6 +1144,12 @@ function clearStage() {
   renderClipBar(); renderTrackBar(); renderBehaviorBar();
 }
 
+// the header's line about the open clip (also rewritten after its fps is corrected)
+function renderClipMeta() {
+  if (!meta || !poseShape) return;
+  metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${Number(meta.fps).toFixed(1)} fps · `
+    + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
+}
 async function openVideo(vidId) {
   // A review belongs to the clip being left: left open, y/n would paint the old candidate's frame range
   // onto the new clip (applyPaint writes to the global vid).
@@ -1109,6 +1166,7 @@ async function openVideo(vidId) {
   if (imgLevels) { imgLevels = null; applyImgAdj(); }   // auto levels were measured on the old clip's lighting
   vid = vidId;
   meta = projMeta.videos.find(v => v.video_id === vidId);
+  renderClipBar();                                // the picker follows at once, before the clip has loaded
   spoutRoi = meta.spout_roi || null;              // per-clip spout ROI (from this clip's meta; falls back to project default)
   cageRoi = meta.cage_roi || null;                // per-clip cage-boundary ROI
   spout = meta.spout || null;
@@ -1128,13 +1186,11 @@ async function openVideo(vidId) {
   setZoom(1);
   scrub.max = meta.n_frames - 1; el("frameInput").max = meta.n_frames - 1;
   counter.textContent = `/ ${meta.n_frames - 1}`;   // "Frame [n] / last": the input shows the frame on screen
-  metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${meta.fps.toFixed(1)} fps · `
-    + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
+  renderClipMeta();
   await loadVideoBackend();
   predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   activeTrack = 0;
   renderTrackBar();
-  renderClipBar();
   // px/cm and fps are PER CLIP and are model inputs, so they have to follow the clip. This was only
   // called from openProject, so loading or switching a clip left the previous clip's scale on
   // screen (or a blank where one was set) -- and a scale you believe is set but is not, or belongs
@@ -1203,25 +1259,35 @@ async function autoloadCageRoi() {   // fill a clip's missing cage / spout / fee
   }
 }
 
+// Clip ▾ → Add clip… (the dialog #addClipDlg): the upload starts once both files are chosen.
 let pendingVideo = null, pendingSlp = null;
+function showPendingUpload(hint = true) {      // the chosen file names, and which file is still missing
+  el("addClipVideoName").textContent = pendingVideo ? pendingVideo.name : "";
+  el("addClipSlpName").textContent = pendingSlp ? pendingSlp.name : "";
+  if (hint && !el("loadStatus").dataset.busy)
+    el("loadStatus").textContent = pendingVideo && !pendingSlp ? "now choose its tracking file"
+      : pendingSlp && !pendingVideo ? "now choose the video" : "";
+}
 async function maybeUpload() {
   if (browseBlocked()) return;
-  const parts = [];
-  if (pendingVideo) parts.push("▸ " + pendingVideo.name);
-  if (pendingSlp) parts.push("▸ " + pendingSlp.name);
-  el("loadStatus").textContent = parts.join("  ");
+  showPendingUpload();
   if (!(pendingVideo && pendingSlp)) return;         // wait until both are chosen
-  el("loadStatus").textContent = "uploading… (large videos take a moment)";
+  const st = el("loadStatus");
+  st.textContent = "uploading… (large videos take a moment)"; st.dataset.busy = "1";
   const fd = new FormData(); fd.append("video", pendingVideo); fd.append("slp", pendingSlp);
-  const vname = pendingVideo, sname = pendingSlp; pendingVideo = pendingSlp = null;
+  const vname = pendingVideo, sname = pendingSlp, pid = PID; pendingVideo = pendingSlp = null;
   try {
-    const r = await fetch(`/api/projects/${PID}/videos/upload`, { method: "POST", body: fd });
-    if (!r.ok) { el("loadStatus").textContent = "failed: " + ((await r.json()).detail || r.status); return; }
+    const r = await fetch(`/api/projects/${pid}/videos/upload`, { method: "POST", body: fd });
+    if (!r.ok) { st.textContent = "failed: " + ((await r.json()).detail || r.status); pendingVideo = vname; pendingSlp = sname; return; }
     const v = await r.json();
-    el("loadStatus").textContent = "";
+    st.textContent = "";
+    if (PID !== pid) return;                         // another project was opened meanwhile
+    closeModal("addClipDlg");
     projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
     await openVideo(v.video_id);
-  } catch (e) { el("loadStatus").textContent = "error: " + e.message; pendingVideo = vname; pendingSlp = sname; }
+    busy(`added clip ${clipShortName(v.video_id)}`);
+  } catch (e) { st.textContent = "error: " + e.message; pendingVideo = vname; pendingSlp = sname; }
+  finally { delete st.dataset.busy; showPendingUpload(false); }   // false: keep a failure message
 }
 
 async function loadLabels() {
@@ -2703,6 +2769,7 @@ function hidraReflect() {
   const auto = meta && meta.pix_per_cm_auto;
   const autoOk = !!(auto && auto.usable);
   const needScale = bound && !(ppc > 0) && !autoOk;
+  ppcNeeded = needScale; placePpc();              // the px/cm box shows in the Train row only while it is missing
   {
     const pin = el("hidraPpc");
     pin.placeholder = autoOk ? `${auto.pix_per_cm.toFixed(1)} auto` : "px/cm";
@@ -2744,10 +2811,11 @@ function hidraReflect() {
     ? ` · scale ${auto.pix_per_cm.toFixed(1)} px/cm (automatic)` : "";
   el("hidraNote").textContent = base + autoScale + shown;
   el("hidraNote").style.color = info && info.stale ? "#ffb347" : "";
+  for (const b of [predict, train]) if (b.dataset.baseTip == null) b.dataset.baseTip = b.title;
   if (bound && !HIDRA_RT?.can_infer) {
     el("predict").title = `HiDRA cannot run here: ${HIDRA_RT?.why || "unknown"}`;
     el("train").title = el("predict").title;
-  }
+  } else { predict.title = predict.dataset.baseTip; train.title = train.dataset.baseTip; }
 }
 
 async function hidraSaveScale() {
@@ -2781,12 +2849,20 @@ async function hidraSaveFps() {
   if (!vid || browseBlocked()) return;
   const v = parseFloat(el("hidraFps").value);
   if (!isFinite(v)) return;
-  const r = await fetch(`/api/projects/${PID}/videos/${vid}/fps`, {
+  const v0 = vid, m0 = meta;                     // the clip it was typed for, even if another opens meanwhile
+  const r = await fetch(`/api/projects/${PID}/videos/${v0}/fps`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fps: v }) });
-  if (!r.ok) { busy("could not set fps: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+  if (!r.ok) {
+    busy("could not set fps: " + ((await r.json().catch(() => ({}))).detail || r.status));
+    if (m0 && vid === v0) el("hidraFps").value = m0.fps;   // show what the clip still has
+    return;
+  }
   const d = await r.json();
-  if (meta) meta.fps = d.fps;
-  logEvent("clip_fps_set", { video_id: vid, fps: d.fps });
+  if (m0) m0.fps = d.fps;
+  const m = projMeta?.videos?.find(x => x.video_id === v0);   // the manifest copy, read when the clip reopens
+  if (m) m.fps = d.fps;
+  if (vid === v0) renderClipMeta();
+  logEvent("clip_fps_set", { video_id: v0, fps: d.fps });
   busy(`fps for this clip → ${d.fps} · features rebuilding (their windows are in seconds)`);
 }
 
@@ -2983,8 +3059,6 @@ async function hidraInit() {
   };
   for (const id of ["hidraCollapse", "hidraRate"]) el(id).onchange = hidraSave;
   el("hidraTrainOn").onchange = hidraSaveTrainOn;
-  el("hidraPpc").onchange = hidraSaveScale;
-  el("hidraFps").onchange = hidraSaveFps;
   // Hide the controls that do not apply when HiDRA supplies the classifier. HIDDEN, not removed,
   // so this same file still serves the general-purpose labeler unchanged — a plain install returns
   // early above and never reaches here.
@@ -3003,38 +3077,150 @@ function clipShortName(vidId) {
   const toks = vidId.split("_");
   return toks.length >= 2 && /^\d+$/.test(toks[1]) ? `${toks[0]}_${toks[1]}` : vidId.slice(0, 16);
 }
-function renderClipBar() {
-  const bar = el("clipBar"); if (!bar) return; bar.innerHTML = "";
-  const vids = (projMeta && projMeta.videos) || [];
-  if (vids.length < 1) { bar.style.display = "none"; return; }
-  bar.style.display = "";
-  const lab = document.createElement("span"); lab.className = "status"; lab.textContent = "Clip:"; bar.appendChild(lab);
-  for (const v of vids) {
-    const chip = document.createElement("button");
-    chip.className = "chip" + (v.video_id === vid ? " active" : "");
-    chip.title = v.video_id;
-    chip.onclick = () => { if (v.video_id !== vid) openVideo(v.video_id); };
-    const name = document.createElement("span"); name.textContent = clipShortName(v.video_id); chip.appendChild(name);
-    if (v.role === "test") { const t = document.createElement("span"); t.className = "testtag"; t.textContent = "🧪 test"; t.title = "Held-out test clip: never used to train any model; scored in Stats → Model comparison"; chip.appendChild(t); }
-    const x = document.createElement("span"); x.textContent = "✕";
-    x.title = "Remove this clip from the project"; x.style.cssText = "margin-left:7px; opacity:.5; font-size:11px";
-    x.onmouseenter = () => x.style.opacity = "1"; x.onmouseleave = () => x.style.opacity = ".5";
-    x.onclick = e => { e.stopPropagation(); removeClip(v.video_id); };
-    chip.appendChild(x);
-    bar.appendChild(chip);
-  }
-  const cv = vids.find(v => v.video_id === vid);
-  if (cv) {                                             // hold the open clip out of training, for fair model scores
-    const tb = document.createElement("button");
-    const isTest = cv.role === "test";
-    tb.textContent = isTest ? "🧪 test clip ✓" : "🧪 use as test clip";
-    tb.title = isTest ? "This clip is held out of all training and used to score models fairly. Click to use it for training again."
-      : "Hold this clip out of ALL training (HiDRA fine-tunes and the project model) and use it to score models fairly in Stats → Model comparison. Review it as completely as you can.";
-    tb.onclick = () => setClipRole(cv.video_id, isTest ? null : "test");
-    bar.appendChild(tb);
+// ---------- ① Clip row: previous / picker / next, where you are, the test-clip badge, the clip menu ----------
+// One row however many clips (a chip per clip filled ~15 rows at 191 clips). The picker lists every clip as
+// 'short name · full name' (🧪 = a held-out test clip); with many clips a filter box narrows the list, and
+// ◀ ▶ then step through the matches.
+const CLIP_FILTER_MIN = 13;                     // the filter box shows from this many clips on
+function clipLabel(v) {
+  const s = clipShortName(v.video_id);
+  return (v.role === "test" ? "🧪 " : "") + (s === v.video_id ? s : `${s} · ${v.video_id}`);
+}
+function clipFilterText() {
+  const f = el("clipFilter");
+  return f && f.style.display !== "none" ? f.value.trim().toLowerCase() : "";
+}
+function clipList() {                           // the clips the picker lists: all of them, or the filter's matches
+  const vids = (projMeta && projMeta.videos) || [], q = clipFilterText();
+  return q ? vids.filter(v => v.video_id.toLowerCase().includes(q)) : vids;
+}
+function clipStep(d, from = vid) {              // the listed clip before (d < 0) or after (d > 0) the open one
+  const vids = (projMeta && projMeta.videos) || [], ci = vids.findIndex(v => v.video_id === from);
+  const list = clipList(), at = v => vids.indexOf(v);
+  return (d > 0 ? list.find(v => at(v) > ci) : list.slice().reverse().find(v => at(v) < ci)) || null;
+}
+// Clip switches go one at a time: a click on ◀/▶ while a clip is still loading opens the newest pick after it.
+let clipOpening = false, clipOpenNext = null;
+async function gotoClip(id) {
+  if (!id) return;
+  if (clipOpening) { clipOpenNext = id; return; }
+  if (id === vid) return;
+  clipOpening = true;
+  try { await openVideo(id); }
+  finally {
+    clipOpening = false;
+    const n = clipOpenNext; clipOpenNext = null;
+    if (n && n !== vid) gotoClip(n);
   }
 }
-// The open clip is the held-out test clip (🧪 "use as test clip"). Read from the project, not the clip's
+function renderClipBar() {
+  const vids = (projMeta && projMeta.videos) || [], has = vids.length > 0;
+  el("clipNav").style.display = has ? "inline-flex" : "none";
+  el("clipMenu").style.display = has ? "" : "none";
+  el("clipEmpty").style.display = has ? "none" : "";
+  el("clipAddFirst").style.display = has ? "none" : "";
+  const f = el("clipFilter"), showF = vids.length >= CLIP_FILTER_MIN;
+  f.style.display = showF ? "" : "none";
+  if (!showF) f.value = "";
+  if (!has) { el("clipPick").innerHTML = ""; return; }
+  const cur = vids.find(v => v.video_id === vid) || null, list = clipList(), q = clipFilterText();
+  // the open clip stays listed (first) even when it doesn't match, so the picker always shows what's on screen
+  const extra = cur && !list.includes(cur) ? [cur] : [];
+  el("clipPick").innerHTML = extra.concat(list).map(v =>
+    `<option value="${esc(v.video_id)}">${esc(clipLabel(v))}${extra.includes(v) ? " (open, not a match)" : ""}</option>`).join("");
+  el("clipPick").value = vid || "";
+  const i = cur ? list.indexOf(cur) : -1;
+  el("clipPos").textContent = q
+    ? (list.length ? `${i >= 0 ? i + 1 : "–"} / ${list.length} match${list.length === 1 ? "" : "es"}` : "no match")
+    : `${cur ? vids.indexOf(cur) + 1 : "–"} / ${vids.length}`;
+  el("clipPos").title = q ? `${list.length} of the ${vids.length} clips match “${f.value.trim()}”` : `clip ${cur ? vids.indexOf(cur) + 1 : "–"} of ${vids.length} in this project`;
+  el("clipPrev").disabled = !clipStep(-1);
+  el("clipNext").disabled = !clipStep(1);
+  const isTest = !!cur && cur.role === "test";
+  el("clipTestBadge").style.display = isTest ? "" : "none";
+  // the clip menu acts on the open clip
+  for (const id of ["importBtn", "clipTestToggle", "clipCalibBtn", "clipRemoveBtn"]) el(id).disabled = !cur;
+  const tt = el("clipTestToggle");
+  tt.firstChild.textContent = "Use as test clip";
+  let chk = tt.querySelector(".mchk");
+  if (isTest && !chk) { chk = document.createElement("span"); chk.className = "mchk"; chk.textContent = "✓"; tt.insertBefore(chk, el("clipTestSub")); }
+  if (!isTest && chk) chk.remove();
+  tt.setAttribute("aria-checked", isTest ? "true" : "false");
+  el("clipTestSub").textContent = isTest ? "on: held out of all training · click to train on it again"
+                                         : "hold it out of all training, to score models fairly in 🧠 Models";
+  tt.title = isTest ? "This clip is held out of all training and used to score models fairly. Click to use it for training again."
+    : "Hold this clip out of ALL training (HiDRA fine-tunes and the project model) and use it to score models fairly in 🧠 Models. Review it as completely as you can.";
+}
+// ---------- dialogs (.modal-overlay): Add clip, Clip calibration. Esc, Close or a click outside closes one;
+// while one is open the page's shortcuts are off (Space would play, letters would paint). ----------
+function openModal(id) {
+  closeMenus();
+  const m = el(id); m.classList.add("on");
+  const first = m.querySelector("input:not([type=file]):not(:disabled), button:not(:disabled)");
+  if (first) first.focus();
+}
+function closeModal(id) {
+  const m = el(id); if (!m.classList.contains("on")) return;
+  if (m.contains(document.activeElement)) document.activeElement.blur();   // a typed fps / px/cm commits here
+  m.classList.remove("on");
+  if (id === "clipCalibDlg") placePpc();
+}
+for (const id of ["addClipDlg", "clipCalibDlg"]) el(id).addEventListener("click", e => { if (e.target === el(id)) closeModal(id); });
+window.addEventListener("keydown", e => {
+  const m = document.querySelector(".modal-overlay.on"); if (!m) return;
+  if (e.key === "Escape") { e.preventDefault(); closeModal(m.id); }
+  else if (!m.contains(e.target) && e.key !== "Tab") e.preventDefault();   // nor scroll the page behind it (Space)
+  e.stopImmediatePropagation();                 // typing, Tab and Enter in the dialog still work
+}, true);
+function openAddClip() {
+  if (browseBlocked()) return;
+  showPendingUpload();
+  openModal("addClipDlg");
+}
+// px/cm lives in Clip ▾ → Clip calibration. While a HiDRA behavior needs it and this clip has none (and no
+// automatic scale), it sits in the Train row instead, where the warning is. Moved, not copied: one input, one id.
+let ppcNeeded = false;
+function placePpc() {
+  const w = el("hidraPpcWrap"); if (!w) return;
+  if (document.activeElement === el("hidraPpc")) return;   // never move a box someone is typing in
+  const inline = ppcNeeded && !el("clipCalibDlg").classList.contains("on");
+  const dest = inline ? el("hidraPpcInline") : el("hidraPpcHome");
+  if (w.parentNode !== dest) dest.appendChild(w);
+  el("hidraPpcInline").style.display = inline ? "inline-flex" : "none";
+}
+function openClipCalib() {
+  if (!meta || browseBlocked()) return;
+  el("clipCalibName").textContent = vid;
+  el("hidraFps").value = meta.fps || "";
+  el("hidraPpc").value = meta.pix_per_cm || "";
+  el("clipCalibPpcRow").style.display = HIDRA ? "" : "none";   // only HiDRA reads px/cm
+  openModal("clipCalibDlg");
+  placePpc();
+}
+el("clipPick").onchange = e => { const v = e.target.value; e.target.blur(); gotoClip(v); };   // blur: arrows scrub again
+// from the clip still waiting to open, if any, so three quick clicks move three clips
+el("clipPrev").onclick = () => { el("clipPrev").blur(); const v = clipStep(-1, clipOpenNext || vid); if (v) gotoClip(v.video_id); };
+el("clipNext").onclick = () => { el("clipNext").blur(); const v = clipStep(1, clipOpenNext || vid); if (v) gotoClip(v.video_id); };
+el("clipFilter").oninput = renderClipBar;
+el("clipFilter").onkeydown = e => {
+  if (e.key === "Enter") {                      // the next match (or the first, when the open clip isn't one)
+    e.preventDefault();
+    const list = clipList(), here = list.some(v => v.video_id === vid);
+    const t = here ? (clipStep(1) || list[0]) : list[0];
+    if (t && t.video_id !== vid) gotoClip(t.video_id);
+  } else if (e.key === "Escape") { e.preventDefault(); e.target.value = ""; e.target.blur(); renderClipBar(); }
+};
+el("clipAddBtn").onclick = openAddClip;
+el("clipAddFirst").onclick = openAddClip;
+el("addClipClose").onclick = () => closeModal("addClipDlg");
+el("clipTestToggle").onclick = () => { if (vid && !browseBlocked()) setClipRole(vid, isTestClip() ? null : "test"); };
+el("clipCalibBtn").onclick = openClipCalib;
+el("clipCalibClose").onclick = () => closeModal("clipCalibDlg");
+el("clipRemoveBtn").onclick = () => { if (vid) removeClip(vid); };
+el("hidraFps").onchange = hidraSaveFps;          // every install: the project's own features are in seconds too
+el("hidraPpc").onchange = hidraSaveScale;
+el("hidraPpc").addEventListener("blur", () => setTimeout(placePpc));
+// The open clip is the held-out test clip (Clip ▾ → Use as test clip). Read from the project, not the clip's
 // meta, so it is current right after the button is toggled.
 function isTestClip() { return (((projMeta && projMeta.videos) || []).find(v => v.video_id === vid) || {}).role === "test"; }
 async function setClipRole(vidId, role) {
@@ -3044,21 +3230,25 @@ async function setClipRole(vidId, role) {
   if (!r.ok) { alert("Could not change the clip: " + ((await r.json()).detail || r.status)); return; }
   projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
   renderClipBar();
-  busy(role ? "test clip set — it is held out of training; score models in 📊 Stats" : "clip will be used for training again");
-  if (el("statsPanel").classList.contains("on")) refreshStats();
+  busy(role ? "test clip set — it is held out of training; compare models on it in 🧠 Models" : "clip will be used for training again");
+  if (el("modelsPanel").classList.contains("on")) refreshModels(true);   // which clip is the fair test changed every score
 }
 async function removeClip(vidId) {
   if (browseBlocked()) return;
   const label = clipShortName(vidId);
-  if (!confirm(`Remove clip "${label}" from this project?\n\nThis deletes its labels, cached features, and predictions for this project. `
+  if (!confirm(`Remove clip "${label}" from this project?\n\n${label === vidId ? "" : vidId + "\n\n"}This deletes its labels, cached features, and predictions for this project. `
     + `The source video/SLP file on disk is NOT deleted.`)) return;
   const r = await api(`/videos/${vidId}`, { method: "DELETE" });
   if (!r.ok) { alert("Could not remove clip: " + ((await r.json()).detail || r.status)); return; }
   const wasActive = vidId === vid;
+  const before = projMeta.videos.map(v => v.video_id), at = before.indexOf(vidId);
   projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
   if (wasActive || !projMeta.videos.some(v => v.video_id === vid)) {
-    if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);
-    else { vid = null; renderClipBar(); renderBehaviorBar(); metaEl.textContent = "No clips left — load a video + SLP to begin."; }
+    // open its neighbour in the list: the clip after it, or before it when it was the last
+    const left = new Set(projMeta.videos.map(v => v.video_id));
+    const next = before.slice(at + 1).find(v => left.has(v)) || before.slice(0, Math.max(0, at)).reverse().find(v => left.has(v));
+    if (next) await openVideo(next);
+    else { closeReview(); clearStage(); metaEl.textContent = "No clips left — Add clip… to begin."; }
   } else {
     renderClipBar();   // removed a non-active clip — stay on the current one
   }
@@ -3184,68 +3374,8 @@ async function refreshStats() {
     if (cd && cb) statsCompare = { history: cd.history || [], meta: cd.meta, name: cb.name, color: cb.color || "#c9a227" };
   }
   renderStats(d.history || [], d.meta);
-  await refreshModelCompare();
 }
-// ---- Model comparison: every model that has predicted this behavior, scored on reviewed frames ----
-const fmt3 = x => x == null ? "—" : Number(x).toFixed(3);
-async function refreshModelCompare() {
-  const box = el("modelCompare"); if (!box || activeBid == null) return;
-  const r = await api(`/behaviors/${activeBid}/compare`);
-  if (!r.ok) { box.innerHTML = ""; return; }
-  renderModelCompare(await r.json());
-}
-function renderModelCompare(d) {
-  const box = el("modelCompare");
-  const bound = !!(behaviors.find(b => b.id === activeBid) || {}).hidra;
-  const models = (d.models || []).filter(m => m.comparable !== false);
-  if (!models.length && !bound) { box.innerHTML = ""; return; }   // nothing to compare for a plain native behavior with no predictions yet
-  const testNames = (d.test_videos || []).map(clipShortName);
-  const cell = (s, inSample) => {
-    if (!s) return `<td>—</td><td>—</td><td>—</td>`;
-    const c = inSample ? ' class="ins"' : "", thin = s.thin ? ` <span class="warn" title="fewer than ${d.min_per_class} positive or negative frames — too few to trust">⚠</span>` : "";
-    return `<td${c}>${fmt3(s.ap)}${thin}</td><td${c}>${fmt3(s.auroc)}</td>`
-      + `<td${c} title="precision ${fmt3(s.precision)} · recall ${fmt3(s.recall)} · ${s.n_pos}+ / ${s.n_neg}− frames">${fmt3(s.best_f1)}</td>`;
-  };
-  const rows = models.map(m => {
-    const sc = m.scores || {}, train = sc.train_out || sc.train_in, inS = !sc.train_out && !!sc.train_in && m.kind !== "zeroshot";
-    const tag = m.kind === "zeroshot" ? "" : (inS ? ' <span class="ins">(in-sample)</span>' : (sc.train_out ? ' <span>(not trained on these)</span>' : ""));
-    const kept = m.kind === "finetune" && m.models_kept === false ? ' <span class="ins" title="checkpoints pruned (only the last 3 fine-tunes are kept); its stored scores remain">· pruned</span>' : "";
-    return `<tr><td class="m">${m.current ? '<span class="cur" title="the model Predict uses now">● </span>' : ""}${esc(m.label)}${kept}</td>`
-      + (sc.test ? cell(sc.test, false).replace(/<\/td>$/, m.test_partial ? ` <span class="warn" title="scored on ${(m.test_clips || []).length} of ${(d.test_videos || []).length} test clips — compute it on the rest for a like-for-like number">◐</span></td>` : "</td>")
-         : (m.test_in_sample || []).length ? `<td colspan="3" class="ins" title="this model trained on the test clip (before it was marked test), so its score there is in-sample — retrain to get a fair score">trained on it</td>` : cell(null, false))
-      + cell(train, inS) + `<td class="m" style="font-size:11px">${tag}</td></tr>`;
-  }).join("");
-  const testScored = models.filter(m => m.scores && m.scores.test && m.scores.test.ap != null);
-  const maxAp = Math.max(0.0001, ...testScored.map(m => m.scores.test.ap));
-  const bars = testScored.length >= 1 ? `<div class="bars">${testScored.map(m =>
-      `<div class="bar"><span>${esc(m.kind === "native" ? m.label.replace("project model · ", "project ") : m.label.split(" · ")[0])}${m.test_partial ? " ◐" : ""}</span><span class="track"><div class="fill" style="width:${(100 * m.scores.test.ap / maxAp).toFixed(1)}%"></div></span><b>${fmt3(m.scores.test.ap)}</b></div>`).join("")}</div>` : "";
-  const cov = Object.entries(d.test_coverage || {}).map(([v, c]) =>
-      `${esc(clipShortName(v))}: ${c.n_pos}+ / ${c.n_neg}− reviewed frames (${(100 * c.labeled_frac).toFixed(1)}% of frame×animal)`).join(" · ");
-  const testInfo = testNames.length
-    ? `<div class="note">Test clip: <b>${testNames.map(esc).join(", ")}</b> — held out of all training. ${cov}</div>`
-    : `<div class="callout"><b>No test clip yet, so there's no fair score.</b> A fine-tune trains on every frame of the clips it used, so scoring it on those clips is in-sample (shown in grey). `
-      + `To compare fairly: open a clip that hasn't been used to train this behavior, click <b>🧪 use as test clip</b> in the clip bar, review it, then come back here.</div>`;
-  const buttons = (d.can_compute || []).map(c => `<button data-model="${esc(c.model)}" class="mcRun">▶ score ${esc(c.label)} on the test clip</button>`).join(" ");
-  box.innerHTML = `<h4>Model comparison — ${esc(bname(activeBid))}</h4>${testInfo}`
-    + (models.length ? `<table><thead><tr><th class="m">model</th><th colspan="3">test clip (fair) — AP · AUROC · best F1</th><th colspan="3">training clips — AP · AUROC · best F1</th><th class="m"></th></tr></thead><tbody>${rows}</tbody></table>`
-       : `<div class="note">No predictions stored for this behavior yet — press ▶ Predict.</div>`)
-    + (bars ? `<div class="note" style="margin-top:10px"><b>AP on the test clip</b>, per model:</div>${bars}` : "")
-    + (buttons ? `<div class="row" style="margin-top:8px; gap:6px; flex-wrap:wrap">${buttons}</div><div class="note">Each runs that model over the test clip only (≈1–2 min); your timeline and review queue are not changed.</div>` : "")
-    + `<div class="note">Scored on reviewed frames only (Happening vs Not-happening; unlabeled and Unknown excluded). AP and AUROC don't depend on a threshold; best F1 uses each model's own best threshold (hover for precision/recall). `
-    + `Reviewed frames aren't a random sample — review visits what a model proposed — so treat small differences with caution, and review the test clip as completely as you can.</div>`;
-  box.querySelectorAll(".mcRun").forEach(b => b.onclick = () => runCompareModel(b.dataset.model, b));
-}
-async function runCompareModel(model, btn) {
-  if (btn) btn.disabled = true;
-  const r = await api(`/behaviors/${activeBid}/compare/run?model=${encodeURIComponent(model)}`, { method: "POST" });
-  if (!r.ok) { busy("could not start: " + ((await r.json()).detail || r.status)); if (btn) btn.disabled = false; return; }
-  const { job_id } = await r.json();
-  pollJob(job_id, async s => {
-    if (s.status === "error") { busy("scoring failed: " + String(s.error || "").slice(0, 300)); if (btn) btn.disabled = false; return; }
-    busy("scored on the test clip — see 📊 Stats → Model comparison");
-    if (el("statsPanel").classList.contains("on")) await refreshModelCompare();
-  });
-}
+const fmt3 = x => x == null ? "—" : Number(x).toFixed(3);   // the 🧠 Models scores
 function sbar(label, pos, neg) {
   const tot = Math.max(1, pos + neg);
   return `<div class="sbar"><span class="lab">${label}</span><span class="track">`
@@ -3662,7 +3792,8 @@ async function copyTrainset() {
 // ---------- 🧠 Models overview: models per behavior, their scores, and which clips show the one in use ----------
 // GET /models is cheap (small files only); scores come from /behaviors/{bid}/compare, which reads every
 // stored prediction, so they load one behavior at a time after the panel is drawn and are kept until
-// ↻ Refresh. "Predict the out-of-date clips" is POST /behaviors/{bid}/predict: one behavior, those clips.
+// ↻ Refresh. "Predict the out-of-date clips" is POST /behaviors/{bid}/predict: one behavior, those clips;
+// ⟳ Bring every behavior up to date runs it for each behavior in turn (modelsUpdateAll).
 const MS_COLOR = { current: "#5fbf7f", older: "#e8a33d", none: "#596170", blocked: "#a04a4a" };
 const MS_NAME = { current: "up to date", older: "older model", none: "never predicted", blocked: "can't predict" };
 let modelsData = null, modelsPid = null, modelsGen = 0;
@@ -3723,10 +3854,11 @@ function msEstimate(b, n) {
 }
 function renderModels() {
   const host = el("modelsBody"); host.innerHTML = "";
+  modelsAllSync();                                 // ⟳ Bring every behavior up to date: enabled only with something to do
   const bs = (modelsData || {}).behaviors || [];
   if (!bs.length) { host.innerHTML = `<div class="status">No behaviors yet.</div>`; return; }
   const noTest = !(modelsData.videos || []).some(v => v.role === "test");
-  if (noTest) host.insertAdjacentHTML("beforeend", `<div class="mwarn" style="margin:6px 0">No test clip yet, so no model has a fair score: scores on clips a model trained on run high. Open a clip you haven't trained on, click <b>🧪 use as test clip</b>, label it, and predict it.</div>`);
+  if (noTest) host.insertAdjacentHTML("beforeend", `<div class="mwarn" style="margin:6px 0">No test clip yet, so no model has a fair score: scores on clips a model trained on run high. Open a clip you haven't trained on, choose <b>Clip ▾ → Use as test clip</b>, label it, and predict it.</div>`);
   for (const b of bs) {
     const card = document.createElement("div"); card.className = "mcard"; card.id = `mcard-${b.behavior_id}`;
     host.appendChild(card); renderModelCard(b);
@@ -3790,6 +3922,10 @@ function renderModelCard(b) {
         + `<td class="num">${m.kind === "zeroshot" ? `<span class="ins">pretrained</span>` : msDate(m.when) || "—"}</td><td>${m.extra ? `<span class="ins">no longer on the behavior's list</span>` : msLearned(m)}</td><td class="num">${test}</td><td class="num">${train}</td></tr>`;
     }
     html += `</tbody></table>`;
+    // how much of the test clips is labeled for this behavior: a fair score is only as good as that
+    const cov = sc && !sc.error ? Object.entries(sc.test_coverage || {}) : [];
+    if (cov.length) html += `<div class="note">Test clip${cov.length === 1 ? "" : "s"}, labeled for ${esc(b.name) || "this behavior"}: ` + cov.map(([v, c]) =>
+      `${esc(clipShortName(v))} ${c.n_pos}+ / ${c.n_neg}− reviewed frames (${(100 * c.labeled_frac).toFixed(1)}% of frame×animal)`).join(" · ") + `</div>`;
     if (b.other_head_runs) html += `<div class="note">${b.other_head_runs} fine-tune${b.other_head_runs === 1 ? "" : "s"} of a different HiDRA head not shown.</div>`;
   }
   card.innerHTML = html;
@@ -3826,21 +3962,27 @@ async function modelsPredict(b) {
   modelsWatch(bid, job_id, b.name, "starting…");
 }
 // Follow a "predict these clips" job: progress on its card, ■ Stop, and a refresh when it ends. Started
-// by modelsPredict, or by refreshModels for a sweep the server reports as running (e.g. after a reload).
+// by modelsPredict, by ⟳ Bring every behavior up to date (which waits on the returned promise: the job's
+// final state, or null when it can no longer be followed), or by refreshModels for a sweep the server
+// reports as running (e.g. after a reload).
 function modelsWatch(bid, jid, name, msg) {
   const pid = PID;
+  let settle; const ended = new Promise(res => { settle = res; });
   modelsSweeps.set(bid, { jid, msg: msg || "running…" });
   const cardB = ((modelsData || {}).behaviors || []).find(x => x.behavior_id === bid);
   if (cardB && el(`mcard-${bid}`)) renderModelCard(cardB);
   const t = setInterval(async () => {
-    if (PID !== pid) { clearInterval(t); return; }          // another project is open now
+    if (PID !== pid) { clearInterval(t); settle(null); return; }   // another project is open now
     let s;
     try { const r = await api(`/jobs/${jid}`); s = r.ok ? await r.json() : null; } catch (e) { return; }
     const sw = modelsSweeps.get(bid);
-    if (!sw || sw.jid !== jid) { clearInterval(t); return; }
-    if (!s || !s.status) { clearInterval(t); modelsSweeps.delete(bid); return; }   // server restarted: the job is gone
-    sw.msg = `${s.msg || s.status}${s.pct != null ? ` (${s.pct}%)` : ""}`;
-    if (!["done", "error", "cancelled"].includes(s.status)) { const sp = document.querySelector(`#mcard-${bid} .mact span`); if (sp) sp.textContent = sw.msg; return; }
+    if (!sw || sw.jid !== jid) { clearInterval(t); settle(null); return; }
+    if (!s || !s.status) { clearInterval(t); modelsSweeps.delete(bid); settle(null); return; }   // server restarted: the job is gone
+    if (sw.msg !== "stopping…" || ["done", "error", "cancelled"].includes(s.status)) sw.msg = `${s.msg || s.status}${s.pct != null ? ` (${s.pct}%)` : ""}`;
+    if (!["done", "error", "cancelled"].includes(s.status)) {
+      const sp = document.querySelector(`#mcard-${bid} .mact span`); if (sp) sp.textContent = sw.msg;
+      modelsAllSync(); return;
+    }
     clearInterval(t); modelsSweeps.delete(bid);
     const q = s.result || {}, done = (q.videos || []).length, sk = q.skipped || [], tot = q.total ?? done + sk.length;
     busy(s.status === "error" ? `${name}: predicting failed — ${String(s.error || "").slice(0, 200)}`
@@ -3850,7 +3992,100 @@ function modelsWatch(bid, jid, name, msg) {
     modelsScores.delete(bid);
     if ((q.videos || []).includes(vid)) { await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline(); }
     if (el("modelsPanel").classList.contains("on")) await refreshModels(false);
+    settle(s);
   }, 1000);
+  return ended;
+}
+// ⟳ Bring every behavior up to date: the per-card "▶ Predict the N out-of-date clips", for every behavior, one
+// after another. POST /behaviors/{bid}/predict with no clip list predicts that behavior's out-of-date clips,
+// its test clips first. Behaviors with no model, or nothing predicting would fix, are skipped. ■ Stop cancels
+// the clip being predicted (what's done is kept) and drops the behaviors still waiting.
+let modelsAll = null, modelsAllLast = null;   // the run in progress {pid, queue, i, stop, jid, results}; the last one's summary
+function modelsAllTodo() {
+  return ((modelsData || {}).behaviors || []).filter(b => b.engine !== "none" && (b.fixable || []).length && !modelsSweeps.has(b.behavior_id));
+}
+function modelsAllSync() {
+  const btn = el("modelsAllBtn"), stopB = el("modelsAllStop"), note = el("modelsAllNote");
+  const run = modelsAll && modelsAll.pid === PID ? modelsAll : null;
+  stopB.style.display = run ? "" : "none";
+  stopB.disabled = !!(run && run.stop);
+  const todo = modelsAllTodo();
+  btn.disabled = !!run || (!!modelsData && modelsPid === PID && !todo.length);
+  btn.title = btn.disabled && !run ? "Nothing to do: every behavior's clips are up to date, or the ones that aren't can't be fixed by predicting (see each card)."
+    : "Predict every out-of-date clip of every behavior with the model it uses now, one behavior after another (each one's test clips first). Clips that can't be predicted, and behaviors with no model yet, are skipped. ■ Stop keeps what is already done.";
+  if (run) {
+    const q = run.queue[run.i], sw = q && modelsSweeps.get(q.bid);
+    note.textContent = run.stop ? "stopping…"
+      : `⟳ ${run.i + 1} of ${run.queue.length}: ${q ? q.name : ""}${sw ? ` · ${sw.msg}` : " · starting…"}`
+        + (run.queue.length > run.i + 1 ? ` · then ${run.queue.slice(run.i + 1).map(x => x.name).join(", ")}` : "");
+    note.style.display = "";
+  } else if (modelsAllLast && modelsAllLast.pid === PID) { note.textContent = modelsAllLast.text; note.style.display = ""; }
+  else note.style.display = "none";
+}
+async function modelsUpdateAll() {
+  if (modelsAll) return;
+  el("modelsAllBtn").blur();
+  await refreshModels(false);                      // today's out-of-date counts
+  const todo = modelsAllTodo();
+  if (!todo.length) { busy("nothing to bring up to date: every behavior's clips are current, or can't be predicted (see each card)"); modelsAllSync(); return; }
+  const nClips = todo.reduce((a, b) => a + b.fixable.length, 0);
+  const nH = todo.filter(b => b.engine === "hidra").reduce((a, b) => a + b.fixable.length, 0);
+  const lines = todo.map(b => `• ${b.name}: ${b.fixable.length} clip${b.fixable.length === 1 ? "" : "s"}${b.engine === "hidra" ? " (HiDRA)" : ""}`).join("\n");
+  const dur = x => x < 90 ? `${x} min` : `${(x / 60).toFixed(1)} h`;
+  if (nH > 3 && !confirm(`Bring every behavior up to date?\n\n${lines}\n\nHiDRA takes about 1–2 min per clip, so the ${nH} HiDRA clips take about ${dur(nH)}–${dur(2 * nH)}. `
+      + `The behaviors run one after another in the background: you can keep labeling, and ■ Stop keeps what's already done.`)) return;
+  const pid = PID, run = { pid, queue: todo.map(b => ({ bid: b.behavior_id, name: b.name || `behavior ${b.behavior_id}` })), i: 0, stop: false, jid: null, results: [] };
+  modelsAll = run; modelsAllLast = null;
+  logEvent("models_predict_all", { n_behaviors: todo.length, n_clips: nClips });
+  modelsAllSync();
+  try {
+    for (; run.i < run.queue.length; run.i++) {
+      if (run.stop || PID !== pid) break;
+      const q = run.queue[run.i];
+      modelsAllSync();
+      if (modelsSweeps.has(q.bid)) { run.results.push({ name: q.name, note: "was already predicting" }); continue; }   // started from its card meanwhile
+      let r;
+      try { r = await api(`/behaviors/${q.bid}/predict`, { method: "POST" }); }
+      catch (e) { run.results.push({ name: q.name, error: String(e.message || e) }); continue; }
+      if (!r.ok) {
+        const d = String((await r.json().catch(() => ({}))).detail || r.status);
+        run.results.push(/nothing to predict/.test(d) ? { name: q.name, done: 0, tot: 0 } : { name: q.name, error: d });
+        continue;
+      }
+      const j = await r.json();
+      logEvent("models_predict", { target_behavior_id: q.bid, name: q.name, n_clips: (j.videos || []).length, all_behaviors: true });
+      run.jid = j.job_id;
+      if (run.stop) await api(`/jobs/${j.job_id}/cancel`, { method: "POST" }).catch(() => null);   // ■ Stop hit while it was starting
+      const s = await modelsWatch(q.bid, j.job_id, q.name, "starting…");
+      run.jid = null;
+      const res = (s && s.result) || {};
+      run.results.push(!s ? { name: q.name, note: "could not be followed" }
+        : s.status === "error" ? { name: q.name, error: String(s.error || "failed").slice(0, 160) }
+        : { name: q.name, done: (res.videos || []).length, tot: res.total ?? (j.videos || []).length, failed: (res.skipped || []).length,
+            stopped: s.status === "cancelled" || !!res.stopped });
+    }
+  } finally {
+    modelsAll = null;
+    const parts = run.results.map(x => x.error ? `${x.name}: failed (${x.error})` : x.note ? `${x.name}: ${x.note}`
+      : `${x.name}: ${x.tot ? `${x.done} of ${x.tot} clip${x.tot === 1 ? "" : "s"}` : "already up to date"}${x.failed ? `, ${x.failed} could not be predicted` : ""}${x.stopped ? " (stopped)" : ""}`);
+    const left = run.queue.slice(run.results.length).map(x => x.name);
+    const text = (run.stop ? "■ Stopped. " : "✓ Done. ") + (parts.join(" · ") || "nothing predicted")
+      + (left.length ? ` · not started: ${left.join(", ")}` : "");
+    modelsAllLast = { pid, text };
+    if (PID === pid) {
+      busy(text);
+      if (el("modelsPanel").classList.contains("on")) await refreshModels(false);
+    }
+    modelsAllSync();
+  }
+}
+async function modelsAllStopNow() {
+  const run = modelsAll; if (!run || run.stop) return;
+  run.stop = true; el("modelsAllStop").blur(); modelsAllSync();
+  const q = run.queue[run.i], sw = q && modelsSweeps.get(q.bid), jid = run.jid || (sw && sw.jid);
+  if (sw) sw.msg = "stopping…";
+  if (jid) await api(`/jobs/${jid}/cancel`, { method: "POST" }).catch(() => null);
+  logEvent("models_predict_stop", { target_behavior_id: q ? q.bid : null, all_behaviors: true });
 }
 async function modelsStop(bid, btn) {
   const sw = modelsSweeps.get(bid); if (!sw) return;
@@ -3980,11 +4215,15 @@ function renderLabelStats(d) {
 
 // ---------- feature differences: how keypoint features separate positive vs negative frames ----------
 // These are the project model's own features; a HiDRA classifier never sees them, so the button is
-// hidden while the active behavior is bound to HiDRA (and its panel closed).
+// hidden while the active behavior is bound to HiDRA (and its panel closed). The same goes for 📊 Stats:
+// only the project's own model writes the training history it plots, so a HiDRA behavior would show dashes
+// and '0 pos / 0 neg' whatever it has labeled. HiDRA behaviors are scored in 🧠 Models.
 function syncFeatDiffBtn() {
   const b = behaviors.find(x => x.id === activeBid), hidra = !!(b && b.hidra && b.hidra.action);
-  el("featDiffBtn").style.display = hidra ? "none" : "";
-  if (hidra) el("featDiffPanel").classList.remove("on");
+  for (const [btn, panel] of [["featDiffBtn", "featDiffPanel"], ["statsBtn", "statsPanel"]]) {
+    el(btn).style.display = hidra ? "none" : "";
+    if (hidra) el(panel).classList.remove("on");
+  }
 }
 async function openFeatureDiff() {
   if (activeBid == null) { busy("select a behavior first"); return; }
@@ -4267,11 +4506,12 @@ async function trainJob() {
   const vid0 = vid;                                                               // ...and the clip (the user may switch clips during a long fine-tune)
   const t0 = Date.now();                                                          // wall-clock of the train job (feature compute + CV + fit)
   busy("starting…");
-  // Scope the post-fit prediction sweep (the fit itself always pools every labeled clip). Sweeping a
-  // 17-clip project costs minutes; re-predicting just the clip under review costs seconds.
-  const scope = (el("trainScope") || {}).value === "all" ? "" : `?predict_videos=${encodeURIComponent(vid0)}`;
+  // The fit always pools every labeled clip; only the clip on screen is re-predicted afterwards. Sweeping a
+  // 191-clip project costs minutes (hours with HiDRA); the clip under review costs seconds. The other clips
+  // are brought up to date from 🧠 Models, which predicts only the ones that are out of date.
+  const scope = `?predict_videos=${encodeURIComponent(vid0)}`;
   const bh = (behaviors.find(x => x.id === bid) || {}).hidra;
-  logEvent("train_click", { behavior_id: bid, name: bname, scope: scope ? "this clip" : "all clips",
+  logEvent("train_click", { behavior_id: bid, name: bname, scope: "this clip",
                             train_on: bh && bh.action ? (bh.train_on || (bh.reviewed_only ? "reviewed" : "all")) : null });
   const r = await api(`/behaviors/${bid}/train${scope}`, { method: "POST" });
   if (!r.ok) { const d = (await r.json()).detail; logEvent("train_error", { behavior_id: bid, name: bname, error: String(d).slice(0, 200) }); busy("train error: " + d); return; }
@@ -4322,7 +4562,7 @@ async function trainJob() {
           + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
           + `(this only proves the pipeline; run Train without smoke for the real fit)`);
       } else {
-        // The fit is followed by a predict on the "predict:" scope, so say where the new weights now show
+        // The fit is followed by a predict of the clip it was started on, so say where the new weights now show
         const ap = r.predict || {}, nOk = (ap.videos || []).length, sk = ap.skipped || [];
         const here = (ap.videos || []).includes(vid);
         const applied = here ? `applied to ${nOk === 1 ? "this clip" : `${nOk} clips`} — the timeline now shows the fine-tuned model`
@@ -4334,11 +4574,11 @@ async function trainJob() {
       }
     } else if (r) {                            // make it explicit that ALL tracks & clips were pooled, not just the active one
       const tks = (r.tracks || []).map(t => `t${t}:${(r.pos_by_track || {})[t] || 0}+`).join(" ");
-      // ...and equally explicit about how far the fresh model was APPLIED, which is a separate choice
-      const nPred = ((r.predict || {}).videos || []).length;
-      const applied = nPred === (r.videos_used || []).length && nPred > 1 ? `re-predicted all ${nPred} clips`
-                    : nPred ? `re-predicted ${nPred} clip${nPred > 1 ? "s" : ""} (others show the previous model)`
-                    : "no clips re-predicted";
+      // ...and equally explicit about how far the fresh model was APPLIED: the clip Train was started on
+      const pv = (r.predict || {}).videos || [], nPred = pv.length, nClips = (projMeta.videos || []).length;
+      const applied = !nPred ? "no clips re-predicted"
+                    : (nPred === 1 ? (pv[0] === vid ? "re-predicted this clip" : `re-predicted ${clipShortName(pv[0])}`) : `re-predicted ${nPred} clips`)
+                      + (nClips > nPred ? " (the others show the previous model until 🧠 Models brings them up to date)" : "");
       busy(`Trained on ${r.n_pos}+/${r.n_neg}− frames · ${r.n_pos_bouts}+/${r.n_neg_bouts}− bouts · `
         + `${(r.tracks || []).length} tracks (${tks}) · ${(r.videos_used || []).length} clips · ${applied}`);
     }
@@ -4360,18 +4600,17 @@ async function stopPredict() {
   if (run.jid) await api(`/jobs/${run.jid}/cancel`, { method: "POST" }).catch(() => null);
   logEvent("predict_stop", { video_id: vid });
 }
-async function predictJob() {   // apply existing model(s), NO retrain — current clip, or ALL clips when trainScope = "all"
-  if (browseBlocked()) return;
-  const all = (el("trainScope") || {}).value === "all";
-  const targets = all ? (projMeta.videos || []).map(v => v.video_id) : [vid];
+async function predictJob() {   // apply existing model(s), NO retrain — to the clip on screen (every clip: 🧠 Models)
+  if (browseBlocked() || !vid) return;
+  const targets = [vid];
   const pT0 = Date.now();
-  logEvent("predict_click", { video_id: vid, scope: all ? "all" : "this", n: targets.length });
+  logEvent("predict_click", { video_id: vid, scope: "this", n: targets.length });
   let ok = 0; const errs = [];
   let stopped = false;
   for (let i = 0; i < targets.length; i++) {
     const tv = targets[i];
     if (predictRun && predictRun.stop) { stopped = true; break; }
-    busy(all ? `predicting clip ${i + 1}/${targets.length}…` : "starting prediction…");
+    busy("starting prediction…");
     let r;
     try { r = await api(`/videos/${tv}/predict`, { method: "POST" }); }
     catch (e) { errs.push(`${tv.slice(0, 16)}…: ${e.message}`); continue; }
@@ -4404,13 +4643,13 @@ async function predictJob() {   // apply existing model(s), NO retrain — curre
     }
   }
   await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
-  if (stopped) { busy(`prediction stopped${all ? ` after ${ok} of ${targets.length} clips` : ""} — anything already predicted keeps its new predictions`); return; }
-  if (errs.length) busy(`predicted ${ok}/${targets.length}${all ? " clips" : ""} — ${errs.length} failed: ${errs[0]}`);
-  else busy(all ? `prediction done — all ${ok} clip${ok !== 1 ? "s" : ""}` : (ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first"));
+  if (stopped) { busy("prediction stopped — anything already predicted keeps its new predictions"); return; }
+  if (errs.length) busy(`prediction failed: ${errs[0]}`);
+  else busy(ok ? "prediction done" : "no trained models to predict with yet — Train a behavior first");
 }
-async function importFile() {
-  if (browseBlocked()) return;
-  const path = prompt("Path to annotations on the server:\n • event-annotator export (.json), or\n • interval CSV (.csv: behavior,start,end in frames)");
+async function importFile() {   // Clip ▾ → Import labels into this clip…
+  if (!vid || browseBlocked()) return;
+  const path = prompt(`Import labels into ${clipShortName(vid)}.\n\nPath to annotations on the server:\n • event-annotator export (.json), or\n • interval CSV (.csv: behavior,start,end in frames)`);
   if (!path) return;
   const isJson = path.toLowerCase().endsWith(".json");
   const url = isJson ? `/videos/${vid}/import-events` : `/videos/${vid}/import`;
@@ -4970,6 +5209,7 @@ function browseCanStart() {                       // checked before and after an
 // While browsing, every control that could change something is made inert (no clicks, no focus), so no
 // write can start and no control can show a value the server never got. Browse's own controls, the detect
 // slider and min bout stay live. Clip and project switching stay live too and simply close browse.
+// (px/cm in the Train row while it is missing is inside #hidraGroup, so it is locked with the action row.)
 const BROWSE_LIVE = new Set(["browseWhich", "browseOrder", "browseLabels", "browseBtn", "predThresh", "predThreshVal",
                              "predThreshCount", "predMinBout", "metrics"]);
 function setBrowseLock(on) {
@@ -4977,7 +5217,8 @@ function setBrowseLock(on) {
   const pn = el("projNew"); if (pn) pn.disabled = on;   // "New project…" in the picker (switching project stays live)
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
-  for (const id of ["loadbar", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix"]) lock(el(id));
+  // the clip menu and its dialogs (Add clip, calibration) are locked; the picker and ◀ ▶ stay live (a switch closes browse)
+  for (const id of ["clipMenu", "clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "featSetHelp", "mediaFix"]) lock(el(id));
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("stg");
     if (!live) lock(n);
@@ -5432,6 +5673,8 @@ el("labelStatsBtn").onclick = openLabelStats;
 el("labelStatsClose").onclick = () => el("labelStatsPanel").classList.remove("on");
 el("modelsBtn").onclick = openModels;
 el("modelsRefresh").onclick = () => refreshModels(true);
+el("modelsAllBtn").onclick = modelsUpdateAll;
+el("modelsAllStop").onclick = modelsAllStopNow;
 el("modelsClose").onclick = () => el("modelsPanel").classList.remove("on");
 el("featDiffBtn").onclick = openFeatureDiff;
 el("featDiffClose").onclick = () => el("featDiffPanel").classList.remove("on");
