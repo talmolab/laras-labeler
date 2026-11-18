@@ -590,7 +590,7 @@ class Predictor:
 
     def remaining(self, pid: str, vid: str, bid: int) -> dict:
         """Per-animal count of 'new' review candidates still unlabeled on one clip — exactly what each
-        track's queue would still serve, however many batches it takes. A queue loads candN at a time,
+        track's queue would still serve, however many batches it takes. A queue loads a batch (10) at a time,
         so 'the batch ran out' says nothing about the queue; this does. Iterates the prediction lanes
         (not the tracks that happen to have labels), so an animal never opened still counts. Read-only."""
         tracks = {str(t): len(self.candidates(pid, vid, bid, t, n=10**9, mode="new"))

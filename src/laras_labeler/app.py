@@ -1461,7 +1461,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def get_remaining(pid: str, vid: str, bid: int):
         """How many 'new' candidates each animal's queue still holds on this clip:
         {video_id, behavior_id, tracks: {"0": n, ...}, total, mode: "new"}. The review queue serves
-        candN at a time, so an exhausted batch is not an empty queue; this is the number that says
+        a batch (10) at a time, so an exhausted batch is not an empty queue; this is the number that says
         whether a clip x behavior x animal is done. Read-only and unlogged, so the GUI can refresh it
         after every decision."""
         _behavior(pid, bid)
@@ -1907,7 +1907,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         proj.save()
         return beh["hidra"]
 
-    # ---- model comparison (Stats panel): zero-shot vs each fine-tune vs native, on a held-out test clip
+    # ---- model comparison (shown in 🧠 Models): zero-shot vs each fine-tune vs native, on a held-out test clip
     # ── 🧠 Models overview: every behavior's models and which clips show the one in use ──────────
     @app.get("/api/projects/{pid}/models")
     def models_overview(pid: str):
