@@ -607,6 +607,7 @@
         </label>
         <div class="bset-hint" id="objHint">Ticking it shows the Objects card beside the video, where you tick what each bout is on.</div>
         <div class="menu-sep"></div>
+        <div class="bset-hint" id="bsetReviewHint" style="display:none">Finish the review (Done) to duplicate or delete this behavior.</div>
         <details class="bsub" id="bsetDup">
           <summary title="A parallel copy of this behavior, to compare how many labels each way needs. The original is untouched.">Duplicate behavior…</summary>
           <button id="cloneSeed" title="Parallel copy with only the INITIAL/seed labels (your hand-painted + imported bouts, NOT the candidate-review ones). Same starting point, but the copy runs its OWN candidate process + further labeling. (original untouched)">with its seed labels<span class="sub">hand-painted and imported bouts, not the reviewed ones</span></button>
@@ -1013,9 +1014,11 @@ const modeName = (m = mode) => m === "pos" ? "Happening" : m === "neg" ? "Not-ha
 const modeVal = (m = mode) => m === "pos" ? 1 : m === "neg" ? 2 : 3;   // labelState: 1=Happening 2=Not-happening 3=Unknown (0=none)
 
 let browse = null;   // read-only detection browser state {bid, track, which, order, thr, minBout, items, idx, srcName, anyLabels, refRuns} (see browseStart)
-// While browsing, refuse every write except the event log and the detect slider. postproc only shapes
-// detected bouts and never reaches training. The per-action guards catch these first. This is the backstop.
-const BROWSE_WRITES_OK = /^\/(events|behaviors\/\d+\/postproc)(\?|$)/;
+// While browsing, refuse every write except the event log, the detect slider and ■ Stop. postproc only shapes
+// detected bouts and never reaches training, and cancelling a job writes no labels (a Models sweep keeps
+// running in the background while you browse, so its ■ Stop has to work). The per-action guards catch the
+// rest first. This is the backstop.
+const BROWSE_WRITES_OK = /^\/(events|behaviors\/\d+\/postproc|jobs\/[^/?]+\/cancel)(\?|$)/;
 let writesInFlight = 0;   // label saves and other writes still on the wire. Browse waits for them (see browseCanStart).
 const api = (path, opts) => {
   const method = ((opts && opts.method) || "GET").toUpperCase();
@@ -1210,8 +1213,14 @@ async function selectProject(pid) {
 function resetWorkspaceState() {
   closeReview(); closeBrowse();
   el("modelsPanel").classList.remove("on"); modelsData = null;   // the 🧠 Models panel belongs to the old project
+  // ...and so do the sweeps it follows: their watchers stop, and the jobs go on on the server, so coming back
+  // re-follows them (refreshModels) instead of showing the progress line they had when the project was left
+  modelsSweeps.clear(); modelsPid = null;
   activeBid = null; selectedSeg = null; segTrim = null; tlView = null; showDelSeg(false);
   el("hidraHead").value = "";                     // the old behavior's classifier: Train / Predict must not keep its labels
+  // ...nor its warnings (#hidraNote: a stale trace, px/cm missing), metrics line or downgrade banner. A project
+  // with no behaviors selects none, so nothing else would clear them (hidraReflect blanks them with no behavior).
+  hidraReflect(); metricsEl.textContent = ""; showDowngrade(null);
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   el("clipFilter").value = "";                    // a filter typed for the old project's clip names
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
@@ -1929,6 +1938,7 @@ async function warmAhead() {
   finally { warming = false; }
 }
 async function show(i) {
+  if (!meta) return;                       // no clip open (a project with no clips yet): no frames to show
   cur = Math.max(0, Math.min(meta.n_frames - 1, i));
   evCounts.frames++;                       // rolled into the heartbeat, never logged per frame
   const seq = ++showSeq, target = cur;
@@ -2792,8 +2802,22 @@ function syncBehSettings() {
     ? "The Objects card beside the video records what each bout is on."
     : "Ticking it shows the Objects card beside the video, where you tick what each bout is on.";
 }
+// The behavior under review has to stay put while the review is open: Delete would leave y/n painting a behavior
+// that no longer exists, and Duplicate selects the copy, which swaps the review queue under the open panel. On
+// the behavior rail (hidden in review) these never could run mid-review; in the behavior settings they can.
+const reviewOpen = () => el("reviewPanel").classList.contains("on");
+function reviewBlocked(what) {
+  if (!reviewOpen()) return false;
+  busy(`finish the review first (Done), then ${what}`);
+  return true;
+}
+function syncBehSettingsReview() {
+  const on = reviewOpen();
+  for (const id of ["cloneSeed", "cloneEmpty", "behDelete"]) el(id).disabled = on;
+  el("bsetReviewHint").style.display = on ? "" : "none";
+}
 async function cloneBehavior(withLabels) {
-  if (activeBid == null) return;
+  if (activeBid == null || reviewBlocked("duplicate the behavior")) return;
   const src = behaviors.find(b => b.id === activeBid);
   const msg = withLabels
     ? `Clone "${src.name}" with its SEED labels only?\n\nCopies your initial hand-painted + imported bouts (NOT the candidate-review labels). The copy starts from the same seed but runs its own candidate process. "${src.name}" is untouched.`
@@ -3333,6 +3357,19 @@ function openClipCalib() {
   placePpc();
 }
 el("clipPick").onchange = e => { const v = e.target.value; e.target.blur(); gotoClip(v); };   // blur: arrows scrub again
+// A picker keeps focus when its list is dismissed without a choice (Esc, or a click on the clip already open),
+// and a closed, focused <select> takes ←/→, Home/End and letters for itself: the frame step or a behavior hotkey
+// would switch the clip (or the project) instead. Hand those keys to the page: the select doesn't act on them,
+// lets go of focus, and the shortcut handler (window, bubble phase) runs them. An open list gets its keys first.
+const PICKER_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Enter"]);
+function pickerHandsKeysBack(sel) {
+  sel.addEventListener("keydown", e => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;   // Ctrl+Z and the browser's own shortcuts pass through
+    if (e.key.length === 1 || PICKER_KEYS.has(e.key)) e.preventDefault();
+    sel.blur();
+  });
+}
+pickerHandsKeysBack(el("clipPick")); pickerHandsKeysBack(el("projSel"));
 // from the clip still waiting to open, if any, so three quick clicks move three clips
 el("clipPrev").onclick = () => { el("clipPrev").blur(); const v = clipStep(-1, clipOpenNext || vid); if (v) gotoClip(v.video_id); };
 el("clipNext").onclick = () => { el("clipNext").blur(); const v = clipStep(1, clipOpenNext || vid); if (v) gotoClip(v.video_id); };
@@ -3343,6 +3380,7 @@ el("clipFilter").onkeydown = e => {
     const list = clipList(), here = list.some(v => v.video_id === vid);
     const t = here ? (clipStep(1) || list[0]) : list[0];
     if (t && t.video_id !== vid) gotoClip(t.video_id);
+    if (t) e.target.blur();                     // give the keys back (Space plays, arrows scrub); ◀ ▶ keep stepping the matches
   } else if (e.key === "Escape") { e.preventDefault(); e.target.value = ""; e.target.blur(); renderClipBar(); }
 };
 el("clipAddBtn").onclick = openAddClip;
@@ -3416,8 +3454,18 @@ async function onTrackChange() {
 }
 async function setActiveTrack(t) {
   if (browse && t !== activeTrack) { busy("browse is tied to one track. Press Done (Esc) to switch tracks."); return; }
-  if (t !== activeTrack) logEvent("track_select", { from_track: activeTrack, to_track: t });
-  activeTrack = Math.max(0, Math.min(nTracks() - 1, t));
+  // A review is one animal's queue: switching would load the other animal's queue under the open candidate,
+  // and y/n would then paint it onto the new animal. (The track rail is hidden in review; digits, Tab and a
+  // click on an animal are not.) Nor reload the same animal: that would replace the queue under the open candidate.
+  if (reviewOpen()) { if (t !== activeTrack) busy(`the review is on animal ${activeTrack + 1}. Press Done to switch animals.`); return; }
+  t = Math.max(0, Math.min(nTracks() - 1, t));
+  if (t !== activeTrack) {
+    logEvent("track_select", { from_track: activeTrack, to_track: t });
+    // Undo entries don't record their track, and applyOp writes to the active one, so after a switch Ctrl+Z
+    // would erase (and redo rewrite) the other animal's frames. Undo stops at a track switch, as at a clip switch.
+    undoStack.length = 0; redoStack.length = 0; clearReviewUndo();
+  }
+  activeTrack = t;
   renderTrackBar();
   await onTrackChange();
 }
@@ -3435,7 +3483,10 @@ async function addBehavior() {
 }
 async function reloadBehaviors() {
   behaviors = await (await api(`/behaviors`)).json();
-  await loadLabels();
+  // a review of a behavior that is gone (deleted elsewhere) can't go on: y/n would paint a lane that isn't there
+  const rb = reviewCurrent ? reviewCurrent.bid : activeBid;
+  if (reviewOpen() && !behaviors.some(b => b.id === rb)) { closeReview(); busy("review closed — its behavior was deleted"); }
+  if (vid && meta) await loadLabels();   // a project with no clips yet has no frames to hold labels
   const bid = behaviors.find(b => b.id === activeBid) ? activeBid : (behaviors[0] && behaviors[0].id);
   renderBehaviorBar(); if (bid != null) await selectBehavior(bid); else renderTimeline();
 }
@@ -4167,7 +4218,8 @@ function modelsAllSync() {
   if (run) {
     const q = run.queue[run.i], sw = q && modelsSweeps.get(q.bid);
     note.textContent = run.stop ? "stopping…"
-      : `⟳ ${run.i + 1} of ${run.queue.length}: ${q ? q.name : ""}${sw ? ` · ${sw.msg}` : " · starting…"}`
+      : `⟳ ${run.i + 1} of ${run.queue.length}: ${q ? q.name : ""}`
+        + (run.waiting ? " · waiting for Browse to close (Done)" : sw ? ` · ${sw.msg}` : " · starting…")
         + (run.queue.length > run.i + 1 ? ` · then ${run.queue.slice(run.i + 1).map(x => x.name).join(", ")}` : "");
     note.style.display = "";
   } else if (modelsAllLast && modelsAllLast.pid === PID) { note.textContent = modelsAllLast.text; note.style.display = ""; }
@@ -4185,14 +4237,23 @@ async function modelsUpdateAll() {
   const dur = x => x < 90 ? `${x} min` : `${(x / 60).toFixed(1)} h`;
   if (nH > 3 && !confirm(`Bring every behavior up to date?\n\n${lines}\n\nHiDRA takes about 1–2 min per clip, so the ${nH} HiDRA clips take about ${dur(nH)}–${dur(2 * nH)}. `
       + `The behaviors run one after another in the background: you can keep labeling, and ■ Stop keeps what's already done.`)) return;
-  const pid = PID, run = { pid, queue: todo.map(b => ({ bid: b.behavior_id, name: b.name || `behavior ${b.behavior_id}` })), i: 0, stop: false, jid: null, results: [] };
+  const pid = PID, run = { pid, queue: todo.map(b => ({ bid: b.behavior_id, name: b.name || `behavior ${b.behavior_id}` })), i: 0,
+                          stop: false, interrupted: false, waiting: false, jid: null, results: [] };
   modelsAll = run; modelsAllLast = null;
   logEvent("models_predict_all", { n_behaviors: todo.length, n_clips: nClips });
   modelsAllSync();
   try {
     for (; run.i < run.queue.length; run.i++) {
-      if (run.stop || PID !== pid) break;
+      if (run.stop) break;
+      if (PID !== pid) { run.interrupted = true; break; }
       const q = run.queue[run.i];
+      if (browse) {                                  // Browse is read only (api() refuses the POST): wait for it to close
+        run.waiting = true; modelsAllSync();
+        while (browse && !run.stop && PID === pid) await new Promise(res => setTimeout(res, 1000));
+        run.waiting = false;
+        if (run.stop) break;
+        if (PID !== pid) { run.interrupted = true; break; }
+      }
       modelsAllSync();
       if (modelsSweeps.has(q.bid)) { run.results.push({ name: q.name, note: "was already predicting" }); continue; }   // started from its card meanwhile
       let r;
@@ -4209,6 +4270,10 @@ async function modelsUpdateAll() {
       if (run.stop) await api(`/jobs/${j.job_id}/cancel`, { method: "POST" }).catch(() => null);   // ■ Stop hit while it was starting
       const s = await modelsWatch(q.bid, j.job_id, q.name, "starting…");
       run.jid = null;
+      if (!s && PID !== pid) {                       // another project was opened: the job goes on on the server
+        run.results.push({ name: q.name, note: "still predicting on the server" });
+        run.interrupted = true; break;
+      }
       const res = (s && s.result) || {};
       run.results.push(!s ? { name: q.name, note: "could not be followed" }
         : s.status === "error" ? { name: q.name, error: String(s.error || "failed").slice(0, 160) }
@@ -4220,7 +4285,9 @@ async function modelsUpdateAll() {
     const parts = run.results.map(x => x.error ? `${x.name}: failed (${x.error})` : x.note ? `${x.name}: ${x.note}`
       : `${x.name}: ${x.tot ? `${x.done} of ${x.tot} clip${x.tot === 1 ? "" : "s"}` : "already up to date"}${x.failed ? `, ${x.failed} could not be predicted` : ""}${x.stopped ? " (stopped)" : ""}`);
     const left = run.queue.slice(run.results.length).map(x => x.name);
-    const text = (run.stop ? "■ Stopped. " : "✓ Done. ") + (parts.join(" · ") || "nothing predicted")
+    const bad = left.length || run.results.some(x => x.error || x.failed);
+    const text = (run.stop ? "■ Stopped. " : run.interrupted ? "⟳ Interrupted by a project switch. " : bad ? "⚠ Finished with errors. " : "✓ Done. ")
+      + (parts.join(" · ") || "nothing predicted")
       + (left.length ? ` · not started: ${left.join(", ")}` : "");
     modelsAllLast = { pid, text };
     if (PID === pid) {
@@ -4606,6 +4673,10 @@ const skipKey = (bid, s, e) => `${bid}:${s}:${e}`;
 const CAND_BATCH = 10;
 async function loadCandidates(bid, skip = null) {
   const seq = ++candSeq;
+  if (!vid) {                                // no clip open: nothing to propose
+    reviewQueue = []; reviewIdx = 0; el("review").disabled = true; el("review").textContent = "Review candidates";
+    return [];
+  }
   const n = CAND_BATCH;
   const ask = skip ? n + skip.size : n;
   const [r, rem] = await Promise.all([
@@ -4658,7 +4729,7 @@ async function stopTrain() {
 async function trainJob() {
   if (activeBid == null || browseBlocked()) return;
   const bid = activeBid, bname = (behaviors.find(x => x.id === bid) || {}).name;   // capture the model being trained (activeBid may change during the async job)
-  const vid0 = vid;                                                               // ...and the clip (the user may switch clips during a long fine-tune)
+  const vid0 = vid, pid0 = PID;                                                   // ...and the clip (the user may switch clips during a long fine-tune), and the project
   const t0 = Date.now();                                                          // wall-clock of the train job (feature compute + CV + fit)
   busy("starting…");
   // The fit always pools every labeled clip; only the clip on screen is re-predicted afterwards. Sweeping a
@@ -4677,6 +4748,7 @@ async function trainJob() {
     if (s.status === "cancelled") {
       const q = s.result || {}, kept = !!(q.version || q.weights), nApplied = ((q.predict || {}).videos || []).length;
       logEvent("train_result", { behavior_id: bid, name: bname, status: "cancelled", kept_model: kept, wall_ms: Date.now() - t0 });
+      if (q.weights) await refreshBehaviorHidra(bid, pid0);
       await loadAllPredictions(); await loadModel(); await loadCandidates(activeBid); renderTimeline();
       busy(kept
         ? `■ ${bname}: the new model was already made, so it's kept — only re-predicting was stopped`
@@ -4712,6 +4784,7 @@ async function trainJob() {
       // A smoke run writes no checkpoint; a real run records weights and only applies on the next Predict.
       const from = (r.videos ? ` from ${r.videos} clip${r.videos === 1 ? "" : "s"}` : "")
         + (r.train_on && r.train_on !== "all" ? ` · ${TRAIN_ON[r.train_on]}` : "");
+      if (!r.smoke) await refreshBehaviorHidra(bid, pid0);   // now fine-tuned: the settings summary, note and Train / Predict say so
       if (r.smoke) {
         busy(`Smoke test OK — prepare + train ran for ${r.action} (${r.lab}) on ${r.bouts} `
           + `reviewed bout${r.bouts === 1 ? "" : "s"}${from} · ${r.backend} · no checkpoint written `
@@ -4738,6 +4811,19 @@ async function trainJob() {
         + `${(r.tracks || []).length} tracks (${tks}) · ${(r.videos_used || []).length} clips · ${applied}`);
     }
   });
+}
+// A HiDRA fine-tune records its weights on the behavior (hidra.weights), and that is what the behavior settings
+// summary ("HiDRA, fine-tuned"), the note and the Train / Predict labels read: fetch it again, or they keep
+// saying "zero-shot" until a reload. Not when another project is open now (behavior ids are per project).
+async function refreshBehaviorHidra(bid, pid) {
+  if (PID !== pid) return;
+  let fresh;
+  try { const r = await api(`/behaviors`); if (!r.ok) return; fresh = (await r.json()).find(x => x.id === bid); }
+  catch (e) { return; }
+  const b = behOf(bid);
+  if (PID !== pid || !fresh || !b) return;
+  b.hidra = fresh.hidra;
+  if (bid === activeBid) { if (HIDRA) hidraSyncBehavior(); else hidraReflect(); }
 }
 function awaitJob(jid) { return new Promise(resolve => pollJob(jid, resolve)); }   // pollJob calls back once at terminal state
 let predictRun = null;   // {jid, stop}: the Predict running now, for ■ Stop
@@ -4794,7 +4880,7 @@ async function predictJob() {   // apply existing model(s), NO retrain — to th
       const msg = mism
         ? `⚠ ${skipped.map(k => k.name).join(", ")} not predicted — ${mism.reason.replace("feature_mismatch: ", "")}`
         : `⚠ ${skipped.length} behavior(s) skipped: ${skipped.map(k => k.name + " (" + (k.reason || "?") + ")").join(", ")}`;
-      if (mism) alert(msg + "\n\n(Set the spout/cage ROI on this clip to match the training clips — via ◇/▢ on the video or the HCM import — then Predict again.)");
+      if (mism) alert(msg + "\n\n(Set the spout/cage ROI on this clip to match the training clips — via Outlines ▾ at the top left of the video (clips not from HCM) or the HCM import — then Predict again.)");
     }
   }
   await loadAllPredictions(); if (activeBid != null) await loadCandidates(activeBid); renderTimeline();
@@ -4991,6 +5077,7 @@ async function startReview() {
 // two-column review mode: video + review rail side-by-side, timeline pulled up beneath (CSS-only reflow)
 function setReviewLayout(on) {
   document.querySelector("main").classList.toggle("reviewing", on);
+  syncBehSettingsReview();                 // no Duplicate / Delete of the behavior under review
   if (on) window.scrollTo({ top: 0, behavior: "smooth" });
   requestAnimationFrame(() => { if (meta) renderTimeline(); });   // widths reflowed → redraw the lanes
 }
@@ -5533,6 +5620,7 @@ function setMode(m) {
 const bname = bid => (behaviors.find(b => b.id === bid) || {}).name || "";
 function startPaint(bid, m) {
   if (browseBlocked()) return;
+  if (!meta) { busy("no clip yet — Add clip… first, then label it"); return; }   // a project with no clips has no frames to paint
   activeBid = bid; renderBehaviorBar();
   painting = { bid, anchor: cur, mode: m, t0: Date.now() };
   logEvent("paint_start", { behavior_id: bid, name: bname(bid), mode: m, anchor: cur });
@@ -5812,7 +5900,7 @@ el("behSettings").addEventListener("toggle", () => { if (!el("behSettings").open
 el("cloneSeed").onclick = () => cloneBehavior(true);
 el("cloneEmpty").onclick = () => cloneBehavior(false);
 el("behDelete").onclick = async () => {
-  const b = behOf(activeBid); if (!b || browseBlocked()) return;
+  const b = behOf(activeBid); if (!b || browseBlocked() || reviewBlocked("delete the behavior")) return;
   if (!confirm(`Delete behavior "${b.name}" and its labels?`)) return;
   const r = await api(`/behaviors/${b.id}`, { method: "DELETE" });
   if (!r.ok) { busy("could not delete: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
@@ -6114,7 +6202,7 @@ window.addEventListener("keydown", e => {
   if (reviewing && e.key === "Enter") return nextCandidate();
   if (e.key === "ArrowLeft") { stop(); show(cur - (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }       // arrows scrub frames (Ctrl ±30, Shift ±5), even in review
   else if (e.key === "ArrowRight") { stop(); show(cur + (e.ctrlKey ? 30 : e.shiftKey ? 5 : 1)); }
-  else if ((e.key === "Home" || e.key === "End") && e.target.tagName !== "SELECT") {   // first / last frame (the ⏮ ⏭ buttons); not the page scroll
+  else if ((e.key === "Home" || e.key === "End") && !(e.target.tagName === "SELECT" && document.activeElement === e.target)) {   // first / last frame (the ⏮ ⏭ buttons); not the page scroll, nor a focused select's own Home/End
     e.preventDefault(); if (meta) { stop(); show(e.key === "Home" ? 0 : meta.n_frames - 1); }
   }
   else if (e.key === " ") { e.preventDefault(); play(); }
