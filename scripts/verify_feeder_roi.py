@@ -7,6 +7,9 @@ Against a stand-in for the HCM database (no VPN needed) and the real app:
              part; NEVER from the camera medoid -- not for a recording with no feeder
              ('valid-no-feeder-cage'), not for one whose segmentation isn't valid ('change-detected')
   wall/spout unchanged: recording first, camera medoid as the fallback
+  camera     the medoid is per rig/cam (cam_key), not per cam_XX: cam_01 is on rig00 AND rig01. The
+             clip's recording says which rig; a clip naming only a camera two rigs have gets no
+             medoid. No query names batches.cage (renamed to cam in hcm-core's migration 0003)
   isolation  one class's failing query costs only that class (rolled back), not the others
   driver     a postgresql:// URL is given the driver that is installed (psycopg, else psycopg2):
              SQLAlchemy 2.1 switched its default to psycopg, and every lookup failed silently with
@@ -64,18 +67,24 @@ REC_CHANGED = f"{SESSION}/2026-06-28-00-01-05/cam_06.15.mp4"    # segmentation n
 CAGE, WATER, SIDE = SQ(100, 100, 800), SQ(400, 120, 40), SQ(300, 820, 200)
 TOP_SMALL, TOP_BIG = SQ(10, 10, 5), SQ(300, 600, 200)
 MEDOID_CAGE, MEDOID_WATER, MEDOID_FEEDER = SQ(90, 90, 820), SQ(410, 130, 40), SQ(0, 0, 999)
+# a frameforge rig's camera whose name (cam_01) another rig also has
+REC_RIG01 = "frameforge/rig01/2026-11-10-00-01-05/cam_01.03.mp4"   # segmentation not usable
+RIG00_CAGE, RIG01_CAGE = SQ(50, 50, 700), SQ(60, 70, 710)
 
 
 class FakeDB:
     def __init__(self):
         all_classes = {"cage-outer": POLY(CAGE), "water": POLY(WATER), "feeder-cage-side": POLY(SIDE),
                        "feeder-cage-top": {"type": "MultiPolygon", "coordinates": [[TOP_SMALL], [TOP_BIG]]}}
-        self.recordings = {
-            REC_FEEDER: ("valid-feeder-cage-with-side", all_classes),
-            REC_NOFEED: ("valid-no-feeder-cage", {k: all_classes[k] for k in ("cage-outer", "water")}),
-            REC_CHANGED: ("change-detected", all_classes)}
-        self.medoid = {("cam_06", "cage-outer"): MEDOID_CAGE, ("cam_06", "water"): MEDOID_WATER,
-                       ("cam_06", "feeder-cage-top"): MEDOID_FEEDER, ("cam_06", "feeder-cage-side"): MEDOID_FEEDER}
+        self.recordings = {   # video_path -> (rois status, polygons, cam_key)
+            REC_FEEDER: ("valid-feeder-cage-with-side", all_classes, "hyena/cam_06"),
+            REC_NOFEED: ("valid-no-feeder-cage", {k: all_classes[k] for k in ("cage-outer", "water")}, "hyena/cam_06"),
+            REC_CHANGED: ("change-detected", all_classes, "hyena/cam_06"),
+            REC_RIG01: ("change-detected", all_classes, "rig01/cam_01")}
+        self.batches = {"cam_06": ["hyena/cam_06"], "cam_01": ["rig00/cam_01", "rig01/cam_01"]}   # cam -> cam_keys
+        self.medoid = {("hyena/cam_06", "cage-outer"): MEDOID_CAGE, ("hyena/cam_06", "water"): MEDOID_WATER,
+                       ("hyena/cam_06", "feeder-cage-top"): MEDOID_FEEDER, ("hyena/cam_06", "feeder-cage-side"): MEDOID_FEEDER,
+                       ("rig00/cam_01", "cage-outer"): RIG00_CAGE, ("rig01/cam_01", "cage-outer"): RIG01_CAGE}
         self.calls: list[tuple] = []
         self.fail: set[tuple] = set()       # (kind, class) whose query raises
         self.rollbacks = 0
@@ -113,6 +122,10 @@ class _Conn:
         if sql == hcm_roi._STATUS_SQL:
             rec = DB.find(params["pat"])
             return _Result(rec[0] if rec else None)
+        if sql == hcm_roi._CAM_KEY_SQL:   # the recording's own cam_key, else the one rig with this cam
+            rec = DB.find(params["pat"]) if params["pat"] else None
+            keys = DB.batches.get(params["cam"], [])
+            return _Result(rec[2] if rec else keys[0] if len(keys) == 1 else None)
         kind = "recording" if sql == hcm_roi._RECORDING_SQL else "medoid" if sql == hcm_roi._MEDOID_SQL else None
         assert kind, "unexpected SQL"
         DB.calls.append((kind, params["cls"]))
@@ -122,7 +135,7 @@ class _Conn:
             rec = DB.find(params["pat"])
             ok = rec and rec[0].startswith("valid")
             return _Result(rec[1].get(params["cls"]) if ok else None)
-        return _Result(DB.medoid.get((params["cam"], params["cls"])))
+        return _Result(DB.medoid.get((params["cam_key"], params["cls"])))
 
 
 class _Engine:
@@ -227,6 +240,20 @@ def unit(root: Path) -> None:
     g = hcm_roi.fetch_rois("cam_06.17")
     check(g.get("recording") is None and g.get("cage_roi") == ring(MEDOID_CAGE) and "feeder_top_roi" not in g,
           "clip naming only a camera: medoid wall/spout, no feeder, recording None")
+    check(g.get("cam_key") == "hyena/cam_06", "  ...of the one rig that has that camera", str(g.get("cam_key")))
+
+    g = hcm_roi.fetch_rois("x", source_video="/Volumes/talmo/" + REC_RIG01)
+    check(g.get("cam_key") == "rig01/cam_01" and g.get("cage_roi") == ring(RIG01_CAGE)
+          and g["source"] == {"cage_roi": "camera medoid"},
+          "camera name on two rigs: the recording's own rig picks the medoid (rig01, not rig00)", str(g)[:300])
+    DB.calls.clear()
+    g = hcm_roi.fetch_rois("cam_01.03")
+    check(g.get("cam_key") is None and g.get("camera") == "cam_01" and not any(k in g for k in hcm_roi.ROI_FIELDS)
+          and not DB.calls,
+          "clip naming only a camera two rigs have: no medoid (another rig's arena would be wrong)", str(g)[:300])
+    sqls = {n: getattr(hcm_roi, n) for n in ("_RECORDING_SQL", "_STATUS_SQL", "_CAM_KEY_SQL", "_MEDOID_SQL")}
+    check(not [n for n, q in sqls.items() if re.search(r"\bcage\b", q)] and "r.cam_key = :cam_key" in hcm_roi._MEDOID_SQL,
+          "no query names batches.cage (it is batches.cam since hcm-core 0003); the medoid matches rig/cam")
     check(hcm_roi.fetch_rois("b21_20260613_h17-f37500-52500") == {},
           "re-ID clip with NO source recording: nothing (it names no camera -- the old behavior)")
 
