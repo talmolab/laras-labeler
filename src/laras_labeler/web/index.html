@@ -1239,7 +1239,7 @@ async function selectProject(pid) {
   renderMediaFix(projMeta.media);       // this project may have been made on another computer
   logEvent("project_open", { pid, name: projMeta.name, n_videos: (projMeta.videos || []).length,
                              n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
-  ensureClipInfo();             // clips with no clip info yet: one quiet background lookup (nothing for an empty project)
+  ensureClipInfo();             // clips not looked up yet: one quiet background lookup (nothing for an empty project)
   hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
   if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);   // most recently loaded
   else { clearStage(); metaEl.textContent = "No clips yet — Add clip… to begin."; }
@@ -1262,7 +1262,7 @@ function resetWorkspaceState() {
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   el("clipFilter").value = "";                    // a filter typed for the old project's clip names
   closeModal("clipInfoDlg");                      // the old project's clip info
-  infoJob = null; infoAuto = { pid: null, n: 0 };  // its refresh goes on on the server; this page stops following it
+  infoJob = null; infoAuto = null;                // its refresh goes on on the server; this page stops following it
   renderClipInfoJob("");
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
 }
@@ -1440,7 +1440,9 @@ async function maybeUpload() {
     projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
     await openVideo(v.video_id);
     busy(`added clip ${clipShortName(v.video_id)}`);
-    ensureClipInfo();                                // its database details are being looked up in the background
+    // its database details are being looked up in the background (a job of its own, or the end of the project's
+    // running one): follow that, then show them -- or, when it is done already, just show them
+    refreshClipInfo([v.video_id], true, { quiet: true, loud: true, known: knownErrors() });
   } catch (e) { st.textContent = "error: " + e.message; pendingVideo = vname; pendingSlp = sname; }
   finally { delete st.dataset.busy; showPendingUpload(false); }   // false: keep a failure message
 }
@@ -3331,7 +3333,8 @@ function fmtStamp(iso) {
 function clipInfoTip(v) {                        // the header summary's tooltip: where each part came from
   const ci = clipInfoOf(v), lines = clipInfoParts(ci).map(x => `${x.name}: ${x.text} (from the ${sourcesOf(ci, x.fields).join(", ") || "?"})`);
   lines.push(ci.fetched_at ? `Looked up ${fmtStamp(ci.fetched_at)}.` : "Not looked up in the HCM database yet.");
-  if (ci.db_error) lines.push(`The HCM database couldn't be read then: ${sentence(ci.db_error)}`);
+  if (ci.db_error) lines.push(`The HCM database couldn't be read then: ${sentence(ci.db_error)}`
+    + (Object.values(ci.sources || {}).includes("HCM database") && ci.db_fetched_at ? ` Its details shown were read ${fmtStamp(ci.db_fetched_at)}.` : ""));
   lines.push("Clip ▾ → Clip info… lists each mouse in the cage.");
   return lines.join("\n");
 }
@@ -3342,17 +3345,21 @@ function clipFilterTerms(q) {
           .replace(/\bp(\d+)\s*(?:[-–—]|to|\.\.)\s*(p?\d)/g, "p$1-$2").split(/[\s,]+/).filter(Boolean);
 }
 function clipMatches(v, t) {
-  if (v.video_id.toLowerCase().includes(t)) return true;          // part of the name, as always
-  const ci = clipInfoOf(v), age = ci.age_days;
+  const ci = clipInfoOf(v), id = v.video_id.toLowerCase(), age = ci.age_days;
+  const low = xs => xs.filter(Boolean).map(x => String(x).toLowerCase()), mice = Array.isArray(ci.mice) ? ci.mice : [];
+  const sexes = new Set(low([...(ci.sex || "").split("/"), ...mice.map(x => x && x.sex)]));
+  // An age, cohort, camera or sex is decided by what is known about the clip; only when that isn't known, by its name,
+  // as a whole word there: b2 is cohort 2, not b21; male isn't female.
+  const inName = () => new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`).test(id);
   let m;
-  if ((m = /^p(\d+)$/.exec(t))) return age === +m[1];
+  if ((m = /^p(\d+)$/.exec(t))) return age != null ? age === +m[1] : inName();
   if ((m = /^p(\d+)-p?(\d+)$/.exec(t))) { const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]); return age != null && age >= lo && age <= hi; }
-  if ((m = /^(?:b|batch|cohort)_?(\d+)$/.exec(t))) return ci.cohort != null && ci.cohort === +m[1];
-  if ((m = /^cam_?(\d+)$/.exec(t))) return ci.camera === `cam_${String(+m[1]).padStart(2, "0")}`;
-  const words = new Set([...(ci.genotype || "").split("/"), ...(ci.sex || "").split("/"),
-                         ...(Array.isArray(ci.mice) ? ci.mice.flatMap(x => [x && x.genotype, x && x.sex]) : [])]
-                        .filter(Boolean).map(x => String(x).toLowerCase()));
-  if (words.has(t)) return true;                                   // sod1, wt, female, male (exactly: "male" isn't "female")
+  if ((m = /^(?:b|batch|cohort)_?(\d+)$/.exec(t))) return ci.cohort != null ? ci.cohort === +m[1] : inName();
+  if ((m = /^cam_?(\d+)$/.exec(t))) return ci.camera ? ci.camera === `cam_${String(+m[1]).padStart(2, "0")}` : inName();
+  if (t === "male" || t === "female") return sexes.size ? sexes.has(t) : inName();
+  if (id.includes(t)) return true;                                 // any other part of the name, as always
+  const genotypes = new Set(low([...(ci.genotype || "").split("/"), ...mice.map(x => x && x.genotype)]));
+  if (genotypes.has(t)) return true;                               // sod1, wt (a mixed cage has both)
   if (clipTag(v).toLowerCase().includes(t)) return true;
   return !!ci.date && /^\d{4}-?\d*/.test(t) && ci.date.startsWith(t);   // a recording date: 2026-09, 2026-09-06
 }
@@ -3402,29 +3409,40 @@ function renderClipInfoDlg() {
                        : "Nothing is known about this clip's mice: its name doesn't say, and it isn't linked to an HCM recording.");
   }
   let warn = "";
-  if (ci.db_error) warn = `<div class="ciwarn">The HCM database couldn't be read: ${esc(sentence(ci.db_error))}${known ? " What is shown comes from the clip planner's summary and the clip's name." : ""}</div>`;
+  if (ci.db_error) {
+    const used = [...new Set(Object.values(ci.sources || {}))], kept = used.includes("HCM database"), other = used.filter(x => x !== "HCM database");
+    let tail = kept ? ` The HCM database details shown were read ${ci.db_fetched_at ? fmtStamp(ci.db_fetched_at) : "earlier"}.` : "";
+    if (other.length) tail += ` ${kept ? "The rest comes" : "What is shown comes"} from the ${other.join(" and the ")}.`;
+    warn = `<div class="ciwarn">The HCM database couldn't be read: ${esc(sentence(ci.db_error) + tail)}</div>`;
+  }
   el("clipInfoName").textContent = vid;
   el("clipInfoBody").innerHTML = h + warn + notes.map(x => `<div class="cinote">${x}</div>`).join("");
 }
-// Refreshes run as one background job per project (POST /clip-info/refresh), which this page follows: the quiet one
-// on project open only shows in the status line if it takes a while, or if the HCM database couldn't be read.
-let infoJob = null;                    // the refresh being followed: {pid, jid, quiet, shown}
-let infoAuto = { pid: null, n: 0 };    // automatic refreshes started for the open project (at most two: open + after a new clip)
+// Refreshes run as one background job per project (POST /clip-info/refresh), which this page follows. The quiet one on
+// project open shows in the status line only if it takes a while (and the project has HCM clips: another lab's never
+// does), or if the HCM database couldn't be read for a reason the clips didn't already show.
+let infoJob = null;                    // the refresh being followed: {pid, jid, quiet, loud, shown}
+let infoAuto = null;                   // the project whose open-time refresh has been started (once per open)
+// a clip to look up: never looked up, or its last lookup couldn't reach the HCM database (asked again on the next open)
+const needsInfo = v => { const ci = clipInfoOf(v); return !ci.fetched_at || !!ci.db_retry; };
+const knownErrors = () => new Set(((projMeta && projMeta.videos) || []).map(v => clipInfoOf(v).db_error).filter(Boolean));
 function renderClipInfoJob(msg) {
   const running = !!(infoJob && infoJob.pid === PID);
   el("clipInfoRefresh").disabled = el("clipInfoRefreshAll").disabled = running || !vid;
   el("clipInfoStop").style.display = running ? "" : "none";
   if (msg != null) el("clipInfoStatus").textContent = msg;
 }
-function ensureClipInfo() {            // clips with no clip info yet: one quiet lookup, never two at once
-  const vids = (projMeta && projMeta.videos) || [];
-  if (!vids.some(v => !clipInfoOf(v).fetched_at)) return;
-  if (infoAuto.pid !== PID) infoAuto = { pid: PID, n: 0 };
-  if (infoAuto.n >= 2 || (infoJob && infoJob.pid === PID)) return;
-  infoAuto.n++;
-  refreshClipInfo(null, true, true);
+function ensureClipInfo() {            // on project open: one quiet lookup of the clips that need it, never two at once
+  const vids = (projMeta && projMeta.videos) || [], todo = vids.filter(needsInfo);
+  if (!todo.length || infoAuto === PID || (infoJob && infoJob.pid === PID)) return;
+  infoAuto = PID;
+  const hcm = vids.some(v => { const ci = clipInfoOf(v); return ci.recording || Object.keys(ci.sources || {}).length; });
+  // progress may show for HCM clips never looked up; not for another lab's clips, nor for a retry of clips whose
+  // lookup couldn't reach the database last time (their reason is already shown in Clip info)
+  refreshClipInfo(null, true, { quiet: true, loud: hcm && todo.some(v => !clipInfoOf(v).fetched_at), known: knownErrors() });
 }
-async function refreshClipInfo(videos, missingOnly, quiet) {
+async function refreshClipInfo(videos, missingOnly, opts = {}) {
+  const quiet = !!opts.quiet;
   if (infoJob && infoJob.pid === PID) return;       // one at a time: the running one finishes first
   const pid = PID;
   let d;
@@ -3445,11 +3463,12 @@ async function refreshClipInfo(videos, missingOnly, quiet) {
     return;
   }
   if (d.already_running && !quiet) renderClipInfoJob("Clip info is already being refreshed for this project: showing that run. Refresh again when it is done to look up more.");
-  await followClipInfo(pid, d.job_id, quiet, d.already_running);
+  await followClipInfo(pid, d.job_id, opts, d.already_running);
 }
-async function followClipInfo(pid, jid, quiet, joined = false) {
+async function followClipInfo(pid, jid, opts = {}, joined = false) {
   if (infoJob && infoJob.pid === pid) return;
-  const job = infoJob = { pid, jid, quiet, shown: false }, t0 = Date.now();
+  const quiet = !!opts.quiet, known = opts.known || new Set();
+  const job = infoJob = { pid, jid, quiet, loud: !quiet || !!opts.loud, shown: false }, t0 = Date.now();
   renderClipInfoJob(quiet || joined ? null : "Looking up…");
   let s = null, fails = 0;
   while (PID === pid && infoJob === job) {
@@ -3459,7 +3478,7 @@ async function followClipInfo(pid, jid, quiet, joined = false) {
     catch (e) { if (++fails > 10) { s = null; break; } continue; }
     if (["done", "error", "cancelled"].includes(s.status)) break;
     const msg = `Clip info: ${s.msg && s.msg !== "started" ? s.msg : "starting"}…`;
-    if (!quiet || Date.now() - t0 > 1500) { busy(msg); job.shown = true; }   // a quick quiet run shows nothing
+    if (!quiet || (job.loud && Date.now() - t0 > 1500)) { busy(msg); job.shown = true; }   // a quick quiet run shows nothing
     if (!quiet || job.shown) renderClipInfoJob(msg);
   }
   if (infoJob !== job || PID !== pid) return;       // another project opened: the job goes on on the server
@@ -3470,14 +3489,15 @@ async function followClipInfo(pid, jid, quiet, joined = false) {
   if (!s || s.status === "error") fin = `Clip info: the refresh failed${s && s.error ? ` (${s.error})` : ""}.`;
   else if (s.status === "cancelled") fin = "Clip info: stopped. The clips already looked up keep their new info.";
   else if (res.db_error && !res.from_db && !res.no_recording)       // the database never answered
-    fin = `Clip info: ${sentence(res.db_error)} Age and genotype come from the clip planner's summary and the clip names until it can be read.`;
+    fin = `Clip info: ${sentence(res.db_error)} Until it answers, clips keep what was last read from it; the others show only `
+        + "what the clip planner's summary and the clip names say (no genotype or cage). It is asked again the next time the project is opened.";
   else if (res.fetched != null) fin = `Clip info: ${plural(res.fetched)} looked up, ${res.from_db || 0} found in the HCM database`
                                      + (res.no_recording ? `, ${res.no_recording} not in it` : "")
                                      + (res.db_errors ? `; ${plural(res.db_errors)} couldn't be read (${res.db_error})` : "") + ".";
   if (PID !== pid) return;
-  if (fin && (!quiet || job.shown || res.db_error)) busy(fin);
+  const news = !!res.db_error && !known.has(res.db_error);         // a reason the clips didn't already show
+  if (fin && (!quiet || job.shown || news)) busy(fin);
   renderClipInfoJob(quiet && !job.shown ? null : (fin || ""));
-  if (quiet && s && s.status === "done") ensureClipInfo();   // a clip added while this ran
 }
 async function pullClipInfo(pid) {     // the refreshed clip info, into the project already loaded
   let d; try { const r = await api(`/clip-info`); if (!r.ok) return; d = await r.json(); } catch (e) { return; }
@@ -3645,8 +3665,8 @@ el("clipCalibBtn").onclick = openClipCalib;
 el("clipCalibClose").onclick = () => closeModal("clipCalibDlg");
 el("clipInfoBtn").onclick = openClipInfo;
 el("clipInfoClose").onclick = () => closeModal("clipInfoDlg");
-el("clipInfoRefresh").onclick = () => { if (vid && !browseBlocked()) refreshClipInfo([vid], false, false); };
-el("clipInfoRefreshAll").onclick = () => { if (!browseBlocked()) refreshClipInfo(null, false, false); };
+el("clipInfoRefresh").onclick = () => { if (vid && !browseBlocked()) refreshClipInfo([vid], false); };
+el("clipInfoRefreshAll").onclick = () => { if (!browseBlocked()) refreshClipInfo(null, false); };
 el("clipInfoStop").onclick = () => { if (infoJob && infoJob.pid === PID) api(`/jobs/${infoJob.jid}/cancel`, { method: "POST" }).catch(() => null); };
 el("clipRemoveBtn").onclick = () => { if (vid) removeClip(vid); };
 el("hidraFps").onchange = hidraSaveFps;          // every install: the project's own features are in seconds too

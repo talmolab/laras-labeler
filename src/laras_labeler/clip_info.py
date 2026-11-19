@@ -6,8 +6,9 @@ Three sources, most trusted first. Every field records which one it came from, i
 
   "HCM database"          the clip's recording and the batch it belongs to (hcm_roi's database, read only)
   "clip planner summary"  the re-ID clip planner's clips.summary.json beside the clip (age, day, hour)
-  "file name"             tokens in the clip's name: b21, cam_07, 20260906 / 2026-09-06, h16 / 16-00-00,
-                          age34, .f128500-143500, or an old-style HCM clip id naming its recording
+  "file name"             tokens in the clip's name: batch_10 / cohort21, cam_07, 20260906 / 2026-09-06,
+                          16-00-00 after a date, age34, .f128500-143500, a re-ID clip planner name
+                          (b21_20260906_h16...), or an old-style HCM clip id naming its recording
 
 A clip from another experiment has none of these and gets no fields, so nothing is shown for it.
 
@@ -30,6 +31,8 @@ FIELDS = ("age_days", "dob", "genotype", "sex", "n_mice", "mice", "cohort", "cam
 MOUSE_KEYS = ("genotype", "sex", "dob", "treatment", "identity_type", "identity_id")
 
 NO_ANSWER = "the HCM database didn't answer: are you on the Salk network (on site, VPN or Tailscale)?"
+TOO_SLOW = "the HCM database took too long to answer (over 15 seconds): try again later"
+STATEMENT_TIMEOUT_MS = 15000        # one clip's lookup; the HCM agent's own queries use SET LOCAL the same way
 
 # The HCM repo's own expressions (hcm_data.queries dob_sql / sex_sql / age_sql), copied rather than imported
 # so the labeler doesn't depend on hcm-core. Cohort date of birth = the earliest animals[].dob; sex =
@@ -38,8 +41,10 @@ DOB_SQL = "(SELECT MIN((a->>'dob')::date) FROM jsonb_array_elements(b.animals) a
 SEX_SQL = "(SELECT string_agg(DISTINCT a->>'sex', '/') FROM jsonb_array_elements(b.animals) a)"
 AGE_SQL = f"((r.start_time AT TIME ZONE 'America/Los_Angeles')::date - {DOB_SQL})"
 
-# One recording (the clip's own, by hcm_roi's LIKE pattern) and the batch it was stamped into. LEFT JOIN: a
-# recording not yet assigned to a batch still says its camera and when it was recorded.
+# The recording (the clip's own, by hcm_roi's LIKE pattern) and the batch it was stamped into. LEFT JOIN: a
+# recording not yet assigned to a batch still says its camera and when it was recorded. Up to 5 rows: the
+# pattern names no rig, and cam names are only unique within a rig (hyena/cam_07, rig00/cam_07), so two
+# rigs' recordings can match one clip -- then query_recording says so instead of picking one.
 INFO_SQL = f"""
 SELECT r.cam AS cam, r.rig AS rig,
        (r.start_time AT TIME ZONE 'America/Los_Angeles')::date AS rec_date,
@@ -49,7 +54,7 @@ SELECT r.cam AS cam, r.rig AS rig,
 FROM recordings r LEFT JOIN batches b ON b.batch_id = r.batch_id
 WHERE r.video_path LIKE :pat
 ORDER BY r.start_time
-LIMIT 1;
+LIMIT 5;
 """
 
 
@@ -57,10 +62,15 @@ LIMIT 1;
 # the file name
 # ---------------------------------------------------------------------------------------------------------
 _TOK = r"(?:^|[^a-z0-9])"                       # a token starts the name or follows a separator
-_COHORT_RE = re.compile(_TOK + r"(?:b|batch[_-]?|cohort[_-]?)(\d{1,4})(?![a-z0-9])")
+# A bare b21 / h16 is read only in the re-ID clip planner's own names (scripts/sample_reid_clips.py STEM:
+# b21_20260906_h16...). Elsewhere they are too common to mean a cohort or an hour: B6 is a mouse strain,
+# h1 a habituation day. Anywhere else a cohort has to be spelled out (batch_10, cohort21).
+_STEM_RE = re.compile(r"^b(\d{1,4})_(20\d{2})(\d{2})(\d{2})_h(\d{2})(?!\d)")
+_COHORT_RE = re.compile(_TOK + r"(?:batch|cohort)[_-]?(\d{1,4})(?![a-z0-9])")
 _CAM_RE = re.compile(_TOK + r"cam[_-]?(\d{1,3})(?!\d)")
-_AGE_RE = re.compile(_TOK + r"age[_-]?(\d{1,4})(?!\d)")
-_HOUR_RE = re.compile(_TOK + r"h(\d{1,2})(?!\d)")
+# age34 or age34d (days, scripts/export_bouts.py); not age12wk / age_12_weeks / age3mo, which are not days
+_AGE_RE = re.compile(_TOK + r"age[_-]?(\d{1,4})(?:d|days?)?(?![a-z0-9])"
+                     r"(?![_-](?:w|wk|wks|weeks?|m|mo|mos|months?|y|yr|yrs|years?)(?![a-z0-9]))")
 _FRAMES_RE = re.compile(r"(?:^|[._-])f(\d+)-(\d+)(?!\d)")
 # an HCM session folder and chunk: 2025_06_16_00_01_05_cam_07.12 (old-style clip ids) or the same with
 # dashes / a slash (a recording's own path). Folder = session start, Pacific; chunk = hours since then.
@@ -114,7 +124,9 @@ def parse_name(name: str) -> dict:
     if len(frames) == 1:
         out["frames"] = list(frames.pop())
     rest = _FRAMES_RE.sub("_", s)               # frame numbers are not dates or hours
-    cohort = _one([int(x) for x in _COHORT_RE.findall(rest)])
+    stem = _STEM_RE.match(rest)
+    stem = stem if stem and _valid_date(*stem.group(2, 3, 4)) and int(stem.group(5)) < 24 else None
+    cohort = _one([int(x) for x in _COHORT_RE.findall(rest)] + ([int(stem.group(1))] if stem else []))
     if cohort is not None:
         out["cohort"] = cohort
     cam = _one([f"cam_{int(x):02d}" for x in _CAM_RE.findall(rest)])
@@ -144,7 +156,8 @@ def parse_name(name: str) -> dict:
     day = _one(dates)
     if day:
         out["date"] = day
-    hours += [int(x) for x in _HOUR_RE.findall(rest) if int(x) < 24]
+    if stem:
+        hours.append(int(stem.group(5)))
     hour = _one(hours)
     if hour is not None:
         out["hour"] = hour
@@ -206,11 +219,25 @@ class DBUnavailable(Exception):
     """The database can't be asked (not set up) or didn't answer; the message is the plain reason."""
 
 
+class AmbiguousRecording(Exception):
+    """More than one HCM recording, from different cages, matches the clip (`rows`, INFO_SQL's columns)."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        super().__init__(f"{len(rows)} recordings match")
+        self.rows = rows
+
+
+# libpq TCP keepalives for DBSession's connection: a dead link is noticed after about 10 + 5 x 3 seconds
+KEEPALIVE = {"keepalives": 1, "keepalives_idle": 10, "keepalives_interval": 5, "keepalives_count": 3}
+
+
 class DBSession:
     """One connection to the HCM database for a run of lookups (a refresh job over ~200 clips opens one, not
     200). The connection opens at the first lookup, through hcm_roi's engine (its URL handling, NullPool,
     connect timeout), so a run that has nothing to look up never connects. Once the database fails to
-    answer, every later lookup in the run fails at once with the same reason instead of waiting again."""
+    answer, every later lookup in the run fails at once with the same reason instead of waiting again --
+    including when the connection is lost part way through a run (query_recording). TCP keepalives make a
+    link that silently went away (VPN dropped) fail in about half a minute instead of hanging."""
 
     def __init__(self, timeout: int = 8) -> None:
         self.timeout = timeout
@@ -227,11 +254,17 @@ class DBSession:
                 raise DBUnavailable(reason)
             try:
                 from sqlalchemy import create_engine
-                self._conn = hcm_roi._engine(create_engine, self.timeout).connect()
+                self._conn = hcm_roi._engine(create_engine, self.timeout, **KEEPALIVE).connect()
             except Exception:  # noqa: BLE001  -- any connection failure is "didn't answer"
                 self.error = NO_ANSWER
                 raise DBUnavailable(NO_ANSWER) from None
         return self._conn
+
+    def lost(self, reason: str = NO_ANSWER) -> DBUnavailable:
+        """The connection went away mid-run: stop using it, and fail the rest of the run at once."""
+        self.error = reason
+        self.close()
+        return DBUnavailable(reason)
 
     def close(self) -> None:
         if self._conn is not None:
@@ -249,21 +282,43 @@ class DBSession:
         return False
 
 
+def _connection_problem(e: Exception, conn) -> str | None:
+    """NO_ANSWER / TOO_SLOW when `e` means the connection or the server is gone (not this clip's row)."""
+    from sqlalchemy import exc
+    if type(getattr(e, "orig", None)).__name__ == "QueryCanceled":        # the statement timeout
+        return TOO_SLOW
+    if isinstance(e, (exc.OperationalError, exc.InterfaceError)) or getattr(e, "connection_invalidated", False) \
+            or getattr(conn, "invalidated", False):
+        return NO_ANSWER
+    return None
+
+
 def query_recording(db: DBSession, pat: str) -> dict | None:
     """The one place the clip-info SQL runs: the recording `pat` names (hcm_roi's LIKE pattern) and its batch,
-    as a dict of INFO_SQL's columns, or None when the database has no such recording. Read only (a SELECT)."""
+    as a dict of INFO_SQL's columns, or None when the database has no such recording; AmbiguousRecording when
+    recordings from different cages match. Read only: a SELECT in a READ ONLY transaction with a statement
+    timeout, ended right after, so nothing is held open on the lab's database between clips. A lost
+    connection raises DBUnavailable and ends the run's lookups (DBSession.lost); any other error is this
+    clip's row and leaves the connection usable for the next clip."""
     from sqlalchemy import text
     conn = db.connection()
     try:
-        row = conn.execute(text(INFO_SQL), {"pat": pat}).mappings().first()
-    except Exception:                   # re-raised below, after the rollback
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+        conn.execute(text(f"SET LOCAL statement_timeout = {int(STATEMENT_TIMEOUT_MS)}"))
+        rows = [dict(r) for r in conn.execute(text(INFO_SQL), {"pat": pat}).mappings()]
+        conn.rollback()                         # end the read-only transaction (nothing to commit)
+    except Exception as e:
+        why = _connection_problem(e, conn)
+        if why:
+            raise db.lost(why) from None
         try:
-            conn.rollback()                 # this clip's row was unreadable; the connection is still good
+            conn.rollback()                     # this clip's row was unreadable; the connection is still good
         except Exception:  # noqa: BLE001
-            db.error = NO_ANSWER            # the connection itself is gone
-            raise DBUnavailable(NO_ANSWER) from None
+            raise db.lost() from None           # the connection itself is gone
         raise
-    return dict(row) if row else None
+    if len({(r.get("rig"), r.get("batch_id")) for r in rows}) > 1:
+        raise AmbiguousRecording(rows)
+    return rows[0] if rows else None
 
 
 def _s(v) -> str | None:
@@ -322,6 +377,13 @@ def from_db_row(row: dict) -> dict:
     return out
 
 
+def _ambiguous_problem(rows: list[dict]) -> str:
+    where = ", ".join(sorted({f"{r.get('rig') or '?'}/{r.get('cam') or '?'}"
+                              + (f" cohort {r['cohort_id']}" if r.get("cohort_id") is not None else "") for r in rows}))
+    return (f"{len(rows)} HCM recordings match this clip's name ({where}), so which cage it is from isn't clear; "
+            "its database details are left out")
+
+
 def _db_problem(e: Exception) -> str:
     detail = str(e).strip().splitlines()[0][:160] if str(e).strip() else type(e).__name__
     return f"the HCM database answered, but this clip's recording couldn't be read ({detail})"
@@ -341,31 +403,57 @@ def merge(*layers: tuple[str, dict]) -> tuple[dict, dict]:
     return fields, sources
 
 
+def _from_last_lookup(prev: dict | None) -> dict:
+    """The database fields of a clip's cached clip_info (what the last lookup that reached the database read)."""
+    prev = prev or {}
+    src = prev.get("sources") or {}
+    return {k: prev[k] for k in FIELDS if src.get(k) == DB and prev.get(k) is not None}
+
+
 def compute(entry: dict, db: DBSession | None = None, cache: dict | None = None) -> dict:
     """The clip_info to cache on a manifest entry: its fields, `sources` (field -> where it came from),
-    `fetched_at`, `db_error` (why the database couldn't give this clip's details, or None), `db_found` (True:
-    the database has the clip's recording; False: it was asked and has none; None: not asked), and
-    `recording` (the recording the clip was matched to). With `db=None` the database is not asked and
-    `fetched_at` stays None: a stand-in until a refresh runs."""
+    `fetched_at`, `db_error` (why the database couldn't give this clip's details, or None), `db_retry` (True
+    when that was the database not answering or not being set up, so the next automatic refresh asks again),
+    `db_found` (True: the database has the clip's recording; False: it was asked and has none; None: not
+    asked), `db_fetched_at` (when the database details shown were read) and `recording` (the recording the
+    clip was matched to). With `db=None` the database is not asked and `fetched_at` stays None: a stand-in
+    until a refresh runs.
+
+    A lookup that can't read the database keeps the database details the clip already had (entry's cached
+    clip_info, still marked "HCM database", with their db_fetched_at), so a refresh off the Salk network
+    doesn't throw away genotype, sex and the cage."""
     vid = entry.get("video_id") or ""
     name = parse_name(vid)
     summ, video = from_summary(entry, cache)
     pat = hcm_roi.recording_like(vid) or hcm_roi.recording_like_path(entry.get("source_video") or video)
-    dbf, db_error, db_found = {}, None, None
+    prev = entry.get("clip_info") or {}
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    dbf, db_error, db_found, db_retry, db_at, ambiguous = {}, None, None, False, None, False
     if db is not None and pat:
         try:
             row = query_recording(db, pat)
+        except AmbiguousRecording as e:
+            # the clip's own name can say which cohort it is (b21..., ..._batch_10_...): then it isn't ambiguous
+            rows = [r for r in e.rows if name.get("cohort") is not None and r.get("cohort_id") == name["cohort"]]
+            if rows and len({(r.get("rig"), r.get("batch_id")) for r in rows}) == 1:
+                db_found, dbf, db_at = True, from_db_row(rows[0]), now
+            else:
+                db_error, ambiguous = _ambiguous_problem(e.rows), True
         except DBUnavailable as e:
-            db_error = str(e)
+            db_error, db_retry = str(e), True
         except Exception as e:  # noqa: BLE001
             db_error = _db_problem(e)
         else:
-            db_found = row is not None
+            db_found, db_at = row is not None, now
             dbf = from_db_row(row) if row else {}
+        if db_error and not ambiguous:      # not read now: keep what the last lookup that reached it read
+            kept = _from_last_lookup(prev)
+            if kept:
+                dbf, db_found, db_at = kept, prev.get("db_found"), prev.get("db_fetched_at") or prev.get("fetched_at")
     fields, sources = merge((DB, dbf), (SUMMARY, summ), (NAME, name))
-    return {**fields, "sources": sources,
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds") if db is not None else None,
-            "db_error": db_error, "db_found": db_found, "recording": pat.lstrip("%/") if pat else None}
+    return {**fields, "sources": sources, "fetched_at": now if db is not None else None,
+            "db_error": db_error, "db_retry": db_retry, "db_found": db_found, "db_fetched_at": db_at,
+            "recording": pat.lstrip("%/") if pat else None}
 
 
 def name_only(entry: dict) -> dict:
@@ -374,10 +462,13 @@ def name_only(entry: dict) -> dict:
     vid = entry.get("video_id") or ""
     fields, sources = merge((NAME, parse_name(vid)))
     pat = hcm_roi.recording_like(vid)
-    return {**fields, "sources": sources, "fetched_at": None, "db_error": None, "db_found": None,
-            "recording": pat.lstrip("%/") if pat else None}
+    return {**fields, "sources": sources, "fetched_at": None, "db_error": None, "db_retry": False,
+            "db_found": None, "db_fetched_at": None, "recording": pat.lstrip("%/") if pat else None}
 
 
 def has_info(entry: dict) -> bool:
-    """A refresh has run for this clip (whatever it found)."""
-    return bool((entry.get("clip_info") or {}).get("fetched_at"))
+    """A refresh has run for this clip and needs no repeat: not when the database couldn't be asked or didn't
+    answer then (db_retry), so a project opened off the Salk network, or before HCM_DATABASE_URL was set, is
+    looked up again by the next automatic refresh."""
+    ci = entry.get("clip_info") or {}
+    return bool(ci.get("fetched_at")) and not ci.get("db_retry")

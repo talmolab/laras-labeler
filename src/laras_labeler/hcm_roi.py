@@ -301,8 +301,10 @@ _DB_LOCK = threading.Lock()
 _ENGINES: dict[tuple, object] = {}
 
 
-def _engine(create_engine, timeout: int):
-    key = (DATABASE_URL, timeout)
+def _engine(create_engine, timeout: int, **connect_args):
+    """The engine for DATABASE_URL; `connect_args` are extra libpq connection parameters (clip_info's TCP
+    keepalives), each combination its own engine."""
+    key = (DATABASE_URL, timeout, tuple(sorted(connect_args.items())))
     eng = _ENGINES.get(key)
     if eng is None:
         kw = {}
@@ -311,7 +313,8 @@ def _engine(create_engine, timeout: int):
             kw["poolclass"] = NullPool
         except Exception:
             pass
-        eng = _ENGINES[key] = create_engine(engine_url(DATABASE_URL), connect_args={"connect_timeout": timeout}, **kw)
+        eng = _ENGINES[key] = create_engine(engine_url(DATABASE_URL),
+                                            connect_args={"connect_timeout": timeout, **connect_args}, **kw)
     return eng
 
 

@@ -488,34 +488,45 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
 
     # Clip info (clip_info.py): one refresh job per project at a time, over the clips asked for, through ONE
     # database connection, saving the project once at the end -- or on Stop, keeping what was fetched.
-    _info_jobs: dict = {}
+    _info_jobs: dict = {}      # pid -> {"job": its Job, "todo": its clip list (grows: _clip_info_on_add), "closed"}
 
-    def _clip_info_job(pid: str, vids=None, missing_only: bool = False):
+    def _clip_info_job(pid: str, vids=None, missing_only: bool = False, queue: bool = False):
         """(the job, started now?) -- the project's running clip-info job if there is one, else a new one over
         `vids` (all clips when None), skipping clips that already have clip info when `missing_only`. (None,
-        False) when there is nothing to do."""
+        False) when there is nothing to do. `queue` (a clip just added): while a job runs, `vids` join the end
+        of its list instead of waiting for the next refresh."""
         proj = store.get(pid)
         if proj is None:
             return None, False
         with _prewarm_lock:
-            running = jobs.get(_info_jobs.get(pid) or "")
-            if running is not None and running.status not in TERMINAL:
-                return running, False
+            run = _info_jobs.get(pid)
+            if run is not None and run["job"].status not in TERMINAL and not (queue and run["closed"]):
+                if queue and not run["closed"]:
+                    run["todo"].extend(v for v in vids or () if v not in run["todo"])
+                return run["job"], False
             want = None if vids is None else set(vids)
             todo = [v["video_id"] for v in proj.videos
                     if (want is None or v["video_id"] in want) and not (missing_only and clip_info.has_info(v))]
             if not todo:
                 return None, False
+            run = {"todo": todo, "closed": False}
 
-            def _fn(progress, _pid=pid, _todo=tuple(todo)):
+            def _fn(progress, _pid=pid, _run=run):
                 got: dict = {}
-                counts = {"clips": len(_todo), "fetched": 0, "from_db": 0, "no_recording": 0, "db_errors": 0}
+                counts = {"clips": 0, "fetched": 0, "asked": 0, "from_db": 0, "no_recording": 0, "db_errors": 0}
                 first_error = None
                 cache: dict = {}                     # one read of each folder's clips.summary.json
+                todo, i = _run["todo"], 0
                 try:
                     with clip_info.DBSession() as db:
-                        for i, vid in enumerate(_todo):
-                            progress(int(100 * i / len(_todo)), f"looking up clip {i + 1} of {len(_todo)}")   # ■ Stop lands here
+                        while True:
+                            with _prewarm_lock:      # a clip added meanwhile is on the list now, or never
+                                if i >= len(todo):
+                                    _run["closed"] = True
+                                    break
+                                vid, n = todo[i], len(todo)
+                            i += 1
+                            progress(int(100 * (i - 1) / n), f"looking up clip {i} of {n}")   # ■ Stop lands here
                             p = store.get(_pid)
                             entry = p.video(vid) if p else None
                             if entry is None:
@@ -523,15 +534,20 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                             info = clip_info.compute(entry, db, cache)
                             got[vid] = info
                             counts["fetched"] += 1
-                            if info["db_found"]:
+                            if info.get("recording"):         # an HCM clip: the database was (or would be) asked
+                                counts["asked"] += 1
+                            if info["db_error"]:              # (it may keep what an earlier lookup read)
+                                counts["db_errors"] += 1
+                                first_error = first_error or info["db_error"]
+                            elif info["db_found"]:
                                 counts["from_db"] += 1
                             elif info["db_found"] is False:
                                 counts["no_recording"] += 1
-                            if info["db_error"]:
-                                counts["db_errors"] += 1
-                                first_error = first_error or info["db_error"]
-                        progress(100, f"looked up {len(_todo)} of {len(_todo)}")
+                        progress(100, f"looked up {len(todo)} of {len(todo)}")
                 finally:
+                    with _prewarm_lock:
+                        _run["closed"] = True
+                    counts["clips"] = len(todo)
                     p = store.get(_pid)
                     if p is not None and got:
                         for vid, info in got.items():
@@ -542,17 +558,18 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 return {**counts, "db_error": first_error}
 
             job = jobs.start("clip-info", _fn, meta={"pid": pid, "clips": len(todo)})
-            _info_jobs[pid] = job.id
+            run["job"] = job
+            _info_jobs[pid] = run
         return job, True
 
     def _clip_info_on_add(pid: str, entry: dict) -> None:
         """A new clip: what its name and planner summary say at once (no database), then its database
-        details in the background -- with the project's clip-info job if one is free to start."""
+        details in the background: a job of its own, or the end of the project's running one."""
         try:
             entry["clip_info"] = clip_info.compute(entry, None)
         except Exception:  # noqa: BLE001  -- never let clip info stop a clip being added
             return
-        _clip_info_job(pid, [entry["video_id"]], missing_only=True)
+        _clip_info_job(pid, [entry["video_id"]], missing_only=True, queue=True)
 
     # ---- projects & videos ----
     @app.get("/api/projects")

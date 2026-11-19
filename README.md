@@ -122,7 +122,9 @@ show in the clip picker (`P34 · SOD1 · …`), in the header and in **Clip ▾ 
 *find a clip* box searches them (`P34`, `P30-40`, `SOD1`, `female`, `b21`, `cam_07`). They come from the
 HCM database when `HCM_DATABASE_URL` is set and the database answers, otherwise from the clip planner's
 `clips.summary.json` beside the clip, then from the clip's file name; Clip info says which for each field.
-The database doesn't record which track is which mouse. Clips from other experiments show nothing extra.
+When the database can't be reached (off the Salk network), clips keep what was last read from it, and it
+is asked again the next time the project is opened. The database doesn't record which track is which
+mouse. Clips from other experiments show nothing extra.
 
 ## Status
 
