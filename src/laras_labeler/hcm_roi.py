@@ -90,17 +90,30 @@ WHERE r.video_path LIKE :pat AND jsonb_typeof(r.rois) = 'object'
 LIMIT 1;
 """
 
+# The camera as the database names it, rig/cam ('hyena/cam_06', 'rig01/cam_03'): `cam` alone is unique
+# only within a rig (hyena's cam_05..cam_08 vs the frameforge rigs' own cam_NN). The clip's recording
+# says which rig. For a clip that names only a camera, it is the one rig that has a camera of that name,
+# and NULL when several rigs do: another rig's arena would be a wrong outline, not a missing one.
+_CAM_KEY_SQL = """
+SELECT COALESCE(
+  (SELECT r.cam_key FROM recordings r WHERE r.video_path LIKE :pat LIMIT 1),
+  (SELECT CASE WHEN COUNT(DISTINCT b.cam_key) = 1 THEN MIN(b.cam_key) END FROM batches b WHERE b.cam = :cam));
+"""
+
 # Medoid over the most recent MEDOID_SAMPLE recordings, not all of them: a camera can have >12k
 # valid-ROI recordings (cam_07 did), and unnesting every polygon takes ~45 s. Sampling 300 picks a
 # polygon with the same centroid to <0.1 px in ~0.2 s, because a camera's arena is fixed.
+# Most recent by start_time (recordings.id is a UUID, so ordering by it picks an arbitrary 300), and
+# by the recording's own cam_key, which the (cam_key, start_time) index serves. (batches.cage, which
+# this used to join for the camera, is batches.cam since hcm-core's migration 0003.)
 MEDOID_SAMPLE = 300
 
 _MEDOID_SQL = """
 WITH recs AS (
   SELECT r.id, r.rois
-  FROM recordings r JOIN batches b ON r.batch_id = b.batch_id
-  WHERE b.cage = :cam AND jsonb_typeof(r.rois) = 'object' AND r.rois->>'status' LIKE 'valid%'
-  ORDER BY r.id DESC LIMIT :lim
+  FROM recordings r
+  WHERE r.cam_key = :cam_key AND jsonb_typeof(r.rois) = 'object' AND r.rois->>'status' LIKE 'valid%'
+  ORDER BY r.start_time DESC LIMIT :lim
 ),
 cand AS (
   SELECT recs.id, feat->'geometry'->'coordinates'->0 AS ring
@@ -330,6 +343,8 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
                source_video: str | None = None) -> dict:
     """Best-effort: {roi_field: polygon} for a clip, e.g. {'cage_roi': [[x,y],...]}, plus
       camera            cam_XX
+      cam_key           rig/cam ('hyena/cam_06'), the camera whose medoid is the fallback; None when
+                        it can't be told (no recording, and several rigs have a cam_XX): no medoid then
       recording         the LIKE pattern naming the clip's own recording, or None
       recording_status  that recording's rois status, or None (no recording found)
       source            per field: "recording" or "camera medoid"
@@ -355,6 +370,11 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
     try:
         with _DB_LOCK, _engine(create_engine, timeout).connect() as conn:   # one lookup at a time (see _DB_LOCK)
             status = conn.execute(text(_STATUS_SQL), {"pat": pat}).scalar() if pat else None
+            try:
+                cam_key = conn.execute(text(_CAM_KEY_SQL), {"pat": pat, "cam": cam}).scalar()
+            except Exception:
+                conn.rollback()   # costs only the medoid fallback, not the recording's own outlines
+                cam_key = None
             for cls in classes:
                 field = ROI_CLASS.get(cls)
                 if not field:
@@ -363,8 +383,8 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
                 attempts = []
                 if pat:   # only attempt the per-recording lookup when the clip names a recording
                     attempts.append((_RECORDING_SQL, {"pat": pat, "cls": cls}, "recording"))
-                if cls not in RECORDING_ONLY:
-                    attempts.append((_MEDOID_SQL, {"cam": cam, "cls": cls, "lim": MEDOID_SAMPLE}, "camera medoid"))
+                if cls not in RECORDING_ONLY and cam_key:
+                    attempts.append((_MEDOID_SQL, {"cam_key": cam_key, "cls": cls, "lim": MEDOID_SAMPLE}, "camera medoid"))
                 for sql, params, src in attempts:
                     try:
                         row = conn.execute(text(sql), params).first()
@@ -377,4 +397,4 @@ def fetch_rois(video_id: str, classes=tuple(ROI_CLASS), timeout: int = 8,
                         break
     except Exception:
         return {}
-    return {"camera": cam, "recording": pat, "recording_status": status, "source": source, **out}
+    return {"camera": cam, "cam_key": cam_key, "recording": pat, "recording_status": status, "source": source, **out}
