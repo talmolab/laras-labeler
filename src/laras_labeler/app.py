@@ -20,14 +20,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import config, hcm_roi, hidra, objects, poseio, trainpreview
+from . import clip_info, config, hcm_roi, hidra, objects, poseio, trainpreview
 from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
 from .features import quick_series, resolve_roles
 from .featurestore import FeatureStore
 from .importers import Importer
-from .jobs import JobCancelled, JobManager, raise_if_cancelled
+from .jobs import TERMINAL, JobCancelled, JobManager, raise_if_cancelled
 from .labels import LabelStore, obj_ids
 from .predict import CANDIDATE_ORDERS, Predictor
 from .project import DEFAULT_FEATURE_CONFIG, ProjectStore
@@ -256,7 +256,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 "social_start": entry.get("social_start"), "social_end": entry.get("social_end"), **eff,
                 **{k: entry.get(k) for k in hcm_roi.FEEDER_FIELDS},
                 "roi_checked": "roi_recording_status" in entry,
-                "roi_recording_status": entry.get("roi_recording_status")}
+                "roi_recording_status": entry.get("roi_recording_status"),
+                # age, genotype, the mice in the cage ... (clip_info.py): as last fetched, or what the clip's
+                # name alone says until a refresh has run (fetched_at None)
+                "clip_info": entry.get("clip_info") or clip_info.name_only(entry)}
 
     # Every background job is timed into the annotation event log (events.py). Round timings need to
     # separate the human's time from the machine's, and the machine's time has to be recorded where the
@@ -482,6 +485,91 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             return {"looked_up": done, "of": len(_todo)}
 
         jobs.start("roi-autoload", _fn, meta={"pid": pid, "clips": len(todo)})
+
+    # Clip info (clip_info.py): one refresh job per project at a time, over the clips asked for, through ONE
+    # database connection, saving the project once at the end -- or on Stop, keeping what was fetched.
+    _info_jobs: dict = {}      # pid -> {"job": its Job, "todo": its clip list (grows: _clip_info_on_add), "closed"}
+
+    def _clip_info_job(pid: str, vids=None, missing_only: bool = False, queue: bool = False):
+        """(the job, started now?) -- the project's running clip-info job if there is one, else a new one over
+        `vids` (all clips when None), skipping clips that already have clip info when `missing_only`. (None,
+        False) when there is nothing to do. `queue` (a clip just added): while a job runs, `vids` join the end
+        of its list instead of waiting for the next refresh."""
+        proj = store.get(pid)
+        if proj is None:
+            return None, False
+        with _prewarm_lock:
+            run = _info_jobs.get(pid)
+            if run is not None and run["job"].status not in TERMINAL and not (queue and run["closed"]):
+                if queue and not run["closed"]:
+                    run["todo"].extend(v for v in vids or () if v not in run["todo"])
+                return run["job"], False
+            want = None if vids is None else set(vids)
+            todo = [v["video_id"] for v in proj.videos
+                    if (want is None or v["video_id"] in want) and not (missing_only and clip_info.has_info(v))]
+            if not todo:
+                return None, False
+            run = {"todo": todo, "closed": False}
+
+            def _fn(progress, _pid=pid, _run=run):
+                got: dict = {}
+                counts = {"clips": 0, "fetched": 0, "asked": 0, "from_db": 0, "no_recording": 0, "db_errors": 0}
+                first_error = None
+                cache: dict = {}                     # one read of each folder's clips.summary.json
+                todo, i = _run["todo"], 0
+                try:
+                    with clip_info.DBSession() as db:
+                        while True:
+                            with _prewarm_lock:      # a clip added meanwhile is on the list now, or never
+                                if i >= len(todo):
+                                    _run["closed"] = True
+                                    break
+                                vid, n = todo[i], len(todo)
+                            i += 1
+                            progress(int(100 * (i - 1) / n), f"looking up clip {i} of {n}")   # ■ Stop lands here
+                            p = store.get(_pid)
+                            entry = p.video(vid) if p else None
+                            if entry is None:
+                                continue
+                            info = clip_info.compute(entry, db, cache)
+                            got[vid] = info
+                            counts["fetched"] += 1
+                            if info.get("recording"):         # an HCM clip: the database was (or would be) asked
+                                counts["asked"] += 1
+                            if info["db_error"]:              # (it may keep what an earlier lookup read)
+                                counts["db_errors"] += 1
+                                first_error = first_error or info["db_error"]
+                            elif info["db_found"]:
+                                counts["from_db"] += 1
+                            elif info["db_found"] is False:
+                                counts["no_recording"] += 1
+                        progress(100, f"looked up {len(todo)} of {len(todo)}")
+                finally:
+                    with _prewarm_lock:
+                        _run["closed"] = True
+                    counts["clips"] = len(todo)
+                    p = store.get(_pid)
+                    if p is not None and got:
+                        for vid, info in got.items():
+                            entry = p.video(vid)
+                            if entry is not None:
+                                entry["clip_info"] = info
+                        p.save()
+                return {**counts, "db_error": first_error}
+
+            job = jobs.start("clip-info", _fn, meta={"pid": pid, "clips": len(todo)})
+            run["job"] = job
+            _info_jobs[pid] = run
+        return job, True
+
+    def _clip_info_on_add(pid: str, entry: dict) -> None:
+        """A new clip: what its name and planner summary say at once (no database), then its database
+        details in the background: a job of its own, or the end of the project's running one."""
+        try:
+            entry["clip_info"] = clip_info.compute(entry, None)
+        except Exception:  # noqa: BLE001  -- never let clip info stop a clip being added
+            return
+        _clip_info_job(pid, [entry["video_id"]], missing_only=True, queue=True)
 
     # ---- projects & videos ----
     @app.get("/api/projects")
@@ -774,8 +862,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
             entry = p.add_video(body.video_path, body.slp_path)
         except ValueError as e:
             raise HTTPException(409, str(e))
-        if _link_source(p.video(entry["video_id"])):   # a re-ID clip: note its recording while its summary is beside it
-            p.save()
+        _link_source(p.video(entry["video_id"]))   # a re-ID clip: note its recording while its summary is beside it
+        _clip_info_on_add(pid, p.video(entry["video_id"]))
+        p.save()
         _prewarm_features(pid, [entry["video_id"]])   # start computing features immediately in the background
         return p.video(entry["video_id"])
 
@@ -794,8 +883,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 shutil.copyfileobj(slp.file, f)
         try:
             entry = proj.add_video(str(vpath), str(spath) if spath else None)
-            if _link_source(proj.video(entry["video_id"])):   # found via the folder named inside the .slp
-                proj.save()
+            _link_source(proj.video(entry["video_id"]))   # found via the folder named inside the .slp
+            _clip_info_on_add(pid, proj.video(entry["video_id"]))
+            proj.save()
             _prewarm_features(pid, [entry["video_id"]])   # background feature compute right after upload
             return proj.video(entry["video_id"])
         except ValueError as e:
@@ -830,6 +920,41 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     def get_video(pid: str, vid: str):
         _video(pid, vid)
         return _meta(pid, vid)
+
+    @app.get("/api/projects/{pid}/videos/{vid}/info")
+    def get_clip_info(pid: str, vid: str):
+        """This clip's age, genotype, cage ... as last fetched (clip_info.py), or, when no refresh has run
+        yet, what its name and the clip planner's summary say (fetched_at None). Never asks the database."""
+        entry = _video(pid, vid).video(vid)
+        return entry.get("clip_info") or clip_info.compute(entry, None)
+
+    @app.get("/api/projects/{pid}/clip-info")
+    def list_clip_info(pid: str):
+        """Every clip's clip info, for the GUI to pick up a refresh's results without re-reading the project."""
+        p = _proj(pid)
+        return {"videos": {v["video_id"]: v.get("clip_info") or clip_info.name_only(v) for v in p.videos}}
+
+    @app.post("/api/projects/{pid}/clip-info/refresh")
+    def refresh_clip_info(pid: str, body: dict = Body(default={})):
+        """Fetch clip info again, from the HCM database when it answers, in a background job: {"videos": [...]
+        or null for every clip, "missing_only": skip clips that already have it}. Only one runs per project:
+        while one is running this returns it (already_running). job_id None when there was nothing to do.
+        The job's result: how many clips were fetched, found in the database, not in it, and the first reason
+        the database couldn't be read."""
+        p = _proj(pid)
+        vids = body.get("videos")
+        if vids is not None:
+            if not isinstance(vids, list):
+                raise HTTPException(400, "videos must be a list of clip ids, or null for every clip")
+            unknown = [v for v in vids if p.video(str(v)) is None]
+            if unknown:
+                raise HTTPException(404, f"not in this project: {', '.join(map(str, unknown[:5]))}")
+            vids = [str(v) for v in vids]
+        job, started = _clip_info_job(pid, vids, bool(body.get("missing_only")))
+        if job is None:
+            return {"job_id": None, "status": "done", "clips": 0, "already_running": False}
+        return {"job_id": job.id, "status": job.status, "clips": job.meta.get("clips"),
+                "already_running": not started}
 
     @app.delete("/api/projects/{pid}/videos/{vid}")
     def remove_video(pid: str, vid: str):
