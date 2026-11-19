@@ -161,30 +161,56 @@ def _slp_video_path(slp) -> str | None:
 SUMMARY = "clips.summary.json"
 
 
-def source_recording(entry: dict) -> dict | None:
-    """The HCM recording a re-ID clip was cut from, read from the clip planner's `clips.summary.json`:
-    {"video": <the hour's recording path>, "frames": [start, end) of that hour, or None for a whole-hour
-    .reid.slp}. Looked for next to the clip's video and .slp, and next to the video its .slp names (an
-    uploaded clip's only link back to its folder). None when no summary lists the clip."""
+def _summary_dirs(entry: dict):
+    """The folders a clip's `clips.summary.json` can be in, in order: beside its video, beside its .slp, and
+    beside the video its .slp names. The last is only read (an h5py open) when the first two had no match."""
     vp, sp = entry.get("video_path"), entry.get("slp_path")
-    names = {_basename(p) for p in (vp, sp) if p}
-    dirs: list[Path] = []
-    for p in (vp, sp, _slp_video_path(sp) if sp else None):
-        if p and Path(p).parent not in dirs:
-            dirs.append(Path(p).parent)
-    for d in dirs:
-        try:
-            items = json.loads((d / SUMMARY).read_text())
-        except Exception:
-            continue
+    seen: list[Path] = []
+    for p in (vp, sp):
+        if p and Path(p).parent not in seen:
+            seen.append(Path(p).parent)
+            yield seen[-1]
+    inner = _slp_video_path(sp) if sp else None
+    if inner and Path(inner).parent not in seen:
+        yield Path(inner).parent
+
+
+def summary_row(entry: dict, cache: dict | None = None) -> tuple[dict, bool] | None:
+    """The clip planner's `clips.summary.json` row for this clip, and whether that row is for its whole hour
+    (the clip is the hour-level .reid.slp, not a cut clip). Looked for next to the clip's video and .slp, and
+    next to the video its .slp names (an uploaded clip's only link back to its folder). None when no summary
+    lists the clip. `cache` (folder -> parsed summary) saves re-reading one summary for every clip of a run."""
+    names = {_basename(p) for p in (entry.get("video_path"), entry.get("slp_path")) if p}
+    for d in _summary_dirs(entry):
+        key = str(d)
+        if cache is not None and key in cache:
+            items = cache[key]
+        else:
+            try:
+                items = json.loads((d / SUMMARY).read_text())
+            except Exception:
+                items = None
+            if cache is not None:
+                cache[key] = items
         for it in items if isinstance(items, list) else []:
             if not isinstance(it, dict) or not it.get("video"):
                 continue
             if names & {_basename(it[k]) for k in ("clip_video", "clip_slp") if it.get(k)}:
-                return {"video": str(it["video"]), "frames": [it.get("start"), it.get("end")]}
+                return it, False
             if it.get("slp") and _basename(it["slp"]) in names:      # the hour-level .reid.slp
-                return {"video": str(it["video"]), "frames": None}
+                return it, True
     return None
+
+
+def source_recording(entry: dict) -> dict | None:
+    """The HCM recording a re-ID clip was cut from, read from the clip planner's `clips.summary.json`
+    (`summary_row`): {"video": <the hour's recording path>, "frames": [start, end) of that hour, or None for a
+    whole-hour .reid.slp}. None when no summary lists the clip."""
+    hit = summary_row(entry)
+    if not hit:
+        return None
+    it, whole_hour = hit
+    return {"video": str(it["video"]), "frames": None if whole_hour else [it.get("start"), it.get("end")]}
 
 
 def _clean_ring(ring) -> list[list[float]]:
@@ -243,12 +269,9 @@ def engine_url(url: str) -> str:
     return url
 
 
-def unavailable_reason(video_id: str, source_video: str | None = None) -> str | None:
-    """Why fetch_rois can't even ask the database for this clip, as a sentence for the GUI, or None when
-    the setup is complete (then an empty fetch means the database itself didn't answer). Checks only
-    what can be checked without a connection."""
-    if not (camera_of(source_video or "") or camera_of(video_id)):
-        return "the clip's name doesn't say which camera it is from (cam_NN), so its recording can't be looked up"
+def setup_reason() -> str | None:
+    """Why this labeler can't ask the HCM database at all (no driver, no HCM_DATABASE_URL), as a sentence for
+    the GUI, or None when the setup is complete. Checks only what can be checked without a connection."""
     try:
         import sqlalchemy  # noqa: F401
     except Exception:
@@ -259,6 +282,15 @@ def unavailable_reason(video_id: str, source_video: str | None = None) -> str | 
         return ("HCM_DATABASE_URL isn't set: export it in the terminal once before you start the labeler "
                 "(it is remembered in the projects folder after that)")
     return None
+
+
+def unavailable_reason(video_id: str, source_video: str | None = None) -> str | None:
+    """Why fetch_rois can't even ask the database for this clip, as a sentence for the GUI, or None when
+    the setup is complete (then an empty fetch means the database itself didn't answer). Checks only
+    what can be checked without a connection."""
+    if not (camera_of(source_video or "") or camera_of(video_id)):
+        return "the clip's name doesn't say which camera it is from (cam_NN), so its recording can't be looked up"
+    return setup_reason()
 
 
 # The HCM database is shared by the whole lab and has a small connection limit. A project with ~200 clips

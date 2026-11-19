@@ -23,7 +23,10 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; }
   header h1::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
                       background: linear-gradient(135deg, #6ea8fe, #7fb069); margin-right: 8px; vertical-align: middle; }
-  header .meta { color: var(--dim); font-size: 12px; letter-spacing: .2px; }
+  header .meta { color: var(--dim); font-size: 12px; letter-spacing: .2px;
+                 min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header > h1, header > select, header > details { flex-shrink: 0; }
+  header .meta #clipInfoMeta { color: #c2c9d4; cursor: help; }   /* the clip's mice: age, genotype, cage ... */
   main { max-width: 1400px; margin: 0 auto; padding: 20px 20px 44px; }
   #stage { position: relative; width: 100%; margin: 0 auto; background: #000;
            border-radius: 12px; overflow: hidden; line-height: 0; box-shadow: var(--shadow); border: 1px solid #05070a; }
@@ -61,6 +64,21 @@
   #clipFilter::placeholder { color: var(--mute); }
   #hidraPpcHome label { display: none; }                 /* in the dialog the row's own label names it */
   .modal .calnote { color: var(--mute); font-size: 11.5px; line-height: 1.5; margin: -6px 0 10px 108px; }
+  /* Clip ▾ → Clip info… */
+  #clipInfoBody .cigrid { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 6px 12px;
+                          align-items: baseline; font-size: 13px; margin: 4px 0 2px; }
+  #clipInfoBody .cilab { color: #b8c0cc; }
+  #clipInfoBody .cisrc { color: var(--mute); font-size: 11.5px; text-align: right; white-space: nowrap; }
+  #clipInfoBody .cidim, #clipInfoBody .cinone { color: var(--mute); }
+  #clipInfoBody .cimice { grid-column: 1 / -1; width: 100%; border-collapse: collapse; font-size: 12.5px; margin: -2px 0 2px; }
+  #clipInfoBody .cimice th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11.5px;
+                             border-bottom: 1px solid var(--border); padding: 2px 10px 3px 0; }
+  #clipInfoBody .cimice td { padding: 3px 10px 3px 0; }
+  #clipInfoBody .cinote { color: var(--mute); font-size: 11.5px; line-height: 1.5; margin-top: 8px; word-break: break-word; }
+  #clipInfoBody .ciwarn { color: #ffb347; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  #clipInfoDlg .row { flex-wrap: wrap; }
+  main.browsing #clipMenu .menu-items > button:not(#clipInfoBtn) { opacity: .45; }   /* read only while browsing */
+  #clipInfoDlg button[data-browse-lock] { opacity: .45; }
   /* 🧠 Models overview */
   #modelsBody { max-height: 72vh; overflow: auto; }
   #modelsPanel .mcard { border: 1px solid var(--border, #262b33); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
@@ -329,24 +347,25 @@
     <span class="stg">① Clip</span>
     <span id="clipNav" style="display:inline-flex; align-items:center; gap:6px">
       <button id="clipPrev" class="clipstep" title="Previous clip (of the clips the picker lists)">◀</button>
-      <select id="clipPick" title="The clip on screen. Every clip in the project is listed as 'short name · full name'; 🧪 marks a held-out test clip. With many clips, type in the filter box to narrow the list."></select>
+      <select id="clipPick" title="The clip on screen. Every clip in the project is listed as 'short name · full name', after its age and genotype when they are known (P34 · SOD1, see Clip ▾ → Clip info…); 🧪 marks a held-out test clip. With many clips, type in the filter box to narrow the list."></select>
       <button id="clipNext" class="clipstep" title="Next clip (of the clips the picker lists)">▶</button>
       <span class="status" id="clipPos" style="font-variant-numeric:tabular-nums; white-space:nowrap"></span>
       <span id="clipTestBadge" style="display:none" title="This clip is held out of all training (HiDRA fine-tunes and the project model) and is used to score models fairly in 🧠 Models. Clip ▾ → Use as test clip turns it off.">🧪 test clip</span>
     </span>
     <details class="menu" id="clipMenu">
-      <summary title="Add a clip, or act on the one on screen: import labels, use it as the test clip, its frame rate and scale, remove it">Clip</summary>
+      <summary title="Add a clip, or act on the one on screen: import labels, use it as the test clip, its frame rate and scale, its mice (Clip info), remove it">Clip</summary>
       <div class="menu-items">
         <button id="clipAddBtn" title="Add a video and its SLEAP tracking file to this project">Add clip…<span class="sub">a video and its SLEAP tracking file</span></button>
         <button id="importBtn" title="Import labels for THIS clip from a file on the server: an event-annotator export (.json) or an interval CSV (behavior,start,end in frames)">Import labels into this clip…<span class="sub">event-annotator .json or interval .csv, by path</span></button>
         <button id="clipTestToggle">Use as test clip<span class="sub" id="clipTestSub"></span></button>
         <button id="clipCalibBtn" title="This clip's frame rate and, for HiDRA, its pixels per centimetre">Clip calibration…<span class="sub">frame rate · px/cm</span></button>
+        <button id="clipInfoBtn" title="The mice in this clip: age, genotype, sex, the mice in the cage, cohort, camera and when it was recorded, from the HCM database (or the clip planner's summary and the clip's name)">Clip info…<span class="sub">age, genotype, the mice in the cage</span></button>
         <div class="menu-sep"></div>
         <button id="clipRemoveBtn" class="danger" title="Remove this clip from the project: its labels, cached features and predictions here. The video and tracking files on disk are kept.">Remove clip…<span class="sub">its labels and predictions in this project</span></button>
       </div>
     </details>
     <input type="search" id="clipFilter" placeholder="find a clip…" autocomplete="off" spellcheck="false" style="display:none"
-           title="Narrow the clip picker to the clips whose name contains this text (any part of the full name). Enter opens the next match; Esc clears it.">
+           title="Narrow the clip picker: part of the clip's name, or what is known about its mice: an age (P34, or a range P30-40), a genotype (SOD1, WT), female / male, a cohort (b21, cohort 21) or a camera (cam_07). Several words must all match. Enter opens the next match; Esc clears it.">
     <span class="status" id="clipEmpty" style="display:none">No clips in this project yet.</span>
     <button id="clipAddFirst" class="primary" style="display:none" title="Add a video and its SLEAP tracking file to this project">＋ Add clip…</button>
   </div>
@@ -849,7 +868,7 @@
     </div>
     <div class="hint-box">
       <h4>Video &amp; keys</h4>
-      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. <b>View</b> (top right of the video) shows or hides the arena outlines and approach paths and sets brightness / contrast; on a clip not from HCM, <b>Outlines ▾</b> (top left) draws them. Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>◀ ▶</b> beside the clip picker change clip · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
+      <p><b>Double-click</b> the video to zoom on a spot (again to reset), then <b>drag to recenter</b>. Also ＋ / − / 0 or Ctrl/⌘+scroll; click the zoom level to reset it. <b>View</b> (top right of the video) shows or hides the arena outlines and approach paths and sets brightness / contrast; on a clip not from HCM, <b>Outlines ▾</b> (top left) draws them. <b>Clip ▾ → Clip info…</b> shows the clip's mice (age, genotype, sex, the cage); the find-a-clip box also takes an age (<b>P34</b>, <b>P30-40</b>), <b>SOD1</b> / <b>WT</b>, a cohort (<b>b21</b>) or a camera (<b>cam_07</b>). Ruler = scrub · <b>←/→</b> step (Shift ±5, Ctrl ±30) · <b>Home/End</b> first/last frame · <b>◀ ▶</b> beside the clip picker change clip · <b>Space</b> play · <b>Esc</b> cancel · <b>Ctrl+Z</b> undo.</p>
     </div>
   </div>
 
@@ -891,6 +910,24 @@
       <div class="calnote">HiDRA measures distance and speed in centimetres, so it needs this clip's scale and will not run without it. Measure it from something of known size in frame, such as a cage wall. When an automatic scale is shown in the box, leave it empty to use that.</div>
     </div>
     <div class="row" style="justify-content:flex-end"><button id="clipCalibClose">Done</button></div>
+  </div>
+</div>
+
+<!-- Clip ▾ → Clip info…: the open clip's mice (age, genotype, sex, one row per mouse in the cage), cohort, camera
+     and recording time, each with where it came from (renderClipInfoDlg). Readable while browsing; the refresh
+     buttons follow the browse write lock. Closed by Close, Esc or a click outside it. -->
+<div class="modal-overlay" id="clipInfoDlg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clipInfoTitle">
+    <h3 id="clipInfoTitle">Clip info</h3>
+    <div class="sub" id="clipInfoName" style="word-break:break-all"></div>
+    <div id="clipInfoBody"></div>
+    <div class="status" id="clipInfoStatus" style="min-height:1.5em; margin-top:8px; font-size:12px"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px">
+      <button id="clipInfoRefresh" title="Look this clip up in the HCM database again (and re-read its clip planner summary and name)">Refresh from HCM</button>
+      <button id="clipInfoRefreshAll" title="Look up every clip in this project again, in the background (one database connection; Stop keeps what was fetched)">Refresh all clips</button>
+      <button id="clipInfoStop" style="display:none" title="Stop the refresh. Clips already looked up keep their new info.">■ Stop</button>
+      <button id="clipInfoClose">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1202,6 +1239,7 @@ async function selectProject(pid) {
   renderMediaFix(projMeta.media);       // this project may have been made on another computer
   logEvent("project_open", { pid, name: projMeta.name, n_videos: (projMeta.videos || []).length,
                              n_behaviors: behaviors.length, schema: EVENT_SCHEMA });
+  ensureClipInfo();             // clips with no clip info yet: one quiet background lookup (nothing for an empty project)
   hidraSyncVideo();             // no-op unless HiDRA is available; the px/cm scale is per clip
   if (projMeta.videos.length) await openVideo(projMeta.videos[projMeta.videos.length - 1].video_id);   // most recently loaded
   else { clearStage(); metaEl.textContent = "No clips yet — Add clip… to begin."; }
@@ -1223,6 +1261,9 @@ function resetWorkspaceState() {
   hidraReflect(); metricsEl.textContent = ""; showDowngrade(null);
   undoStack.length = 0; redoStack.length = 0; reviewUndo.length = 0;
   el("clipFilter").value = "";                    // a filter typed for the old project's clip names
+  closeModal("clipInfoDlg");                      // the old project's clip info
+  infoJob = null; infoAuto = { pid: null, n: 0 };  // its refresh goes on on the server; this page stops following it
+  renderClipInfoJob("");
   lastTrainset = null; lastTrainsetBid = null; lastStatsHistory = [];
 }
 
@@ -1230,6 +1271,7 @@ function resetWorkspaceState() {
 // avoids renderTimeline()/loadLabels(), which need meta.n_frames.
 function clearStage() {
   closeBrowse();
+  metaEl.title = "";
   stop();
   if (videoBackend) { try { videoBackend.close(); } catch (e) {} videoBackend = null; }
   frameOrder = null; pfStart = 0; pfEnd = -1;
@@ -1250,11 +1292,17 @@ function clearStage() {
   renderThreshReadout();                               // nor the last clip's "N bouts · x% of frames"
 }
 
-// the header's line about the open clip (also rewritten after its fps is corrected)
+// the header's line about the open clip (also rewritten after its fps is corrected, and when its clip info
+// arrives): its name, what is known about its mice (P34 · SOD1 · 3 female · cohort 21 · cam_07 · date), then
+// the video's size. One line: a long one ends in "…" and the whole of it is in the tooltip.
 function renderClipMeta() {
   if (!meta || !poseShape) return;
-  metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${Number(meta.fps).toFixed(1)} fps · `
-    + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
+  const parts = clipInfoParts(clipInfoOf(clipRec(vid)));
+  const rest = `${meta.n_frames} frames · ${Number(meta.fps).toFixed(1)} fps · ${poseShape[1]} tracks · ${poseShape[2]} nodes`;
+  const info = parts.map(x => x.text).join(" · ");
+  metaEl.innerHTML = esc(vid) + (info ? ` · <span id="clipInfoMeta" title="${esc(clipInfoTip(clipRec(vid)))}">${esc(info)}</span>` : "")
+    + " · " + esc(rest);
+  metaEl.title = [vid, info, rest].filter(Boolean).join(" · ");
 }
 async function openVideo(vidId) {
   // A review belongs to the clip being left: left open, y/n would paint the old candidate's frame range
@@ -1392,6 +1440,7 @@ async function maybeUpload() {
     projMeta = await (await api(``)).json(); behaviors = projMeta.behaviors;
     await openVideo(v.video_id);
     busy(`added clip ${clipShortName(v.video_id)}`);
+    ensureClipInfo();                                // its database details are being looked up in the background
   } catch (e) { st.textContent = "error: " + e.message; pendingVideo = vname; pendingSlp = sname; }
   finally { delete st.dataset.busy; showPendingUpload(false); }   // false: keep a failure message
 }
@@ -3236,14 +3285,216 @@ function clipShortName(vidId) {
   const toks = vidId.split("_");
   return toks.length >= 2 && /^\d+$/.test(toks[1]) ? `${toks[0]}_${toks[1]}` : vidId.slice(0, 16);
 }
+// ---------- clip info: the clip's mice (age as a P day, genotype, sex, the cage), cohort, camera, recording time ----------
+// From the server (clip_info.py), cached on each clip and listed with the project (projMeta.videos[].clip_info), so the
+// picker, the header and the filter need no request and work offline. `sources` says where each field came from:
+// "HCM database", "clip planner summary" or "file name". fetched_at null = not looked up yet (the name only).
+const clipRec = id => ((projMeta && projMeta.videos) || []).find(v => v.video_id === id) || null;
+const clipInfoOf = v => (v && v.clip_info) || {};
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtDay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || ""); return m ? `${+m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}` : ""; }
+function fmtRecorded(ci) {
+  const d = fmtDay(ci.date), h = ci.hour != null ? `${String(ci.hour).padStart(2, "0")}:00` : "";
+  return d && h ? `${d}, ${h}` : d || h;
+}
+function clipTag(v) {                            // "P34 · SOD1": age, then genotype; "" when neither is known
+  const ci = clipInfoOf(v);
+  return [ci.age_days != null ? `P${ci.age_days}` : "", ci.genotype || ""].filter(Boolean).join(" · ");
+}
+function miceText(ci) {                          // "3 female", "2 female + 1 male", "3 mice", "female"
+  const mice = Array.isArray(ci.mice) ? ci.mice : [], n = ci.n_mice != null ? ci.n_mice : (mice.length || null);
+  const sexes = mice.map(m => m && m.sex).filter(Boolean);
+  if (n != null && mice.length === n && sexes.length === n) {
+    const c = {}; for (const x of sexes) c[x] = (c[x] || 0) + 1;
+    const ks = Object.keys(c).sort();
+    return ks.length === 1 ? `${n} ${ks[0]}` : ks.map(k => `${c[k]} ${k}`).join(" + ");
+  }
+  if (n != null) return `${n} ${n === 1 ? "mouse" : "mice"}` + (ci.sex ? ` (${ci.sex})` : "");
+  return ci.sex || "";
+}
+function clipInfoParts(ci) {                     // the header's summary, part by part, with the fields each part shows
+  const parts = [], add = (name, text, fields) => { if (text) parts.push({ name, text, fields }); };
+  add("Age", ci.age_days != null ? `P${ci.age_days}` : "", ["age_days"]);
+  add("Genotype", ci.genotype, ["genotype"]);
+  add("Mice", miceText(ci), ["n_mice", "mice", "sex"]);
+  add("Cohort", ci.cohort != null ? `cohort ${ci.cohort}` : "", ["cohort"]);
+  add("Camera", ci.camera, ["camera"]);
+  add("Recorded", fmtRecorded(ci), ["date", "hour"]);
+  return parts;
+}
+const sentence = t => /[.?!]$/.test(t) ? t : t + ".";   // a reason ending in "?" gets no "." after it
+function sourcesOf(ci, fields) { const src = ci.sources || {}; return [...new Set(fields.map(f => src[f]).filter(Boolean))]; }
+function fmtStamp(iso) {
+  const t = new Date(iso); if (isNaN(t)) return "";
+  return `${t.getDate()} ${MONTHS[t.getMonth()]} ${t.getFullYear()}, ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+}
+function clipInfoTip(v) {                        // the header summary's tooltip: where each part came from
+  const ci = clipInfoOf(v), lines = clipInfoParts(ci).map(x => `${x.name}: ${x.text} (from the ${sourcesOf(ci, x.fields).join(", ") || "?"})`);
+  lines.push(ci.fetched_at ? `Looked up ${fmtStamp(ci.fetched_at)}.` : "Not looked up in the HCM database yet.");
+  if (ci.db_error) lines.push(`The HCM database couldn't be read then: ${sentence(ci.db_error)}`);
+  lines.push("Clip ▾ → Clip info… lists each mouse in the cage.");
+  return lines.join("\n");
+}
+// The find-a-clip box: every word must match the clip's name or what is known about its mice. "cohort 21", "cam 07"
+// and "P30 - 40" are one word each.
+function clipFilterTerms(q) {
+  return q.replace(/\b(cohort|batch|cam)\s+(\d)/g, "$1$2").replace(/\bp\s+(\d)/g, "p$1")
+          .replace(/\bp(\d+)\s*(?:[-–—]|to|\.\.)\s*(p?\d)/g, "p$1-$2").split(/[\s,]+/).filter(Boolean);
+}
+function clipMatches(v, t) {
+  if (v.video_id.toLowerCase().includes(t)) return true;          // part of the name, as always
+  const ci = clipInfoOf(v), age = ci.age_days;
+  let m;
+  if ((m = /^p(\d+)$/.exec(t))) return age === +m[1];
+  if ((m = /^p(\d+)-p?(\d+)$/.exec(t))) { const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]); return age != null && age >= lo && age <= hi; }
+  if ((m = /^(?:b|batch|cohort)_?(\d+)$/.exec(t))) return ci.cohort != null && ci.cohort === +m[1];
+  if ((m = /^cam_?(\d+)$/.exec(t))) return ci.camera === `cam_${String(+m[1]).padStart(2, "0")}`;
+  const words = new Set([...(ci.genotype || "").split("/"), ...(ci.sex || "").split("/"),
+                         ...(Array.isArray(ci.mice) ? ci.mice.flatMap(x => [x && x.genotype, x && x.sex]) : [])]
+                        .filter(Boolean).map(x => String(x).toLowerCase()));
+  if (words.has(t)) return true;                                   // sod1, wt, female, male (exactly: "male" isn't "female")
+  if (clipTag(v).toLowerCase().includes(t)) return true;
+  return !!ci.date && /^\d{4}-?\d*/.test(t) && ci.date.startsWith(t);   // a recording date: 2026-09, 2026-09-06
+}
+function openClipInfo() {
+  if (!vid) return;
+  renderClipInfoDlg();
+  renderClipInfoJob(infoJob && infoJob.pid === PID ? null     // a finished refresh's message is old news
+    : browse ? "Refreshing is off while you browse detections (Done ends it)." : "");
+  openModal("clipInfoDlg");
+  el("clipInfoClose").focus();                   // Space / Enter on the focused button closes, never starts a lookup
+}
+function renderClipInfoDlg() {
+  const v = clipRec(vid); if (!v) return;
+  const ci = clipInfoOf(v), dash = '<span class="cinone">—</span>';
+  const src = (...f) => { const u = sourcesOf(ci, f); return `<span class="cisrc">${esc(u.join(", "))}</span>`; };
+  const row = (label, html, ...f) => `<div class="cilab">${label}</div><div>${html || dash}</div>${html ? src(...f) : "<span></span>"}`;
+  const mice = Array.isArray(ci.mice) ? ci.mice : [], ids = mice.some(m => m && m.identity_id);
+  let h = '<div class="cigrid">';
+  h += row("Age", ci.age_days != null ? `P${esc(ci.age_days)}${ci.dob ? ` <span class="cidim">born ${esc(ci.dob)}</span>` : ""}` : "", "age_days", "dob");
+  h += row("Genotype", esc(ci.genotype || ""), "genotype");
+  h += row("Sex", esc(ci.sex || ""), "sex");
+  const n = ci.n_mice != null ? ci.n_mice : (mice.length || null);
+  h += row(`Mice${n != null ? ` (${esc(n)})` : ""}`, esc(miceText(ci)), "n_mice", "mice");
+  if (mice.length) {
+    const cell = x => (x == null || x === "") ? dash : esc(x);
+    h += `<table class="cimice"><thead><tr><th>Genotype</th><th>Sex</th><th>Born</th><th>Treatment</th><th>ID</th></tr></thead><tbody>`
+      + mice.map(m => { m = m || {}; const id = m.identity_id ? `${m.identity_id}${m.identity_type ? ` (${m.identity_type})` : ""}` : null;
+                        return `<tr><td>${cell(m.genotype)}</td><td>${cell(m.sex)}</td><td>${cell(m.dob)}</td><td>${cell(m.treatment)}</td><td>${cell(id)}</td></tr>`; }).join("")
+      + "</tbody></table>";
+  }
+  h += row("Cohort", ci.cohort != null ? esc(ci.cohort) : "", "cohort");
+  h += row("Camera", ci.camera ? esc(ci.camera) + (ci.rig ? ` <span class="cidim">rig ${esc(ci.rig)}</span>` : "") : "", "camera", "rig");
+  h += row("Recorded", esc(fmtRecorded(ci)), "date", "hour");
+  h += "</div>";
+  const notes = [];
+  if (mice.length && !ids) notes.push("Which track is which mouse isn't recorded in the HCM database.");
+  if (ci.recording) notes.push(`Recording: ${esc(ci.recording)}${Array.isArray(ci.frames) ? `, frames ${esc(ci.frames[0])}–${esc(ci.frames[1])}` : ""}`);
+  else if (Array.isArray(ci.frames)) notes.push(`Frames ${esc(ci.frames[0])}–${esc(ci.frames[1])} of the recording`);
+  const known = clipInfoParts(ci).length > 0;
+  if (!ci.fetched_at) notes.push(known ? "Not looked up yet: shown from the clip's name. Refresh from HCM looks it up."
+                                       : "Not looked up yet. Refresh from HCM looks it up.");
+  else {
+    notes.push(`Looked up ${esc(fmtStamp(ci.fetched_at))}.`);
+    if (ci.db_found === false) notes.push("The HCM database has no recording for this clip.");
+    else if (ci.db_found == null && !ci.db_error)
+      notes.push(known ? "This clip isn't linked to an HCM recording, so the HCM database isn't asked."
+                       : "Nothing is known about this clip's mice: its name doesn't say, and it isn't linked to an HCM recording.");
+  }
+  let warn = "";
+  if (ci.db_error) warn = `<div class="ciwarn">The HCM database couldn't be read: ${esc(sentence(ci.db_error))}${known ? " What is shown comes from the clip planner's summary and the clip's name." : ""}</div>`;
+  el("clipInfoName").textContent = vid;
+  el("clipInfoBody").innerHTML = h + warn + notes.map(x => `<div class="cinote">${x}</div>`).join("");
+}
+// Refreshes run as one background job per project (POST /clip-info/refresh), which this page follows: the quiet one
+// on project open only shows in the status line if it takes a while, or if the HCM database couldn't be read.
+let infoJob = null;                    // the refresh being followed: {pid, jid, quiet, shown}
+let infoAuto = { pid: null, n: 0 };    // automatic refreshes started for the open project (at most two: open + after a new clip)
+function renderClipInfoJob(msg) {
+  const running = !!(infoJob && infoJob.pid === PID);
+  el("clipInfoRefresh").disabled = el("clipInfoRefreshAll").disabled = running || !vid;
+  el("clipInfoStop").style.display = running ? "" : "none";
+  if (msg != null) el("clipInfoStatus").textContent = msg;
+}
+function ensureClipInfo() {            // clips with no clip info yet: one quiet lookup, never two at once
+  const vids = (projMeta && projMeta.videos) || [];
+  if (!vids.some(v => !clipInfoOf(v).fetched_at)) return;
+  if (infoAuto.pid !== PID) infoAuto = { pid: PID, n: 0 };
+  if (infoAuto.n >= 2 || (infoJob && infoJob.pid === PID)) return;
+  infoAuto.n++;
+  refreshClipInfo(null, true, true);
+}
+async function refreshClipInfo(videos, missingOnly, quiet) {
+  if (infoJob && infoJob.pid === PID) return;       // one at a time: the running one finishes first
+  const pid = PID;
+  let d;
+  try {
+    const r = await api(`/clip-info/refresh`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                body: JSON.stringify({ videos, missing_only: missingOnly }) });
+    if (!r.ok) {
+      const why = (await r.json().catch(() => ({}))).detail || r.status;
+      if (!quiet && PID === pid) renderClipInfoJob(`Could not refresh: ${why}`);
+      return;
+    }
+    d = await r.json();
+  } catch (e) { if (!quiet && PID === pid) renderClipInfoJob(`Could not refresh: ${e.message}`); return; }
+  if (PID !== pid) return;
+  if (!d.job_id) {                                   // nothing left to fetch: e.g. a new clip's lookup already ran on the server
+    await pullClipInfo(pid);
+    if (!quiet && PID === pid) renderClipInfoJob("Nothing to refresh.");
+    return;
+  }
+  if (d.already_running && !quiet) renderClipInfoJob("Clip info is already being refreshed for this project: showing that run. Refresh again when it is done to look up more.");
+  await followClipInfo(pid, d.job_id, quiet, d.already_running);
+}
+async function followClipInfo(pid, jid, quiet, joined = false) {
+  if (infoJob && infoJob.pid === pid) return;
+  const job = infoJob = { pid, jid, quiet, shown: false }, t0 = Date.now();
+  renderClipInfoJob(quiet || joined ? null : "Looking up…");
+  let s = null, fails = 0;
+  while (PID === pid && infoJob === job) {
+    await new Promise(res => setTimeout(res, 400));
+    if (PID !== pid || infoJob !== job) break;
+    try { const r = await api(`/jobs/${jid}`); if (!r.ok) { s = null; break; } s = await r.json(); fails = 0; }
+    catch (e) { if (++fails > 10) { s = null; break; } continue; }
+    if (["done", "error", "cancelled"].includes(s.status)) break;
+    const msg = `Clip info: ${s.msg && s.msg !== "started" ? s.msg : "starting"}…`;
+    if (!quiet || Date.now() - t0 > 1500) { busy(msg); job.shown = true; }   // a quick quiet run shows nothing
+    if (!quiet || job.shown) renderClipInfoJob(msg);
+  }
+  if (infoJob !== job || PID !== pid) return;       // another project opened: the job goes on on the server
+  infoJob = null;
+  await pullClipInfo(pid);
+  const res = (s && s.result) || {}, plural = k => `${k} clip${k === 1 ? "" : "s"}`;
+  let fin = null;
+  if (!s || s.status === "error") fin = `Clip info: the refresh failed${s && s.error ? ` (${s.error})` : ""}.`;
+  else if (s.status === "cancelled") fin = "Clip info: stopped. The clips already looked up keep their new info.";
+  else if (res.db_error && !res.from_db && !res.no_recording)       // the database never answered
+    fin = `Clip info: ${sentence(res.db_error)} Age and genotype come from the clip planner's summary and the clip names until it can be read.`;
+  else if (res.fetched != null) fin = `Clip info: ${plural(res.fetched)} looked up, ${res.from_db || 0} found in the HCM database`
+                                     + (res.no_recording ? `, ${res.no_recording} not in it` : "")
+                                     + (res.db_errors ? `; ${plural(res.db_errors)} couldn't be read (${res.db_error})` : "") + ".";
+  if (PID !== pid) return;
+  if (fin && (!quiet || job.shown || res.db_error)) busy(fin);
+  renderClipInfoJob(quiet && !job.shown ? null : (fin || ""));
+  if (quiet && s && s.status === "done") ensureClipInfo();   // a clip added while this ran
+}
+async function pullClipInfo(pid) {     // the refreshed clip info, into the project already loaded
+  let d; try { const r = await api(`/clip-info`); if (!r.ok) return; d = await r.json(); } catch (e) { return; }
+  if (PID !== pid || !projMeta) return;
+  for (const v of projMeta.videos || []) if (d.videos && d.videos[v.video_id]) v.clip_info = d.videos[v.video_id];
+  renderClipBar(); renderClipMeta();
+  if (el("clipInfoDlg").classList.contains("on")) renderClipInfoDlg();
+}
+
 // ---------- ① Clip row: previous / picker / next, where you are, the test-clip badge, the clip menu ----------
 // One row however many clips (a chip per clip filled ~15 rows at 191 clips). The picker lists every clip as
 // 'short name · full name' (🧪 = a held-out test clip); with many clips a filter box narrows the list, and
 // ◀ ▶ then step through the matches.
 const CLIP_FILTER_MIN = 13;                     // the filter box shows from this many clips on
 function clipLabel(v) {
-  const s = clipShortName(v.video_id);
-  return (v.role === "test" ? "🧪 " : "") + (s === v.video_id ? s : `${s} · ${v.video_id}`);
+  const s = clipShortName(v.video_id), tag = clipTag(v);
+  return (v.role === "test" ? "🧪 " : "") + (tag ? tag + " · " : "") + (s === v.video_id ? s : `${s} · ${v.video_id}`);
 }
 function clipFilterText() {
   const f = el("clipFilter");
@@ -3251,7 +3502,9 @@ function clipFilterText() {
 }
 function clipList() {                           // the clips the picker lists: all of them, or the filter's matches
   const vids = (projMeta && projMeta.videos) || [], q = clipFilterText();
-  return q ? vids.filter(v => v.video_id.toLowerCase().includes(q)) : vids;
+  if (!q) return vids;
+  const terms = clipFilterTerms(q);
+  return vids.filter(v => terms.every(t => clipMatches(v, t)));
 }
 function clipStep(d, from = vid) {              // the listed clip before (d < 0) or after (d > 0) the open one
   const vids = (projMeta && projMeta.videos) || [], ci = vids.findIndex(v => v.video_id === from);
@@ -3298,7 +3551,8 @@ function renderClipBar() {
   const isTest = !!cur && cur.role === "test";
   el("clipTestBadge").style.display = isTest ? "" : "none";
   // the clip menu acts on the open clip
-  for (const id of ["importBtn", "clipTestToggle", "clipCalibBtn", "clipRemoveBtn"]) el(id).disabled = !cur;
+  for (const id of ["importBtn", "clipTestToggle", "clipCalibBtn", "clipInfoBtn", "clipRemoveBtn"]) el(id).disabled = !cur;
+  if (el("clipInfoDlg").classList.contains("on")) { if (cur) renderClipInfoDlg(); else closeModal("clipInfoDlg"); }
   const tt = el("clipTestToggle");
   tt.firstChild.textContent = "Use as test clip";
   let chk = tt.querySelector(".mchk");
@@ -3324,7 +3578,7 @@ function closeModal(id) {
   m.classList.remove("on");
   if (id === "clipCalibDlg") placePpc();
 }
-for (const id of ["addClipDlg", "clipCalibDlg"]) el(id).addEventListener("click", e => { if (e.target === el(id)) closeModal(id); });
+for (const id of ["addClipDlg", "clipCalibDlg", "clipInfoDlg"]) el(id).addEventListener("click", e => { if (e.target === el(id)) closeModal(id); });
 window.addEventListener("keydown", e => {
   const m = document.querySelector(".modal-overlay.on"); if (!m) return;
   if (e.key === "Escape") { e.preventDefault(); closeModal(m.id); }
@@ -3389,6 +3643,11 @@ el("addClipClose").onclick = () => closeModal("addClipDlg");
 el("clipTestToggle").onclick = () => { if (vid && !browseBlocked()) setClipRole(vid, isTestClip() ? null : "test"); };
 el("clipCalibBtn").onclick = openClipCalib;
 el("clipCalibClose").onclick = () => closeModal("clipCalibDlg");
+el("clipInfoBtn").onclick = openClipInfo;
+el("clipInfoClose").onclick = () => closeModal("clipInfoDlg");
+el("clipInfoRefresh").onclick = () => { if (vid && !browseBlocked()) refreshClipInfo([vid], false, false); };
+el("clipInfoRefreshAll").onclick = () => { if (!browseBlocked()) refreshClipInfo(null, false, false); };
+el("clipInfoStop").onclick = () => { if (infoJob && infoJob.pid === PID) api(`/jobs/${infoJob.jid}/cancel`, { method: "POST" }).catch(() => null); };
 el("clipRemoveBtn").onclick = () => { if (vid) removeClip(vid); };
 el("hidraFps").onchange = hidraSaveFps;          // every install: the project's own features are in seconds too
 el("hidraPpc").onchange = hidraSaveScale;
@@ -5462,8 +5721,11 @@ function setBrowseLock(on) {
   if (!on) { for (const n of document.querySelectorAll("[data-browse-lock]")) { n.inert = false; delete n.dataset.browseLock; } return; }
   closeMenus();                                        // an open menu would stay open but dead
   const lock = n => { if (n && !n.inert) { n.inert = true; n.dataset.browseLock = "1"; } };
-  // the clip menu and its dialogs (Add clip, calibration) are locked; the picker and ◀ ▶ stay live (a switch closes browse)
-  for (const id of ["clipMenu", "clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "mediaFix"]) lock(el(id));
+  // the clip menu's actions and its dialogs (Add clip, calibration) are locked; the picker and ◀ ▶ stay live (a switch
+  // closes browse). Clip info… only reads, so it stays open to use, all but its refresh buttons.
+  for (const id of ["clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "mediaFix",
+                    "clipInfoRefresh", "clipInfoRefreshAll"]) lock(el(id));
+  for (const n of el("clipMenu").querySelectorAll(".menu-items > button")) if (n.id !== "clipInfoBtn") lock(n);
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("rowbreak") || n.classList.contains("stg");
     if (!live) lock(n);

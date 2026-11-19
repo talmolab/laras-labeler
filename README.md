@@ -116,6 +116,14 @@ When an HCM clip's outlines can't be loaded, the top left of the video shows **�
 to see why. `uv run python scripts/check_hcm_roi.py --clip <part of the clip name>` walks the lookup
 one step at a time for that clip.
 
+**Clip info.** Each clip's age (P day on the recording date), genotype, sex, the mice in the cage
+(each one's genotype, sex, date of birth, treatment and ID), cohort, camera and recording date and hour
+show in the clip picker (`P34 · SOD1 · …`), in the header and in **Clip ▾ → Clip info…**, and the
+*find a clip* box searches them (`P34`, `P30-40`, `SOD1`, `female`, `b21`, `cam_07`). They come from the
+HCM database when `HCM_DATABASE_URL` is set and the database answers, otherwise from the clip planner's
+`clips.summary.json` beside the clip, then from the clip's file name; Clip info says which for each field.
+The database doesn't record which track is which mouse. Clips from other experiments show nothing extra.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
