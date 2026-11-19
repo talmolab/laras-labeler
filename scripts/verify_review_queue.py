@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify the review queue's 'remaining' count — what tells a reviewer an animal's queue is finished.
 
-The Review queue serves candN proposals at a time, per clip x behavior x animal, so a batch running
+The Review queue serves 10 proposals at a time, per clip x behavior x animal, so a batch running
 out does not mean the queue is empty. GET .../behaviors/<bid>/remaining/<vid> counts what each
 animal's queue still holds. This checks, on a throwaway synthetic project with the real app:
 
