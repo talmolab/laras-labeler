@@ -77,8 +77,58 @@
   #clipInfoBody .cinote { color: var(--mute); font-size: 11.5px; line-height: 1.5; margin-top: 8px; word-break: break-word; }
   #clipInfoBody .ciwarn { color: #ffb347; font-size: 12px; line-height: 1.5; margin-top: 8px; }
   #clipInfoDlg .row { flex-wrap: wrap; }
-  main.browsing #clipMenu .menu-items > button:not(#clipInfoBtn) { opacity: .45; }   /* read only while browsing */
+  main.browsing #clipMenu .menu-items > button:not(#clipInfoBtn):not(#idswMenuBtn) { opacity: .45; }   /* read only while browsing */
   #clipInfoDlg button[data-browse-lock] { opacity: .45; }
+  /* ID switches: ⇄ ID switch + list (N) in the playbar, the mark dialog, the list */
+  #idswCtl { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+  button.linkbtn { background: none; border-color: transparent; color: var(--accent); padding: 4px 6px; font-size: 12.5px; }
+  button.linkbtn:hover:not(:disabled) { background: none; border-color: transparent; text-decoration: underline; }
+  .modal input[type=text] { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong);
+                            border-radius: var(--radius-sm); padding: 6px 9px; font-size: 13px; }
+  .modal input[type=text]::placeholder { color: var(--mute); }
+  #idswDlg .idsw-q { font-size: 13px; color: #b8c0cc; margin-top: 4px; }
+  #idswDlg .idsw-q .opt, .idsw-dim { color: var(--mute); }
+  #idswTracks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+  .idsw-trk { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid var(--border-strong);
+              border-radius: 999px; cursor: pointer; font-size: 13px; user-select: none; background: var(--surface); }
+  .idsw-trk:hover { background: var(--surface-2); }
+  .idsw-trk:has(input:checked) { border-color: var(--trk); background: #262c37; box-shadow: inset 0 0 0 1px var(--trk); }
+  .idsw-trk input { margin: 0; accent-color: var(--trk); cursor: pointer; }
+  .idsw-trk .sw, .idsw-tr .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--trk);
+                                box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+  .idsw-trk .nm { color: var(--mute); font-size: 11.5px; }
+  #idswDlg .frow label { width: 44px; }
+  #idswNote { flex: 1; min-width: 0; }
+  .idsw-warn { color: #ffb347; font-size: 12px; min-height: 1.5em; }
+  #idswDlg .idsw-keys { color: var(--mute); font-size: 11.5px; margin-right: auto; }
+  .modal.wide { width: min(880px, 96vw); max-width: min(880px, 96vw); }
+  #idswScope { display: inline-flex; gap: 0; }
+  #idswScope button { padding: 4px 11px; font-size: 12.5px; border-radius: 0; }
+  #idswScope button:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+  #idswScope button:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin-left: -1px; }
+  #idswListBody { max-height: min(56vh, 520px); overflow: auto; margin: 4px 0 6px; }
+  .idsw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .idsw-table th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11.5px; padding: 4px 8px 4px 0;
+                   border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+  .idsw-table td { padding: 4px 14px 4px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .idsw-table td.fr, .idsw-table td.idsw-tr, .idsw-table td.fx, .idsw-table td.dl { width: 1%; white-space: nowrap; }
+  .idsw-table td.dl { padding-right: 0; }
+  .idsw-table td.clip { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c2c9d4; }
+  .idsw-table td.clip.here { color: var(--text); font-weight: 600; }   /* the clip on screen */
+  .idsw-table tr.more td.clip { color: transparent; }        /* the clip of the row above */
+  .idsw-table a.go { color: #9cc3ff; text-decoration: none; cursor: pointer; }
+  .idsw-table a.go:hover { text-decoration: underline; }
+  .idsw-table .t { color: var(--mute); font-size: 11.5px; margin-left: 4px; }
+  .idsw-table td.note input { width: 100%; min-width: 160px; padding: 3px 7px; font-size: 12.5px; background: transparent; border-color: transparent; }
+  .idsw-table td.note input:hover { border-color: var(--border-strong); }
+  .idsw-table td.note input:focus { background: var(--surface-2); border-color: var(--accent); }
+  .idsw-table tr.fixed td.clip, .idsw-table tr.fixed td.fr, .idsw-table tr.fixed td.idsw-tr { opacity: .5; }
+  .idsw-table tr.fixed td.fr a.go { text-decoration: line-through; }
+  .idsw-table button.del { background: none; border-color: transparent; color: var(--mute); padding: 2px 6px; font-size: 12px; }
+  .idsw-table button.del:hover:not(:disabled) { color: #e0777f; background: none; border-color: transparent; }
+  .idsw-empty { color: var(--mute); font-size: 12.5px; padding: 14px 0; }
+  #idswCopyBox { width: 100%; height: 96px; margin-top: 6px; background: var(--surface-2); color: var(--text);
+                 border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: 12px ui-monospace, monospace; }
   /* 🧠 Models overview */
   #modelsBody { max-height: 72vh; overflow: auto; }
   #modelsPanel .mcard { border: 1px solid var(--border, #262b33); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
@@ -330,11 +380,13 @@
           style="margin-left:4px; padding:2px 6px; font-size:12px; background:var(--surface); color:#e7eaf1; border:1px solid var(--border); border-radius:5px"></select>
   <span class="meta" id="meta">loading…</span>
   <details class="menu right" id="exportMenu" style="margin-left:auto; align-self:center">
-    <summary style="padding:2px 9px; font-size:12px" title="Download this project's labels, or the annotation-timing table">⬇ Export</summary>
+    <summary style="padding:2px 9px; font-size:12px" title="Download this project's labels, the annotation-timing table, or the ID-switch list">⬇ Export</summary>
     <div class="menu-items">
       <button id="labelsExport" title="Export ALL labels for this project as a CSV: one row per bout across every clip, track and behavior, with names, frame span, and seconds. Only the current labels (never the .bak backups). Shift-click = the option below.">Labels CSV<span class="sub">Happening bouts, every clip, track and behavior</span></button>
       <button id="labelsExportAll" title="The same CSV, with the Not-happening and Unknown bouts too">Labels CSV, including Not-happening and Unknown<span class="sub">every labeled bout, whatever its label</span></button>
       <button id="timingExport" title="Download the per-round annotation-timing table (CSV): how long each round took, split into hand-labeling vs candidate review, what each produced, and the model that came out. Derived from the event log this session writes to &lt;project&gt;/events/*.jsonl.">Annotation timing (rounds)<span class="sub">time per round: hand-labeling vs candidate review</span></button>
+      <div class="menu-sep" id="idswExportSep" style="display:none"></div>
+      <button id="idswExport" style="display:none" title="Download the open tracking identity switches (marked with i or ⇄ ID switch) as a CSV for whoever fixes the tracks: one row per switch, every clip in this projects folder, with the clip, frame, time, tracks, note, the video and tracking files, and, for a clip cut from a longer recording, that recording and frame.">ID switches CSV<span class="sub">open tracking identity switches, every clip</span></button>
     </div>
   </details>
 </header>
@@ -360,6 +412,7 @@
         <button id="clipTestToggle">Use as test clip<span class="sub" id="clipTestSub"></span></button>
         <button id="clipCalibBtn" title="This clip's frame rate and, for HiDRA, its pixels per centimetre">Clip calibration…<span class="sub">frame rate · px/cm</span></button>
         <button id="clipInfoBtn" title="The mice in this clip: age, genotype, sex, the mice in the cage, cohort, camera and when it was recorded, from the HCM database (or the clip planner's summary and the clip's name)">Clip info…<span class="sub">age, genotype, the mice in the cage</span></button>
+        <button id="idswMenuBtn" style="display:none" title="The tracking identity switches marked on the clips (i or ⇄ ID switch): go to one, edit its note, mark it fixed, or send the list to whoever fixes the tracks (CSV or text)">ID switches…<span class="sub">the list for whoever fixes the tracks</span></button>
         <div class="menu-sep"></div>
         <button id="clipRemoveBtn" class="danger" title="Remove this clip from the project: its labels, cached features and predictions here. The video and tracking files on disk are kept.">Remove clip…<span class="sub">its labels and predictions in this project</span></button>
       </div>
@@ -523,6 +576,11 @@
       <button id="winEnd" title="End the window at the playhead (this frame included)">end here ⇥</button>
       <button id="winClear" title="Remove this clip's window: the whole clip counts again">✕</button>
       <button id="winAll" title="Give every clip in this project this clip's window (frames, cut to each clip's length), or, with no window here, remove every clip's window">→ all clips</button>
+    </span>
+    <!-- tracking identity switches (openIdSwitch / openIdSwitchList): shown on a clip with 2 or more tracks -->
+    <span id="idswCtl" style="display:none">
+      <button id="idswBtn" title="Mark an identity switch at this frame (i): a track that jumps from one animal to another. Pick the tracks if you can tell, add a note, and it goes on the ID-switch list for whoever fixes the tracking. Labels are not changed.">⇄ ID switch</button>
+      <button id="idswListBtn" class="linkbtn">list (0)</button>
     </span>
   </div>
 
@@ -852,7 +910,7 @@
     </div>
     <div class="hint-box">
       <h4>Tracks &amp; behaviors</h4>
-      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>1–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track. Click a behavior chip to work on it; its settings (classifier or feature set, directed, on object, duplicate, delete) are under <b>&lt;behavior&gt; · … ▾</b> in the ③ Train row.</p>
+      <p>Labels &amp; predictions are kept <b>separate per track</b>. Pick a track by clicking a chip, keys <b>1–9</b>, <b>Tab</b> to cycle, or clicking the animal in the video. Everything you paint, train, and review applies to the selected track. Click a behavior chip to work on it; its settings (classifier or feature set, directed, on object, duplicate, delete) are under <b>&lt;behavior&gt; · … ▾</b> in the ③ Train row.<span id="idswTip" hidden> A track that jumps to another animal: press <b>i</b> (or <b>⇄ ID switch</b> under the video) to put that frame on the ID-switch list; <b>list</b> sends it to whoever fixes the tracking (CSV or text).</span></p>
     </div>
     <div class="hint-box">
       <h4>Painting labels</h4>
@@ -927,6 +985,47 @@
       <button id="clipInfoRefreshAll" title="Look up every clip in this project again, in the background (one database connection; Stop keeps what was fetched)">Refresh all clips</button>
       <button id="clipInfoStop" style="display:none" title="Stop the refresh. Clips already looked up keep their new info.">■ Stop</button>
       <button id="clipInfoClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ⇄ ID switch (i): log a tracking identity switch at the frame on screen (openIdSwitch). Tracks are optional; digits
+     tick them, Enter saves, Esc or a click outside cancels. -->
+<div class="modal-overlay" id="idswDlg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="idswTitle">
+    <h3 id="idswTitle">ID switch</h3>
+    <div class="sub" id="idswSub" style="word-break:break-all"></div>
+    <div class="idsw-q">Which tracks swapped? <span class="opt">(optional)</span></div>
+    <div id="idswTracks"></div>
+    <div class="frow"><label for="idswNote">Note</label>
+      <input type="text" id="idswNote" maxlength="2000" autocomplete="off" spellcheck="false"
+             placeholder="optional: what you saw, for whoever fixes it"></div>
+    <div class="idsw-warn" id="idswMsg"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:6px">
+      <span class="idsw-keys">1–9 tick a track · Enter saves · Esc cancels</span>
+      <button id="idswCancel">Cancel</button>
+      <button id="idswSave" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+<!-- the ID-switch list (openIdSwitchList): one list for the projects folder, this clip's or every clip's switches.
+     A frame opens that clip there; the note and "fixed" save as they change. -->
+<div class="modal-overlay" id="idswListDlg">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="idswListTitle">
+    <div class="row" style="margin-top:0; justify-content:space-between">
+      <h3 id="idswListTitle" style="margin:0">ID switches</h3>
+      <span id="idswScope" title="This clip's switches, or every clip's">
+        <button data-scope="clip">this clip</button><button data-scope="all">all clips</button>
+      </span>
+    </div>
+    <div class="sub" id="idswListSub" style="margin-top:6px"></div>
+    <div id="idswListBody"></div>
+    <textarea id="idswCopyBox" readonly hidden></textarea>
+    <div class="status" id="idswListMsg" style="min-height:1.5em; font-size:12px"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px">
+      <button id="idswCsv" title="Download the open switches shown here as a CSV for whoever fixes the tracks: clip, frame, time, tracks (and their SLEAP names), note, the video and tracking files, and, for a clip cut from a longer recording, that recording and frame">⬇ Download CSV</button>
+      <button id="idswCopy" title="Copy the open switches shown here, one line each, to paste into Slack or an email">⧉ Copy as text</button>
+      <button id="idswListClose">Close</button>
     </div>
   </div>
 </div>
@@ -1151,6 +1250,7 @@ logEvent("session_start", { app_version: APP_VERSION, ua: navigator.userAgent,
 
 async function boot() {
   window.addEventListener("resize", renderTimeline);
+  loadIdSwitches();                               // the ID-switch list (one for the projects folder), alongside the project
   // Click an animal in the video to annotate it (event-annotator style). Listened for on #stageInner, not the
   // overlay canvas: a press there takes pointer capture (to pan), so the browser sends the click to #stageInner.
   stageInner.addEventListener("click", ev => {
@@ -1287,7 +1387,7 @@ function clearStage() {
   vctx.clearRect(0, 0, frameEl.width, frameEl.height);
   octx.clearRect(0, 0, overlay.width, overlay.height);
   tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, tl.width, tl.height);
-  renderClipBar(); renderTrackBar(); renderBehaviorBar();
+  renderClipBar(); renderTrackBar(); renderBehaviorBar(); renderIdswCtl();
   updateRoiDraw(); updateTrackBadge();                 // no Outlines menu and no "track 1" badge on an empty stage
   renderThreshReadout();                               // nor the last clip's "N bouts · x% of frames"
 }
@@ -1345,6 +1445,7 @@ async function openVideo(vidId) {
   predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   activeTrack = 0;
   renderTrackBar();
+  renderIdswCtl();                                // ID switches: only on a clip with 2+ tracks
   // px/cm and fps are PER CLIP and are model inputs, so they have to follow the clip. This was only
   // called from openProject, so loading or switching a clip left the previous clip's scale on
   // screen (or a blank where one was set) -- and a scale you believe is set but is not, or belongs
@@ -2277,6 +2378,7 @@ function renderTimeline() {
     if (wx0 > TL_GUT) tctx.fillRect(TL_GUT, RULER, wx0 - TL_GUT, H - RULER);
     if (wx1 < W) tctx.fillRect(wx1, RULER, W - wx1, H - RULER);
   }
+  drawIdswMarks(W);                        // ID switches: amber ticks in the ruler
   captureTimelineBase(W, H, dpr);          // snapshot the base (no playhead/overlay) so playback can blit it
   refreshObjects();                        // labels, selection or review changed: the Objects card follows
   drawTimelineOverlay(W, H, rh);
@@ -2420,6 +2522,10 @@ function renderOverview() {   // full: draw the whole-clip strip (all but the pl
   if (reviewCurrent) {                              // the candidate / accept region, bright
     const t = reviewTrim || reviewCurrent;
     ovctx.fillStyle = "rgba(255,210,74,0.9)"; ovctx.fillRect(X(t.s), 3, Math.max(2, X(t.e) - X(t.s)), H - 6);
+  }
+  if (idswOn()) {                                   // ID switches: short amber ticks along the top edge
+    ovctx.fillStyle = IDSW_COLOR;
+    for (const s of idswMarks()) ovctx.fillRect(X(s.frame) - 0.75, 0, 1.5, 5);
   }
   const vx0 = X(viewS()), vx1 = X(viewE());          // the zoomed window box
   ovctx.fillStyle = "rgba(255,255,255,0.10)"; ovctx.fillRect(vx0, 0, Math.max(2, vx1 - vx0), H);
@@ -3598,10 +3704,11 @@ function closeModal(id) {
   m.classList.remove("on");
   if (id === "clipCalibDlg") placePpc();
 }
-for (const id of ["addClipDlg", "clipCalibDlg", "clipInfoDlg"]) el(id).addEventListener("click", e => { if (e.target === el(id)) closeModal(id); });
+for (const id of ["addClipDlg", "clipCalibDlg", "clipInfoDlg", "idswDlg", "idswListDlg"]) el(id).addEventListener("click", e => { if (e.target === el(id)) closeModal(id); });
 window.addEventListener("keydown", e => {
   const m = document.querySelector(".modal-overlay.on"); if (!m) return;
   if (e.key === "Escape") { e.preventDefault(); closeModal(m.id); }
+  else if (m.id === "idswDlg" && idswDlgKey(e)) e.preventDefault();         // Enter saves, 1-9 tick a track
   else if (!m.contains(e.target) && e.key !== "Tab") e.preventDefault();   // nor scroll the page behind it (Space)
   e.stopImmediatePropagation();                 // typing, Tab and Enter in the dialog still work
 }, true);
@@ -3669,6 +3776,43 @@ el("clipInfoRefresh").onclick = () => { if (vid && !browseBlocked()) refreshClip
 el("clipInfoRefreshAll").onclick = () => { if (!browseBlocked()) refreshClipInfo(null, false); };
 el("clipInfoStop").onclick = () => { if (infoJob && infoJob.pid === PID) api(`/jobs/${infoJob.jid}/cancel`, { method: "POST" }).catch(() => null); };
 el("clipRemoveBtn").onclick = () => { if (vid) removeClip(vid); };
+// ID switches: the playbar button and list link, Clip ▾ → ID switches…, Export ▾ → ID switches CSV, and the two dialogs
+el("idswBtn").onclick = openIdSwitch;
+el("idswListBtn").onclick = openIdSwitchList;
+el("idswMenuBtn").onclick = openIdSwitchList;
+el("idswExport").onclick = () => idswDownload(null);
+el("idswSave").onclick = saveIdSwitch;
+el("idswCancel").onclick = () => closeModal("idswDlg");
+el("idswListClose").onclick = () => closeModal("idswListDlg");
+el("idswCsv").onclick = () => idswDownload(idswScope === "clip" && vid ? vid : null);
+el("idswCopy").onclick = idswCopy;
+el("idswScope").addEventListener("click", e => {
+  const b = e.target.closest("button[data-scope]"); if (!b || b.disabled) return;
+  idswScope = b.dataset.scope;
+  try { localStorage.setItem("ll_idswScope", idswScope); } catch (err) { /* not remembered */ }
+  el("idswCopyBox").hidden = true; idswListMsg("");
+  renderIdswList();
+});
+el("idswListBody").addEventListener("click", e => {
+  const row = e.target.closest("tr[data-id]"); if (!row) return;
+  if (e.target.closest("a.go")) { e.preventDefault(); idswGoto(row.dataset.id); }
+  else if (e.target.closest("button.del")) idswDelete(row.dataset.id);
+});
+el("idswListBody").addEventListener("change", async e => {   // a note (on Enter or leaving the box) or "fixed"
+  const row = e.target.closest("tr[data-id]"), id = row && row.dataset.id; if (!id) return;
+  if (e.target.classList.contains("note")) {
+    const d = await idswEdit(id, { note: e.target.value });
+    if (!d) { e.target.value = (idsw.find(s => s.id === id) || {}).note || ""; return; }
+    idswListMsg(d.note ? `Note saved (frame ${d.frame}).` : `Note removed (frame ${d.frame}).`);
+    idswChanged();
+  } else if (e.target.classList.contains("fix")) {
+    const d = await idswEdit(id, { status: e.target.checked ? "fixed" : "open" });
+    if (!d) { e.target.checked = !e.target.checked; return; }
+    row.classList.toggle("fixed", d.status === "fixed");
+    renderIdswListHead(); idswChanged();
+    idswListMsg(d.status === "fixed" ? `Frame ${d.frame} is fixed: it leaves the timeline and the downloads.` : `Frame ${d.frame} is open again.`);
+  }
+});
 el("hidraFps").onchange = hidraSaveFps;          // every install: the project's own features are in seconds too
 el("hidraPpc").onchange = hidraSaveScale;
 el("hidraPpc").addEventListener("blur", () => setTimeout(placePpc));
@@ -3749,6 +3893,250 @@ async function setActiveTrack(t) {
   await onTrackChange();
 }
 function cycleTrack(dir) { setActiveTrack((activeTrack + dir + nTracks()) % nTracks()); }
+// ---------- ID switches: frames where a track jumps from one animal to another ----------
+// Marked with i or ⇄ ID switch and kept as ONE list for the whole projects folder (GET /api/id-switches, idswitches.py),
+// for whoever fixes the tracks: Download CSV, Copy as text. Not project data and never a label, so it works while
+// playing, in review and while browsing (plain fetch, not api(), whose browse lock is for project writes). Shown only
+// on a clip with 2 or more tracks. Tracks are 0-based here and shown 1-based, as on the track chips.
+const IDSW_NEAR = 15;                  // frames: a switch this close on the same clip is mentioned in the dialog, not refused
+const IDSW_COLOR = "#f5a524";          // amber: not a label colour (blue, red) nor the playhead's yellow
+const TL_TITLE = tl.title;             // the timeline's own tooltip, put back when the pointer leaves a switch mark
+let idsw = [];                         // every switch, sorted by clip, then frame
+let idswHere = null, idswSaving = false;   // the open dialog's {pid, vid, frame}; a save on its way
+let idswScope = "all";                 // the list shows "clip" (the clip on screen) or "all"
+try { if (localStorage.getItem("ll_idswScope") === "clip") idswScope = "clip"; } catch (e) { /* default */ }
+const idswOn = () => !!meta && !!poseShape && nTracks() >= 2;
+const idswOpen = s => s.status !== "fixed";
+// on the clip on screen: its name, and its length when known (another experiment's clip can have the same name)
+const idswOnClip = (s, v = vid) => s.video_id === v && !!v && (!s.n_frames || !meta || v !== vid || s.n_frames === meta.n_frames);
+const idswMarks = () => idsw.filter(s => idswOnClip(s) && idswOpen(s));
+const idswTracksText = s => (s.tracks || []).map(t => t + 1).join(" ↔ ");
+const idswNamesText = s => (s.track_names || []).some(Boolean) ? s.track_names.map(n => n || "?").join(" ↔ ") : "";
+const idswTime = (f, fps) => { const t = Math.max(0, f) / (fps || 30); return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`; };
+function idswTip(s) {
+  const tr = idswTracksText(s), nm = idswNamesText(s);
+  return `ID switch at frame ${s.frame} · ${tr ? `tracks ${tr}${nm ? ` (${nm})` : ""}` : "tracks not sure"}`
+    + (s.note ? `\n${s.note}` : "") + "\nClick to go there.";
+}
+async function loadIdSwitches() {
+  try {
+    const r = await fetch("/api/id-switches"), d = await r.json().catch(() => ({}));
+    if (!r.ok) { busy(`ID switch list: ${d.detail || r.status}`); return false; }
+    idsw = d.switches || [];
+  } catch (e) { return false; }
+  idswChanged();
+  return true;
+}
+function idswChanged() {               // the list changed: the counts, the menus, the timeline marks
+  renderIdswCtl();
+  if (meta) renderTimeline();
+}
+function renderIdswCtl() {             // what follows the clip on screen (2+ tracks?) and the list's size
+  const on = idswOn(), open = idsw.filter(idswOpen).length, here = idswMarks().length;
+  el("idswCtl").style.display = on ? "" : "none";
+  el("idswTip").hidden = !on;
+  const b = el("idswListBtn");
+  b.textContent = `list (${open})`;
+  b.title = `The ID-switch list: ${open} open (${here} on this clip), ${idsw.length - open} fixed, for every project in this `
+    + "projects folder. Go to one, edit its note, mark it fixed, or send the list to whoever fixes the tracks (CSV or text).";
+  el("idswMenuBtn").style.display = on || idsw.length ? "" : "none";
+  el("idswExport").style.display = el("idswExportSep").style.display = open ? "" : "none";
+}
+function openIdSwitch() {
+  if (!idswOn() || idswSaving) return;   // (a save still on its way would close the new dialog when it lands)
+  stop();                              // the frame on screen is the one logged
+  idswHere = { pid: PID, vid, frame: cur };
+  const names = (skeleton && skeleton.tracks) || [];
+  el("idswTitle").textContent = `ID switch at frame ${cur}`;
+  el("idswSub").textContent = `${vid} · ${idswTime(cur, meta.fps)}`;
+  el("idswTracks").innerHTML = Array.from({ length: nTracks() }, (_, t) =>
+    `<label class="idsw-trk" style="--trk:${TRACK_COLORS[t % TRACK_COLORS.length]}" title="track ${t + 1}`
+    + `${names[t] ? `, “${esc(names[t])}” in SLEAP` : ""}${t < 9 ? ` (key ${t + 1})` : ""}">`
+    + `<input type="checkbox" value="${t}"><span class="sw"></span>track ${t + 1}`
+    + `${names[t] ? `<span class="nm">${esc(names[t])}</span>` : ""}</label>`).join("");
+  el("idswNote").value = "";
+  const near = idsw.filter(s => idswOnClip(s) && Math.abs(s.frame - cur) <= IDSW_NEAR).map(s => s.frame).sort((a, b) => a - b);
+  el("idswMsg").textContent = !near.length ? ""
+    : near.length === 1 ? `One is already on the list at frame ${near[0]}.`
+    : `${near.length} are already on the list nearby, at frames ${near.join(", ")}.`;
+  el("idswSave").disabled = false;
+  openModal("idswDlg");
+}
+function idswDlgKey(e) {               // the mark dialog's keys: Enter saves, 1-9 tick a track (not while typing the note)
+  if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return false;
+  if (e.key === "Enter" && e.target.tagName !== "BUTTON") { saveIdSwitch(); return true; }
+  if (/^[1-9]$/.test(e.key) && e.target !== el("idswNote")) {
+    const box = el("idswTracks").querySelector(`input[value="${+e.key - 1}"]`);
+    if (box) box.checked = !box.checked;
+    return true;
+  }
+  return false;
+}
+async function saveIdSwitch() {
+  if (idswSaving || !el("idswDlg").classList.contains("on")) return;
+  const tracks = [...el("idswTracks").querySelectorAll("input:checked")].map(x => +x.value);
+  const { pid, vid: forVid, frame } = idswHere, body = JSON.stringify({ frame, tracks, note: el("idswNote").value.trim() });
+  idswSaving = true; el("idswSave").disabled = true;
+  let r = null, d = {};
+  try {
+    r = await fetch(`/api/projects/${encodeURIComponent(pid)}/videos/${encodeURIComponent(forVid)}/id-switches`,
+                    { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { d = { detail: e.message }; }
+  idswSaving = false; el("idswSave").disabled = false;
+  if (!r || !r.ok) { el("idswMsg").textContent = `Could not save: ${d.detail || (r ? r.status : "no answer")}`; return; }
+  closeModal("idswDlg");
+  if (!(await loadIdSwitches())) { idsw.push(d); idswChanged(); }
+  busy(`ID switch at frame ${frame} added to the list (${idsw.filter(idswOpen).length} open)`);
+}
+// ---- the list ----
+async function openIdSwitchList() {
+  await loadIdSwitches();              // changes made in another tab or project
+  el("idswCopyBox").hidden = true; el("idswListMsg").textContent = "";
+  renderIdswList();
+  openModal("idswListDlg");
+  el("idswListClose").focus();
+}
+const idswShown = () => idswScope === "clip" && vid ? idsw.filter(s => idswOnClip(s)) : idsw;
+function renderIdswListHead() {
+  const scope = idswScope === "clip" && vid ? "clip" : "all", rows = idswShown(), open = rows.filter(idswOpen).length;
+  for (const b of el("idswScope").querySelectorAll("button")) {
+    b.classList.toggle("on", b.dataset.scope === scope); b.setAttribute("aria-pressed", b.dataset.scope === scope);
+  }
+  el("idswScope").querySelector('[data-scope="clip"]').disabled = !vid;
+  el("idswListSub").textContent = (scope === "clip" ? `${vid}: ` : "Every clip in this projects folder: ")
+    + `${open} open, ${rows.length - open} fixed.`;
+  el("idswCsv").disabled = el("idswCopy").disabled = !open;
+}
+function renderIdswList() {
+  renderIdswListHead();
+  const rows = idswShown(), all = !(idswScope === "clip" && vid);
+  if (!rows.length) {
+    el("idswListBody").innerHTML = `<div class="idsw-empty">No ID switches ${all ? "yet" : "on this clip"}. `
+      + "Press <b>i</b> or <b>⇄ ID switch</b> at a frame where a track jumps to another animal.</div>";
+    return;
+  }
+  const trk = s => (s.tracks || []).length
+    ? s.tracks.map(t => `<span class="sw" style="--trk:${TRACK_COLORS[t % TRACK_COLORS.length]}"></span> ${t + 1}`).join(" ↔ ")
+    : '<span class="idsw-dim">not sure</span>';
+  let prev = null;
+  el("idswListBody").innerHTML = '<table class="idsw-table"><thead><tr>' + (all ? "<th>Clip</th>" : "")
+    + '<th>Frame</th><th>Tracks</th><th>Note</th><th title="Fixed by whoever fixes the tracks: off the timeline and the downloads">Fixed</th><th></th></tr></thead><tbody>'
+    + rows.map(s => {
+      const more = all && s.video_id === prev; prev = s.video_id;
+      const nm = idswNamesText(s);
+      return `<tr data-id="${esc(s.id)}" class="${idswOpen(s) ? "" : "fixed"}${more ? " more" : ""}">`
+        + (all ? `<td class="clip${idswOnClip(s) ? " here" : ""}" title="${esc(s.video_id)}${idswOnClip(s) ? " (on screen)" : ""}">${esc(s.video_id)}</td>` : "")
+        + `<td class="fr"><a class="go" href="#" title="Open ${esc(s.video_id)} at frame ${s.frame}">${s.frame}</a>`
+        + `<span class="t">${idswTime(s.frame, s.fps)}</span></td>`
+        + `<td class="idsw-tr" title="${nm ? `in SLEAP: ${esc(nm)}` : "which tracks swapped wasn't given"}">${trk(s)}</td>`
+        + `<td class="note"><input type="text" class="note" value="${esc(s.note || "")}" maxlength="2000" placeholder="add a note" spellcheck="false"></td>`
+        + `<td class="fx"><input type="checkbox" class="fix"${idswOpen(s) ? "" : " checked"} title="Fixed: whoever fixes the tracks has fixed it"></td>`
+        + `<td class="dl"><button class="del" title="Delete it from the list">✕</button></td></tr>`;
+    }).join("") + "</tbody></table>";
+}
+function idswListMsg(msg) { el("idswListMsg").textContent = msg; }
+async function idswEdit(id, changes) {  // -> the saved switch, or null (the reason is shown under the list)
+  let r = null, d = {};
+  try {
+    r = await fetch(`/api/id-switches/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+                                                                    body: JSON.stringify(changes) });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { d = { detail: e.message }; }
+  if (!r || !r.ok) { idswListMsg(`Could not save: ${d.detail || (r ? r.status : "no answer")}`); return null; }
+  const i = idsw.findIndex(s => s.id === id); if (i >= 0) idsw[i] = d;
+  return d;
+}
+async function idswDelete(id) {
+  const s = idsw.find(x => x.id === id); if (!s) return;
+  if (!confirm(`Delete the ID switch at frame ${s.frame} of ${s.video_id} from the list?`)) return;
+  const r = await fetch(`/api/id-switches/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+  if (!r || (!r.ok && r.status !== 404)) { idswListMsg(`Could not delete: ${r ? r.status : "no answer"}`); return; }
+  idsw = idsw.filter(x => x.id !== id);
+  renderIdswList();                    // (a clip's next row now shows the clip name)
+  idswListMsg(`Deleted the switch at frame ${s.frame}.`);
+  idswChanged();
+}
+async function idswGoto(id) {           // open that clip at that frame; a clip of another project opens that project
+  const s = idsw.find(x => x.id === id); if (!s) return;
+  const go = async () => {
+    if (vid !== s.video_id) await gotoClip(s.video_id);
+    if (vid === s.video_id) { stop(); await show(s.frame); busy(`ID switch at frame ${s.frame}${idswTracksText(s) ? `, tracks ${idswTracksText(s)}` : ""}`); }
+  };
+  const here = clipRec(s.video_id);
+  if (idswOnClip(s) || (here && (!s.n_frames || here.n_frames === s.n_frames))) { closeModal("idswListDlg"); return go(); }
+  let projects = [];
+  try { projects = await (await fetch("/api/projects")).json(); } catch (e) { /* none found */ }
+  const holds = p => p.pid !== PID && (p.videos || []).includes(s.video_id);
+  const p = projects.find(x => x.pid === s.project && holds(x)) || projects.find(holds);
+  if (!p) { idswListMsg(`${s.video_id} isn't in any project now. Its switches stay on the list.`); return; }
+  closeModal("idswListDlg");
+  const u = new URL(location); u.searchParams.set("pid", p.pid); history.replaceState(null, "", u);
+  await selectProject(p.pid);
+  await go();
+}
+function idswDownload(onlyVid) {       // the open switches as CSV (server-made, so it matches Export ▾ → ID switches CSV)
+  const n = idsw.filter(s => idswOpen(s) && (!onlyVid || idswOnClip(s, onlyVid))).length;
+  if (!n) { busy("no open ID switches to download"); return; }
+  const a = document.createElement("a");
+  a.href = "/api/id-switches.csv" + (onlyVid ? `?video_id=${encodeURIComponent(onlyVid)}${meta ? `&n_frames=${meta.n_frames}` : ""}` : "");
+  a.download = onlyVid ? `id_switches_${onlyVid}.csv` : "id_switches.csv"; a.click();
+  busy(`downloaded ${n} open ID switch${n === 1 ? "" : "es"} as CSV`);
+}
+function idswLine(s) {                 // one line per switch, for Slack or an email
+  const tr = idswTracksText(s), nm = idswNamesText(s), parts = [s.video_id, `frame ${s.frame} (${idswTime(s.frame, s.fps)})`];
+  parts.push(tr ? `tracks ${tr}${nm ? ` (SLEAP ${nm})` : ""}` : "tracks not sure");
+  if (s.recording) parts.push(`recording ${s.recording}${s.source_frame != null ? ` frame ${s.source_frame}` : ""}`);
+  if (s.note) parts.push(String(s.note).replace(/\s+/g, " "));
+  return parts.join(" · ");
+}
+async function copyText(text, holder) {   // clipboard API, then execCommand; false when the browser allows neither
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back */ }
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed; left:-9999px; opacity:0";
+  holder.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+async function idswCopy() {
+  const rows = idswShown().filter(idswOpen);
+  if (!rows.length) { idswListMsg("No open switches here to copy."); return; }
+  const text = rows.map(idswLine).join("\n"), box = el("idswCopyBox");
+  if (await copyText(text, el("idswListDlg"))) {
+    box.hidden = true;
+    idswListMsg(`Copied ${rows.length} line${rows.length === 1 ? "" : "s"}: paste them into Slack or an email.`);
+  } else {                             // no clipboard here: the lines, selected, to copy by hand
+    box.value = text; box.hidden = false; box.focus(); box.select();
+    idswListMsg("The browser didn't allow copying: the lines are selected below, press Ctrl+C (⌘C).");
+  }
+}
+// ---- marks on the timeline: an amber tick in the ruler at each open switch of this clip (drawn into the base) ----
+function drawIdswMarks(W) {
+  if (!idswOn()) return;
+  const vS = viewS(), vE = viewE();
+  tctx.save();
+  tctx.beginPath(); tctx.rect(TL_GUT, 0, W - TL_GUT, RULER); tctx.clip();
+  tctx.fillStyle = IDSW_COLOR;
+  for (const s of idswMarks()) {
+    if (s.frame < vS || s.frame >= vE) continue;
+    const x = Math.round(xOf(s.frame, W));
+    tctx.fillRect(x - 1, 5, 2, RULER - 7);
+    tctx.beginPath(); tctx.moveTo(x - 4, 2); tctx.lineTo(x + 4, 2); tctx.lineTo(x, 7); tctx.closePath(); tctx.fill();
+  }
+  tctx.restore();
+}
+function idswAt(x, y, W) {             // the open switch whose ruler mark is under (x, y), or null
+  if (!idswOn() || y >= RULER - 2 || x < TL_GUT) return null;
+  let best = null, bd = 5;
+  for (const s of idswMarks()) {
+    if (s.frame < viewS() || s.frame >= viewE()) continue;
+    const d = Math.abs(xOf(s.frame, W) - x);
+    if (d <= bd) { best = s; bd = d; }
+  }
+  return best;
+}
 async function addBehavior() {
   const name = prompt("Behavior name:"); if (!name) return;
   const key = prompt("Hotkey (single char, optional):") || null;
@@ -5745,7 +6133,7 @@ function setBrowseLock(on) {
   // closes browse). Clip info… only reads, so it stays open to use, all but its refresh buttons.
   for (const id of ["clipAddFirst", "addClipDlg", "clipCalibDlg", "toolsCard", "roiDraw", "winCtl", "hidraSetup", "mediaFix",
                     "clipInfoRefresh", "clipInfoRefreshAll"]) lock(el(id));
-  for (const n of el("clipMenu").querySelectorAll(".menu-items > button")) if (n.id !== "clipInfoBtn") lock(n);
+  for (const n of el("clipMenu").querySelectorAll(".menu-items > button")) if (n.id !== "clipInfoBtn" && n.id !== "idswMenuBtn") lock(n);
   for (const n of el("actionRow").children) {
     const live = BROWSE_LIVE.has(n.id) || (n.tagName === "LABEL" && BROWSE_LIVE.has(n.htmlFor)) || n.classList.contains("sep") || n.classList.contains("rowbreak") || n.classList.contains("stg");
     if (!live) lock(n);
@@ -6013,6 +6401,8 @@ function threshFromY(i, y) {                        // invert the trace's y->P m
 tl.addEventListener("pointerdown", ev => {
   const W = tlWidth(), rect = tl.getBoundingClientRect(), x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   tl.setPointerCapture(ev.pointerId);
+  const sw = idswAt(x, y, W);                                                  // an ID-switch mark in the ruler: go to its frame
+  if (sw) { stop(); drag = { kind: "idsw", startX: x }; show(sw.frame); return; }
   if (browse) {                                                                // read only: a click or drag just moves the playhead
     if (x >= TL_GUT) { drag = { kind: "scrub" }; stop(); show(frameAt(x, W)); }
     return;
@@ -6049,6 +6439,7 @@ tl.addEventListener("pointerdown", ev => {
 tl.addEventListener("pointermove", ev => {
   const W = tlWidth(), rect = tl.getBoundingClientRect(), x = ev.clientX - rect.left, y = ev.clientY - rect.top, f = frameAt(x, W);
   if (!drag) { updateHoverCursor(x, y, f); return; }        // idle hover: show a pointer over selectable runs
+  if (drag.kind === "idsw" && Math.abs(x - drag.startX) > CLICK_SLOP) drag.kind = "scrub";   // a drag from a mark scrubs, as the ruler does
   if (drag.kind === "scrub") scrubTo(f);
   else if (drag.kind === "laneScrub") {                     // drag along the labeled bar to scrub to a bout
     if (Math.abs(x - drag.startX) > CLICK_SLOP) drag.moved = true;
@@ -6070,6 +6461,9 @@ tl.addEventListener("pointermove", ev => {
   }                                                         // kind === "select": swallow, selection already made
 });
 function updateHoverCursor(x, y, f) {
+  const sw = idswAt(x, y, tlWidth()), tip = sw ? idswTip(sw) : TL_TITLE;   // an ID-switch mark: its frame, tracks and note
+  if (tl.title !== tip) tl.title = tip;
+  if (sw) { tl.style.cursor = "pointer"; return; }
   if (browse) { tl.style.cursor = x >= TL_GUT ? "ew-resize" : "default"; return; }   // browse only scrubs
   if (trimHandleAt(x, y, tlWidth())) { tl.style.cursor = "ew-resize"; return; }   // over a trim handle
   if (threshLineAt(x, y, tlWidth()) != null) { tl.style.cursor = "ns-resize"; return; }   // over the draggable threshold line
@@ -6110,6 +6504,7 @@ tl.addEventListener("pointerup", () => {
   }
   drag = null;
 });
+tl.addEventListener("pointerleave", () => { if (tl.title !== TL_TITLE) tl.title = TL_TITLE; });
 tl.addEventListener("pointercancel", () => { if (drag) { drag = null; renderTimeline(); } });      // capture loss -> no stale preview
 tl.addEventListener("lostpointercapture", () => { if (drag) { drag = null; renderTimeline(); } });
 function zoomTimeline(factor, clientX) {   // zoom the timeline x-window around the frame under the cursor (for precise labeling)
@@ -6442,6 +6837,9 @@ stageInner.addEventListener("dblclick", ev => {   // double-click to zoom in on 
 
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  // i: mark an ID switch here, on a clip with 2+ tracks, unless a behavior's hotkey is i (in review and browse too)
+  if (e.key === "i" && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== "TEXTAREA" && !e.target.isContentEditable
+      && idswOn() && !behaviors.some(b => b.key === "i")) { e.preventDefault(); openIdSwitch(); return; }
   if (browse) {                                    // read only: browse keys, then only scrub, play and zoom fall through
     if (e.key === "Escape") { e.preventDefault(); return closeBrowse(); }
     if (e.key === "Enter") { e.preventDefault(); return browseStep(e.shiftKey ? -1 : 1); }

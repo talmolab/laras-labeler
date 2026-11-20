@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from fastapi.staticfiles import StaticFiles
 
-from . import clip_info, config, hcm_roi, hidra, objects, poseio, trainpreview
+from . import clip_info, config, hcm_roi, hidra, idswitches, objects, poseio, trainpreview
 from . import scale as pxscale
 from .config import Settings
 from .events import EventLog, rounds_csv
@@ -147,6 +147,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     predictor = Predictor(store, features, trainer, labels)
     importer = Importer(store, labels, vm)
     elog = EventLog(store)
+    idsw = idswitches.IdSwitchStore(settings.projects_root)
 
     # Persisted HiDRA paths (set from the GUI) take effect before the first probe, so a restart
     # comes back configured instead of looking unconfigured until someone re-enters them.
@@ -165,6 +166,7 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     app.state.trainer = trainer
     app.state.predictor = predictor
     app.state.events = elog
+    app.state.id_switches = idsw
 
     def _behavior(pid: str, bid: int):
         proj = _proj(pid)
@@ -2217,6 +2219,70 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         proj.save()
         elog.log(pid, "video_role", video_id=vid, role=role)
         return {"video_id": vid, "role": role}
+
+    # ---- tracking identity switches (idswitches.py): one list for the whole projects folder ----
+    def _clip_tracks(pid: str, vid: str) -> tuple[int, list[str]]:
+        """(how many tracks, their names in the .slp by index): the tracks as the GUI numbers them."""
+        try:
+            ov = vm._get(pid, vid)
+            return int(ov.poses().shape[1]), [str(n) for n in ov.track_names]
+        except FileNotFoundError:
+            raise HTTPException(404, _SRC_MISSING)
+
+    def _switches(fn, *args):
+        try:
+            return fn(*args)
+        except idswitches.UnreadableList as e:
+            raise HTTPException(500, str(e))
+        except KeyError:
+            raise HTTPException(404, "no ID switch with that id")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/id-switches")
+    def list_id_switches(video_id: str | None = None, n_frames: int | None = None):
+        """Every ID switch in the projects folder, or one clip's (its name, and its length when given),
+        sorted by clip, then frame."""
+        return {"switches": _switches(idsw.list, video_id, n_frames)}
+
+    @app.get("/api/id-switches.csv")
+    def id_switches_csv(video_id: str | None = None, n_frames: int | None = None, include_fixed: bool = False):
+        """The list for whoever fixes the tracks: open switches only, unless include_fixed. UTF-8 with a BOM,
+        so a spreadsheet shows the ↔ between track numbers."""
+        rows = [s for s in _switches(idsw.list, video_id, n_frames) if include_fixed or s.get("status") != "fixed"]
+        return Response(content="\ufeff" + idswitches.to_csv(rows), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="id_switches.csv"',
+                                 "Cache-Control": "no-cache"})
+
+    @app.post("/api/projects/{pid}/videos/{vid}/id-switches")
+    def add_id_switch(pid: str, vid: str, body: dict = Body(...)):
+        """Log an ID switch at {frame, tracks (0-based, [] = not sure which), note} of this clip. Not project
+        data: labels are untouched, and the switch is listed for the clip in every project."""
+        entry = _video(pid, vid).video(vid)
+        if not entry.get("has_poses") or not entry.get("slp_path"):
+            raise HTTPException(400, "this clip has no tracking file, so it has no tracks to switch")
+        n_tracks, names = _clip_tracks(pid, vid)
+        try:
+            frame = idswitches.clean_frame(body.get("frame"), entry.get("n_frames"))
+            tracks = idswitches.clean_tracks(body.get("tracks"), n_tracks)
+            note = idswitches.clean_note(body.get("note"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        try:
+            info = entry.get("clip_info") or clip_info.compute(entry, None)
+        except Exception:  # noqa: BLE001  -- never let clip info stop a switch being logged
+            info = clip_info.name_only(entry)
+        return _switches(idsw.add, idswitches.new_entry(pid, entry, info, frame, tracks, note, n_tracks, names))
+
+    @app.put("/api/id-switches/{sid}")
+    def edit_id_switch(sid: str, body: dict = Body(...)):
+        """Change a switch's tracks, note or status ("open" | "fixed")."""
+        return _switches(idsw.edit, sid, body)
+
+    @app.delete("/api/id-switches/{sid}")
+    def delete_id_switch(sid: str):
+        _switches(idsw.delete, sid)
+        return {"ok": True, "id": sid}
 
     app.mount("/", StaticFiles(directory=str(web), html=True), name="web")
     return app
