@@ -1,5 +1,5 @@
 """Score every model that has predicted a behavior against the project's labels — the zero-shot
-HiDRA head, each fine-tune, each native version — for the Stats panel's model comparison.
+HiDRA head, each fine-tune, each native version — for the scores in the 🧠 Models panel.
 
 HONESTY RULES this module encodes (see the GUI copy too):
 

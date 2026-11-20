@@ -9,7 +9,7 @@ outlines don't appear nothing says why. This prints each step for the clips whos
   link      a re-ID clip's entry in the planner's clips.summary.json (its name doesn't say)
   camera    the camera and recording pattern the lookup will use
   database  for the first clip: connect, the recording's ROI status, recordings with a similar path
-            (when the pattern finds none), and the lookup's own result
+            (when the pattern finds none), the camera as rig/cam, and the lookup's own result
 
 Read-only, except --repair: a project.json torn by two saves at once (project.save is atomic now)
 still holds the newest complete manifest at its start; --repair backs the file up and writes that.
@@ -120,7 +120,10 @@ def main() -> None:
                 rows = c.execute(text("SELECT video_path, rois->>'status' FROM recordings WHERE video_path LIKE :p "
                                       "LIMIT 3"), {"p": f"%{m.group(1)}%{m.group(2)}.{m.group(3)}.%"}).all()
                 say("  similar recordings", [tuple(r) for r in rows] or "none")
-            say("  cameras in batches", c.execute(text("SELECT DISTINCT cage FROM batches ORDER BY cage")).scalars().all())
+            say("  cameras in batches", c.execute(text("SELECT DISTINCT cam_key FROM batches ORDER BY cam_key")).scalars().all())
+            cam = hcm_roi.camera_of(sv or "") or hcm_roi.camera_of(v["video_id"])
+            say("  camera (rig/cam)", c.execute(text(hcm_roi._CAM_KEY_SQL), {"pat": pat, "cam": cam}).scalar()
+                or f"unknown: no recording, and {cam} is on no rig or on several -- no medoid fallback")
         got = hcm_roi.fetch_rois(v["video_id"], source_video=sv)
         say("  lookup result", {k: (f"{len(x)} pts" if isinstance(x, list) else x) for k, x in got.items()}
             or "{} (nothing)")

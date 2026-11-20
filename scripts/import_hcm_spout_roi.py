@@ -16,8 +16,9 @@ that same camera/resolution — the ROI is not rescaled.
 The HCM DB is on Salk's internal network (VPN / on-site / Tailscale).
 
 Usage (uv resolves the inline deps and auto-isolates, dodging the local anaconda metadata poisoning):
-    # print the medoid water polygon for a camera
+    # print the medoid water polygon for a camera (cam_NN, or rig/cam when several rigs have a cam_NN)
     uv run scripts/import_hcm_spout_roi.py --camera cam_05
+    uv run scripts/import_hcm_spout_roi.py --camera hyena/cam_05
 
     # list the cameras that have a water ROI
     uv run scripts/import_hcm_spout_roi.py --list-cameras
@@ -43,14 +44,15 @@ from sqlalchemy import create_engine, text
 DATABASE_URL = os.environ.get("HCM_DATABASE_URL", "")  # set HCM_DATABASE_URL locally; do not commit credentials
 
 # medoid water polygon for one camera: the recording whose water-polygon bbox-center is closest to
-# the camera's median bbox-center (so a single-recording segmentation glitch can't win).
+# the camera's median bbox-center (so a single-recording segmentation glitch can't win). A camera is
+# rig/cam (cam_key, e.g. 'hyena/cam_05'): cam alone is unique only within a rig. (batches.cage, which
+# this used to join for the camera, is batches.cam since hcm-core's migration 0003.)
 MEDOID_SQL = """
 WITH cand AS (
   SELECT r.id, feat->'geometry'->'coordinates'->0 AS ring
   FROM recordings r
-  JOIN batches b ON r.batch_id = b.batch_id
   CROSS JOIN LATERAL jsonb_array_elements(r.rois->'features') AS feat
-  WHERE b.cage = :cam
+  WHERE r.cam_key = :cam_key
     AND jsonb_typeof(r.rois) = 'object'
     AND r.rois->>'status' LIKE 'valid%'
     AND feat->'properties'->>'class_name' = :cls
@@ -76,15 +78,19 @@ LIMIT 1;
 """
 
 LIST_SQL = """
-SELECT b.cage, COUNT(*) AS n_recordings
+SELECT r.cam_key AS camera, COUNT(*) AS n_recordings
 FROM recordings r
-JOIN batches b ON r.batch_id = b.batch_id
 WHERE jsonb_typeof(r.rois) = 'object'
   AND r.rois->>'status' LIKE 'valid%'
   AND EXISTS (SELECT 1 FROM jsonb_array_elements(r.rois->'features') f
               WHERE f->'properties'->>'class_name' = :cls)
-GROUP BY b.cage
-ORDER BY b.cage;
+GROUP BY r.cam_key
+ORDER BY r.cam_key;
+"""
+
+# a --camera / clip camera ('cam_05' or 'hyena/cam_05') -> the rig/cam keys it can mean
+CAM_KEYS_SQL = """
+SELECT DISTINCT cam_key FROM batches WHERE :cam IN (cam, cam_key) ORDER BY cam_key;
 """
 
 # HCM segmentation class_name -> the labeler ROI it maps to (config field + PUT endpoint suffix).
@@ -124,9 +130,18 @@ def _camera_of(video_id: str) -> str | None:
     return f"cam_{int(m.group(1)):02d}" if m else None
 
 
-def _medoid(conn, cam: str, cls: str = "water"):
-    """(poly, row) for a camera's medoid ROI of class `cls`, or (None, None) if none/degenerate."""
-    row = conn.execute(text(MEDOID_SQL), {"cam": cam, "cls": cls}).mappings().first()
+def _cam_key(conn, cam: str) -> tuple[str | None, str]:
+    """(rig/cam, "") for 'cam_05' or 'hyena/cam_05', or (None, why) when no rig or several have it."""
+    keys = conn.execute(text(CAM_KEYS_SQL), {"cam": cam}).scalars().all()
+    if len(keys) == 1:
+        return keys[0], ""
+    return None, (f"{cam!r} is on several rigs ({', '.join(keys)}); name one as rig/cam" if keys
+                  else f"no batch has camera {cam!r}")
+
+
+def _medoid(conn, cam_key: str, cls: str = "water"):
+    """(poly, row) for a camera's (rig/cam) medoid ROI of class `cls`, or (None, None) if none/degenerate."""
+    row = conn.execute(text(MEDOID_SQL), {"cam_key": cam_key, "cls": cls}).mappings().first()
     if row is None:
         return None, None
     poly = _clean_ring(row["ring"])
@@ -159,7 +174,7 @@ def _set_clip_roi(call, pid: str, vid: str, poly: list, endpoint: str = "spout-r
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--camera", help="camera/cage, e.g. cam_05")
+    ap.add_argument("--camera", help="camera, e.g. cam_05, or rig/cam (hyena/cam_05) when several rigs have it")
     ap.add_argument("--list-cameras", action="store_true", help="list cameras that have a water ROI, then exit")
     ap.add_argument("--all-clips", action="store_true",
                     help="set a per-clip ROI on EVERY clip in --pid, auto-detecting each clip's camera")
@@ -177,7 +192,7 @@ def main() -> None:
 
     if args.list_cameras:
         for row in conn.execute(text(LIST_SQL), {"cls": cls}).mappings():
-            print(f"{row['cage']:10s} {row['n_recordings']:>7d} recordings with a {cls} ROI")
+            print(f"{row['camera']:16s} {row['n_recordings']:>7d} recordings with a {cls} ROI")
         return
 
     # --- per-clip: set each clip's ROI from its own camera (for projects that mix cameras) ---
@@ -196,10 +211,11 @@ def main() -> None:
             if not cam:
                 print(f"  ✗ {vid[:40]}… — no camera in the id; skipped"); continue
             if cam not in cache:
-                poly, row = _medoid(conn, cam, cls)
+                key, why = _cam_key(conn, cam)
+                poly, row = _medoid(conn, key, cls) if key else (None, None)
                 cache[cam] = poly
                 if poly is None:
-                    print(f"  ✗ {cam}: no {cls} ROI in the DB")
+                    print(f"  ✗ {cam}: {why or f'no {cls} ROI in the DB'}")
             poly = cache[cam]
             if poly is None:
                 continue
@@ -212,11 +228,14 @@ def main() -> None:
     if not args.camera:
         ap.error("--camera is required (or use --list-cameras / --all-clips)")
 
-    poly, row = _medoid(conn, args.camera, cls)
+    key, why = _cam_key(conn, args.camera)
+    if key is None:
+        sys.exit(f"{why}. Try --list-cameras.")
+    poly, row = _medoid(conn, key, cls)
     if poly is None:
-        sys.exit(f"No valid {cls} ROI found for camera {args.camera!r}. Try --list-cameras.")
+        sys.exit(f"No valid {cls} ROI found for camera {key!r}. Try --list-cameras.")
 
-    print(f"camera {args.camera}: medoid {cls} ROI ({len(poly)} vertices), chosen from {row['n']} recordings")
+    print(f"camera {key}: medoid {cls} ROI ({len(poly)} vertices), chosen from {row['n']} recordings")
     print(f"  center ~({row['cx']:.0f}, {row['cy']:.0f}), {row['dist']:.1f}px from the camera median center")
     print(f"  {field} = {json.dumps(poly)}")
 
