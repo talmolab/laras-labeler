@@ -134,21 +134,34 @@ class VideoManager:
             raise KeyError(f"{pid}/{vid}")
         return entry
 
-    def _get(self, pid: str, vid: str) -> OpenVideo:
-        key = (pid, vid)
+    def view_entry(self, pid: str, vid: str, view: str | None) -> dict:
+        """The clip itself (view None or "") or one of its other camera views (project.add_view)."""
+        entry = self._entry(pid, vid)
+        if not view:
+            return entry
+        found = next((w for w in entry.get("views", []) if w["name"] == view), None)
+        if found is None:
+            raise KeyError(f"{pid}/{vid} has no view {view!r}")
+        return found
+
+    def _get(self, pid: str, vid: str, view: str | None = None) -> OpenVideo:
+        key = (pid, vid, view or "")
         ov = self._open.get(key)
         if ov is None:
             entry = self._entry(pid, vid)
+            src = self.view_entry(pid, vid, view)
             # n_frames was recorded from video.shape[0] at add_video time — the same length sleap-io
-            # pads Labels.numpy() to — so passing it lets the pose read skip opening the video.
-            ov = OpenVideo(entry["video_path"], entry.get("slp_path"), entry.get("n_frames"))
+            # pads Labels.numpy() to — so passing it lets the pose read skip opening the video. A view
+            # has the clip's frame count by construction (project.add_view checks it).
+            ov = OpenVideo(src["video_path"], src.get("slp_path"), entry.get("n_frames"))
             self._open[key] = ov
         return ov
 
     def forget(self, pid: str, vid: str) -> None:
-        """Drop the cached handle + decoded frames for a video that's being removed."""
+        """Drop the cached handles (every view) + decoded frames for a video that's being removed."""
         with self._lock:
-            self._open.pop((pid, vid), None)
+            for k in [k for k in self._open if k[0] == pid and k[1] == vid]:
+                del self._open[k]
             for k in [k for k in self._frames if k[0] == pid and k[1] == vid]:
                 del self._frames[k]
 
@@ -156,22 +169,22 @@ class VideoManager:
         e = self._entry(pid, vid)
         return {k: e[k] for k in ("video_id", "n_frames", "fps", "width", "height", "has_poses")}
 
-    def skeleton(self, pid: str, vid: str) -> dict:
-        return self._get(pid, vid).skeleton()
+    def skeleton(self, pid: str, vid: str, view: str | None = None) -> dict:
+        return self._get(pid, vid, view).skeleton()
 
-    def poses_blob(self, pid: str, vid: str) -> tuple[tuple[int, ...], bytes]:
-        arr = self._get(pid, vid).poses()
+    def poses_blob(self, pid: str, vid: str, view: str | None = None) -> tuple[tuple[int, ...], bytes]:
+        arr = self._get(pid, vid, view).poses()
         blob = np.ascontiguousarray(arr, dtype="<f4").tobytes()
         return arr.shape, blob
 
-    def frame_jpeg(self, pid: str, vid: str, idx: int, gray: bool = True) -> bytes:
-        key = (pid, vid, idx, gray)
+    def frame_jpeg(self, pid: str, vid: str, idx: int, gray: bool = True, view: str | None = None) -> bytes:
+        key = (pid, vid, idx, gray, view or "")
         with self._lock:
             hit = self._frames.get(key)
             if hit is not None:
                 self._frames.move_to_end(key)
                 return hit
-        ov = self._get(pid, vid)
+        ov = self._get(pid, vid, view)
         if idx < 0 or idx >= ov.n_frames:
             raise IndexError(idx)
         data = encode_jpeg(ov.frame(idx), self._quality)

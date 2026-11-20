@@ -54,6 +54,13 @@ class NewVideo(BaseModel):
     slp_path: str | None = None
 
 
+class NewView(BaseModel):
+    """Another camera's video of a clip's frames, with that camera's poses (project.add_view)."""
+    name: str
+    video_path: str
+    slp_path: str | None = None
+
+
 class NewBehavior(BaseModel):
     name: str
     color: str | None = None
@@ -257,6 +264,10 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                 **{k: entry.get(k) for k in hcm_roi.FEEDER_FIELDS},
                 "roi_checked": "roi_recording_status" in entry,
                 "roi_recording_status": entry.get("roi_recording_status"),
+                # other camera views (display only): the switcher lists the clip's own view first
+                "main_view": proj.main_view_name(entry),
+                "views": [{k: w.get(k) for k in ("name", "width", "height", "has_poses")}
+                          for w in entry.get("views", [])],
                 # age, genotype, the mice in the cage ... (clip_info.py): as last fetched, or what the clip's
                 # name alone says until a refresh has run (fetched_at None)
                 "clip_info": entry.get("clip_info") or clip_info.name_only(entry)}
@@ -919,6 +930,29 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     @app.get("/api/projects/{pid}/videos/{vid}")
     def get_video(pid: str, vid: str):
         _video(pid, vid)
+        return _meta(pid, vid)
+
+    @app.post("/api/projects/{pid}/videos/{vid}/views")
+    def add_view(pid: str, vid: str, body: NewView):
+        """Add (or replace) another camera's view of this clip. For looking only: labels, features,
+        training and HiDRA stay on the clip's own video and poses."""
+        proj = _video(pid, vid)
+        try:
+            view = proj.add_view(vid, body.name, body.video_path, body.slp_path)
+        except FileNotFoundError as e:
+            raise HTTPException(404, f"not found: {e}")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        vm.forget(pid, vid)               # a replaced view must not keep serving the old file
+        return {"view": {k: view[k] for k in ("name", "width", "height", "has_poses")},
+                "video": _meta(pid, vid)}
+
+    @app.delete("/api/projects/{pid}/videos/{vid}/views/{name}")
+    def remove_view(pid: str, vid: str, name: str):
+        proj = _video(pid, vid)
+        if not proj.remove_view(vid, name):
+            raise HTTPException(404, f"no view {name!r}")
+        vm.forget(pid, vid)
         return _meta(pid, vid)
 
     @app.get("/api/projects/{pid}/videos/{vid}/info")
@@ -1606,9 +1640,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
     _SRC_MISSING = "video/pose source file missing on disk (moved, deleted, or an ephemeral scratch dir was cleaned up) — playback unavailable for this clip; labels/features/model are unaffected"
 
     @app.get("/api/projects/{pid}/skeleton/{vid}")
-    def get_skeleton(pid: str, vid: str):
+    def get_skeleton(pid: str, vid: str, view: str | None = None):
         try:
-            return vm.skeleton(pid, vid)
+            return vm.skeleton(pid, vid, view)
         except KeyError:
             raise HTTPException(404, "video not found")
         except FileNotFoundError:
@@ -1634,9 +1668,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
                                  "Cache-Control": "no-cache"})
 
     @app.get("/api/projects/{pid}/poses/{vid}")
-    def get_poses(pid: str, vid: str):
+    def get_poses(pid: str, vid: str, view: str | None = None):
         try:
-            shape, blob = vm.poses_blob(pid, vid)
+            shape, blob = vm.poses_blob(pid, vid, view)
         except KeyError:
             raise HTTPException(404, "video not found")
         except FileNotFoundError:
@@ -1645,9 +1679,9 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return Response(content=blob, media_type="application/octet-stream", headers=headers)
 
     @app.get("/api/projects/{pid}/frame/{vid}/{idx}.jpg")
-    def get_frame(pid: str, vid: str, idx: int, gray: int = 1):
+    def get_frame(pid: str, vid: str, idx: int, gray: int = 1, view: str | None = None):
         try:
-            data = vm.frame_jpeg(pid, vid, idx, gray=bool(gray))
+            data = vm.frame_jpeg(pid, vid, idx, gray=bool(gray), view=view)
         except KeyError:
             raise HTTPException(404, "video not found")
         except IndexError:
@@ -1657,10 +1691,16 @@ def create_app(settings: Settings, store: ProjectStore) -> FastAPI:
         return Response(content=data, media_type="image/jpeg", headers=_IMMUTABLE)
 
     @app.get("/api/projects/{pid}/video/{vid}/stream.mp4")
-    def stream_video(pid: str, vid: str):
+    def stream_video(pid: str, vid: str, view: str | None = None):
         proj = _video(pid, vid)
         entry = proj.video(vid)
-        path = entry.get("playback_path") or entry["video_path"]
+        if view:
+            try:
+                path = vm.view_entry(pid, vid, view)["video_path"]
+            except KeyError:
+                raise HTTPException(404, f"no view {view!r}")
+        else:
+            path = entry.get("playback_path") or entry["video_path"]
         if not Path(path).exists():
             raise HTTPException(404, _SRC_MISSING)
         # FileResponse serves HTTP range requests -> the browser <video> element streams it natively.

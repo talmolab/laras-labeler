@@ -178,6 +178,69 @@ class Project:
         self.save()
         return entry
 
+    # --- other camera views of a clip ---------------------------------------------------------
+    # A clip can carry more videos of the SAME frames from other cameras (a multi-camera rig whose 3D
+    # poses were projected into each). They are for looking only: labels, features, training and
+    # HiDRA all stay on the clip's own video and poses, so switching views never changes a result.
+    # That only holds if frame k of a view is frame k of the clip, so a view must have exactly the
+    # clip's frame count and frame rate; anything else is refused here rather than drawn misaligned.
+    def add_view(self, video_id: str, name: str, video_path: str | Path,
+                 slp_path: str | Path | None = None) -> dict:
+        entry = self.video(video_id)
+        if entry is None:
+            raise KeyError(video_id)
+        name = str(name).strip()
+        if not name or len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9._ -]+", name):
+            raise ValueError("a view name is 1-64 letters, digits, spaces, '.', '_' or '-'")
+        if name == self.main_view_name(entry):
+            raise ValueError(f"{name!r} is this clip's own view")
+        video_path = str(Path(video_path))
+        if not Path(video_path).exists():
+            raise FileNotFoundError(video_path)
+        if slp_path and not Path(slp_path).exists():
+            raise FileNotFoundError(str(slp_path))
+        v = sio.load_video(video_path)
+        n, fps = int(v.shape[0]), float(v.fps or 0.0)
+        if n != int(entry["n_frames"]):
+            raise ValueError(f"the view has {n} frames but the clip has {entry['n_frames']}; "
+                             "a view must be the same frames from another camera")
+        if fps and entry.get("fps") and abs(fps - float(entry["fps"])) > 1e-3:
+            raise ValueError(f"the view is {fps:g} fps but the clip is {entry['fps']:g} fps")
+        view = {"name": name, "video_path": video_path,
+                "slp_path": str(slp_path) if slp_path else None,
+                "width": int(v.shape[2]), "height": int(v.shape[1]), "has_poses": bool(slp_path)}
+        views = [w for w in entry.get("views", []) if w["name"] != name]   # re-adding replaces
+        entry["views"] = views + [view]
+        self.save()
+        return view
+
+    def remove_view(self, video_id: str, name: str) -> bool:
+        entry = self.video(video_id)
+        if entry is None or not any(w["name"] == name for w in entry.get("views", [])):
+            return False
+        entry["views"] = [w for w in entry["views"] if w["name"] != name]
+        if not entry["views"]:
+            del entry["views"]
+        self.save()
+        return True
+
+    @staticmethod
+    def main_view_name(entry: dict) -> str:
+        """What to call the clip's own video in a view list: its camera, when the pose converter's
+        scale sidecar names one, else "main"."""
+        if entry.get("main_view"):
+            return str(entry["main_view"])
+        slp = entry.get("slp_path")
+        if slp:
+            try:
+                with open(str(slp) + ".scale.json") as f:
+                    cam = json.load(f).get("camera")
+                if cam:
+                    return str(cam)
+            except (OSError, ValueError):
+                pass
+        return "main"
+
     # --- media relocation -------------------------------------------------------------------
     # A project references its video/.slp by absolute path and never copies them (see the module
     # docstring). That is right for a 40GB share, and wrong the moment the project moves: carry a

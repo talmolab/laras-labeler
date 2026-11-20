@@ -126,6 +126,27 @@ When the database can't be reached (off the Salk network), clips keep what was l
 is asked again the next time the project is opened. The database doesn't record which track is which
 mouse. Clips from other experiments show nothing extra.
 
+## Other camera views of a clip
+
+A clip from a multi-camera rig can carry the other cameras' videos of the same frames, each with the
+3D poses projected into it. The video toolbar then shows a **View** menu, and **c** cycles through the
+views. Switching keeps the frame, playback, labels and timeline, and swaps only the picture and the
+skeleton drawn on it.
+
+Views are for looking only. Labels, features, training and HiDRA all use the clip's own video and
+poses, so switching never changes a result. The arena outlines are drawn in the clip's own view only,
+because they are in its pixels. The clip's own view is named after its camera when the pose
+converter's `.slp.scale.json` names one.
+
+A view must be the same frames: the labeler refuses one whose frame count or frame rate differs from
+the clip's. Add and remove views through the API:
+
+```bash
+curl -X POST http://127.0.0.1:8760/api/projects/<pid>/videos/<vid>/views -H 'Content-Type: application/json' \
+  -d '{"name": "cam574", "video_path": "/path/clip---cam574.mp4", "slp_path": "/path/clip---cam574.slp"}'
+curl -X DELETE http://127.0.0.1:8760/api/projects/<pid>/videos/<vid>/views/cam574
+```
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
