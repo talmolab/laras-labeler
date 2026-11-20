@@ -126,6 +126,38 @@ When the database can't be reached (off the Salk network), clips keep what was l
 is asked again the next time the project is opened. The database doesn't record which track is which
 mouse. Clips from other experiments show nothing extra.
 
+## Identity switches
+
+Multi-animal tracking can swap identities: a track jumps from one animal to another. Mark each switch as
+you see it, and keep a running list for whoever fixes the tracks (SLEAP proofreading, a re-ID tool):
+
+- **i** (unless a behavior's hotkey is i), or **⇄ ID switch** under the video, pauses and asks which tracks
+  swapped (optional: tick them, or press 1–9) and for a note. **Enter** saves, **Esc** cancels. It works
+  while playing, in review and while browsing detections, and it never changes labels. A switch already on
+  the list within 15 frames is pointed out.
+- An amber mark in the timeline's ruler shows each open switch on the clip. Point at it for its tracks and
+  note; click it to go there.
+- **list (N)** beside the button, or **Clip ▾ → ID switches…**, lists this clip's or every clip's switches.
+  Click a frame to open that clip there, edit a note, tick **Fixed** once it is fixed (it leaves the
+  timeline and the downloads), or delete one. **⬇ Download CSV** and **⧉ Copy as text** (one line per
+  switch, for Slack or an email) send the open ones shown; **⬇ Export → ID switches CSV** sends every clip's.
+
+The list is one file for the whole projects folder, `<your projects folder>/id_switches.json`, not one per
+project: a switch belongs to the clip's tracking file, and one clip can be in several projects. Each switch
+keeps a copy of what the export needs (the clip's video and tracking files, frame rate, its tracks' names in
+the .slp, and for an HCM clip the recording it was cut from and the frame there), so the list still exports
+after the clip leaves a project. The CSV has one row per switch, sorted by clip, then frame, blank where
+something isn't known: `clip, frame, time_s, tracks` (1-based, `1 ↔ 3`, as on the track chips),
+`sleap_tracks, note, status, logged, video_file, tracking_file, source_recording, source_frame, cohort,
+camera, recording_date, recording_hour`. The API is `GET /api/id-switches` (`?video_id=` for one clip,
+plus `&n_frames=` to leave out another experiment's clip of the same name),
+`POST /api/projects/{pid}/videos/{vid}/id-switches` (`{frame, tracks, note}`, tracks 0-based),
+`PUT` / `DELETE /api/id-switches/{id}`, and `GET /api/id-switches.csv` (the same filters;
+`?include_fixed=true` adds the fixed ones).
+
+A clip with fewer than 2 tracks has no button, key or mark; only the list itself (Clip ▾, Export ▾) stays
+there once it holds switches. A projects folder with no switches and no multi-animal clip shows none of it.
+
 ## Status
 
 - **v0a foundation — DONE & verified.** `uv` package scaffold; core `SLP → Labels.numpy() → movement
