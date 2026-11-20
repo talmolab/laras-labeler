@@ -290,6 +290,8 @@
     <div id="trackBadge" hidden title="The animal you are labeling / reviewing. Switch with the track chips or number keys."></div>
     <div id="poseCtl"><label><input type="checkbox" id="showPoses" checked> Poses</label>
       <label title="Show the arena outlines on the video: cage wall (amber, dashed), spout (blue), feeder top / side (pink, dotted). They come from the HCM database when a clip opens. Hiding them changes only the view, not features or suggestions."><input type="checkbox" id="showRois" checked> ROIs</label>
+      <span id="viewCtl" style="display:none" title="Other cameras' views of this clip (c cycles them). For looking only: labels, features, training and HiDRA all use the clip's own view, and the arena outlines are drawn only there.">
+        <label>View <select id="viewSel"></select></label></span>
       <span id="roiDraw" style="display:none" title="This clip is not from an HCM recording, so its outlines are drawn by hand">
         <button id="setSpout" title="Click to place the spout landmark for THIS clip — enables distance-to-spout features.">◎ Set spout</button>
         <button id="setSpoutRoi" title="Click to draw the spout ROI polygon for THIS clip — enables spout-ROI features. Enter to finish, Esc to cancel, right-click removes the last point.">◇ Set spout ROI</button>
@@ -817,6 +819,15 @@ const scrub = el("scrub"), counter = el("counter"), metaEl = el("meta"), metrics
 
 let PID = null, vid = null, meta = null, skeleton = null, projMeta = null;
 let poses = null, poseShape = null;
+// Other camera views of the clip (project.add_view). Display only: switching swaps the video, its
+// poses and its skeleton on screen, while labels, features, models and the arena outlines stay on the
+// clip's own view. `mainPose` keeps the clip's own poses to restore when switching back.
+let curView = "", mainPose = null;
+function viewQ() { return curView ? `?view=${encodeURIComponent(curView)}` : ""; }
+function viewDims() {
+  const v = curView && meta ? (meta.views || []).find(w => w.name === curView) : null;
+  return v ? [v.width, v.height] : [meta.width, meta.height];
+}
 let behaviors = [], activeBid = null, mode = "pos";
 let labelState = new Map(), predsByBeh = new Map(), predInfoByBeh = new Map(),   // predInfoByBeh: which model made each lane (server X-Pred-Model)
     sourceState = new Map(), targetState = new Map();   // per-frame value + provenance + directed target (parallel arrays)
@@ -1066,7 +1077,8 @@ function clearStage() {
   stop();
   if (videoBackend) { try { videoBackend.close(); } catch (e) {} videoBackend = null; }
   frameOrder = null; pfStart = 0; pfEnd = -1;
-  vid = null; meta = null; poses = null; poseShape = null; skeleton = null;
+  vid = null; meta = null; poses = null; poseShape = null; skeleton = null; curView = ""; mainPose = null;
+  renderViewCtl();
   predsByBeh = new Map(); predInfoByBeh = new Map(); predictedBouts = new Map();
   labelState = new Map(); sourceState = new Map(); targetState = new Map(); awaitTarget = null;
   objectState = new Map(); refreshObjects(true);
@@ -1081,6 +1093,51 @@ function clearStage() {
   renderClipBar(); renderTrackBar(); renderBehaviorBar();
 }
 
+function sizeStage() {        // canvases + stage follow the view on screen (cameras can differ in size)
+  const [w, h] = viewDims();
+  frameEl.width = w; frameEl.height = h;
+  overlay.width = w; overlay.height = h;
+  el("stage").style.aspectRatio = `${w} / ${h}`;
+  el("stage").style.maxWidth = `calc(58vh * ${w} / ${h})`;
+  setZoom(1);
+}
+function renderViewCtl() {
+  const box = el("viewCtl"), sel = el("viewSel"); if (!box || !sel) return;
+  const views = (meta && meta.views) || [];
+  box.style.display = views.length ? "" : "none";
+  if (!views.length) { sel.innerHTML = ""; return; }
+  const opts = [["", `${meta.main_view || "main"} (clip)`], ...views.map(v => [v.name, v.name])];
+  sel.innerHTML = opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+  sel.value = curView;
+}
+async function switchView(name) {
+  if (!meta || name === curView) return;
+  if (name && !(meta.views || []).some(v => v.name === name)) return;
+  const wasPlaying = playing; stop();
+  const keep = cur;
+  cancelRoiDrawing();                              // outlines are drawn in the clip's own view only
+  curView = name;
+  if (!name) ({ poses, poseShape, skeleton } = mainPose);
+  else {
+    try {
+      skeleton = await (await api(`/skeleton/${vid}${viewQ()}`)).json();
+      const res = await api(`/poses/${vid}${viewQ()}`);
+      if (res.ok) {
+        poseShape = res.headers.get("X-Pose-Shape").split(",").map(Number);
+        poses = new Float32Array(await res.arrayBuffer());
+      } else { poses = null; poseShape = mainPose.poseShape; }
+    } catch (e) { poses = null; poseShape = mainPose.poseShape; }
+  }
+  sizeStage();
+  renderViewCtl(); updateRoiDraw();
+  busy(`loading the ${name || meta.main_view || "clip's own"} view…`);
+  await loadVideoBackend();
+  busy(videoBackend ? `view: ${name || (meta.main_view || "main") + " (the clip's own)"}` : `could not load the ${name} view`);
+  logEvent("view_switch", { video_id: vid, view: name || null });
+  await show(keep);
+  if (wasPlaying) play();
+}
+
 async function openVideo(vidId) {
   closeBrowse();                // the list belongs to the clip being left
   renderRemaining(null);        // the old clip's counts must not sit next to this one's Review button
@@ -1091,6 +1148,7 @@ async function openVideo(vidId) {
   spoutRoi = meta.spout_roi || null;              // per-clip spout ROI (from this clip's meta; falls back to project default)
   cageRoi = meta.cage_roi || null;                // per-clip cage-boundary ROI
   spout = meta.spout || null;
+  curView = "";                                   // a clip opens on its own view
   cancelRoiDrawing();                             // draw tools follow the clip: none for an HCM clip
   updateWinCtl();
   skeleton = await (await api(`/skeleton/${vid}`)).json();
@@ -1099,12 +1157,10 @@ async function openVideo(vidId) {
     poseShape = res.headers.get("X-Pose-Shape").split(",").map(Number);
     poses = new Float32Array(await res.arrayBuffer());
   } else { poses = null; poseShape = [meta.n_frames, 0, 0, 0]; }
+  mainPose = { poses, poseShape, skeleton };
 
-  frameEl.width = meta.width; frameEl.height = meta.height;
-  overlay.width = meta.width; overlay.height = meta.height;
-  el("stage").style.aspectRatio = `${meta.width} / ${meta.height}`;
-  el("stage").style.maxWidth = `calc(58vh * ${meta.width} / ${meta.height})`;
-  setZoom(1);
+  sizeStage();
+  renderViewCtl();
   scrub.max = meta.n_frames - 1; el("frameInput").max = meta.n_frames - 1;
   metaEl.textContent = `${vid} · ${meta.n_frames} frames · ${meta.fps.toFixed(1)} fps · `
     + `${poseShape[1]} tracks · ${poseShape[2]} nodes`;
@@ -1259,7 +1315,7 @@ let settingSpout = false, settingRoi = false, settingCage = false, roiPts = [], 
 const drawingRoi = () => settingSpout || settingRoi || settingCage;
 function updateRoiDraw() {
   const box = el("roiDraw"); if (!box) return;
-  const show = !!meta && !meta.hcm_clip;
+  const show = !!meta && !meta.hcm_clip && !curView;     // outlines are in the clip's own view's pixels
   box.style.display = show ? "" : "none";
   if (!show) return;
   const vis = (id, on) => { el(id).style.display = on ? "" : "none"; };
@@ -1470,7 +1526,7 @@ function drawApproaches() {
 }
 function drawPose() {
   octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (el("showRois").checked || drawingRoi()) {         // the ROIs checkbox: the view only (features still use them)
+  if (!curView && (el("showRois").checked || drawingRoi())) {   // the ROIs checkbox: the view only (features still use them); clip's own view only
     drawSpoutMarker();                                  // spout landmark
     drawSpoutRoi();                                     // spout ROI polygon
     drawCageRoi();                                      // cage-boundary ROI polygon
@@ -1668,7 +1724,7 @@ async function loadVideoBackend() {
     for (let attempt = 0; attempt < 12; attempt++) {
       let permanent = false;
       try {
-        const r = await api(`/video/${vid}/stream.mp4`);
+        const r = await api(`/video/${vid}/stream.mp4${viewQ()}`);
         if (r.status >= 400 && r.status < 500) { permanent = true; throw new Error("http " + r.status); }
         if (!r.ok) throw new Error("http " + r.status);
         blob = await r.blob(); break;
@@ -1681,11 +1737,11 @@ async function loadVideoBackend() {
     // Cap the decoded-frame cache by MEMORY, not a fixed count: 128 frames of 1280×1024 RGBA is ~670MB,
     // which starves GC and makes the backend's decode churn stall the main thread. Budget ~200MB (still
     // ~1–1.5s of buffer at these sizes), clamped to a sane frame count.
-    const px = (meta && meta.width * meta.height) || (1280 * 1024);
+    const px = (meta && viewDims()[0] * viewDims()[1]) || (1280 * 1024);
     const cacheSize = Math.max(24, Math.min(128, Math.round(200e6 / (px * 4))));
     const sleapio = await sleapioLib();
     if (!sleapio) { videoBackend = null; return; }      // JPEG fallback; the clip is still usable
-    videoBackend = await sleapio.MediaBunnyVideoBackend.fromBlob(blob, vid + ".mp4", { cacheSize });
+    videoBackend = await sleapio.MediaBunnyVideoBackend.fromBlob(blob, vid + (curView ? "." + curView : "") + ".mp4", { cacheSize });
     if (window.__leakPatch !== false) patchBackendLeak(videoBackend);   // stop the per-frame VideoSample leak (see note above); window.__leakPatch=false disables for A/B testing
     frameOrder = await buildFrameOrder(videoBackend);
   } catch (e) { console.error("video backend load failed:", e); videoBackend = null; }
@@ -1767,7 +1823,7 @@ async function show(i) {
   // A newer show() superseded this one (rapid scrub/drag) or this decode finished out of order —
   // drop it so the latest request paints instead. Guarantees the poses never get ahead of the video.
   if (seq !== showSeq) return;
-  if (bmp) vctx.drawImage(bmp, 0, 0, meta.width, meta.height);
+  if (bmp) { const [w, h] = viewDims(); vctx.drawImage(bmp, 0, 0, w, h); }
   drawPose();   // poses drawn atomically with the exact frame they belong to (cur === target here)
 }
 // Coalescing show() for rapid-fire drag input (scrub bar, lane-scrub, overview strip, native range
@@ -1806,7 +1862,8 @@ function followTrack(force = false) {
   if (!follow || zoom <= 1 || !meta || stageDrag) return;
   const c = trackCentroid(activeTrack, cur); if (!c) return;   // untracked this frame: hold the view
   const W = stage.clientWidth, H = stage.clientHeight;
-  const sx = c.x / meta.width * W, sy = c.y / meta.height * H;  // stage-local, unzoomed (stage has the video's aspect)
+  const [vw, vh] = viewDims();
+  const sx = c.x / vw * W, sy = c.y / vh * H;  // stage-local, unzoomed (stage has the video's aspect)
   const jump = force || !followLast || followLast.t !== activeTrack || Math.abs(cur - followLast.f) > 3;
   followLast = { f: cur, t: activeTrack };
   const dx = panX + zoom * sx - W / 2, dy = panY + zoom * sy - H / 2;   // animal's offset from the view centre, screen px
@@ -1823,7 +1880,8 @@ function setFollow(on) {
   if (zoom <= 1) {                                   // zooming in is the point of following: do it on the animal
     const c = meta && trackCentroid(activeTrack, cur);
     const W = stage.clientWidth, H = stage.clientHeight;
-    if (c) setZoom(2.5, c.x / meta.width * W, c.y / meta.height * H); else setZoom(2.5);
+    const [vw, vh] = viewDims();
+    if (c) setZoom(2.5, c.x / vw * W, c.y / vh * H); else setZoom(2.5);
   }
   followTrack(true);
   busy(`follow on — keeping track ${activeTrack + 1} in frame (drag the video or press f to stop)`);
@@ -5527,6 +5585,11 @@ el("clearSpout").onclick = clearSpoutOutlines;
 el("clearCage").onclick = clearCageOutline;
 // ROIs on the video: on or off, remembered in this browser (view only)
 try { el("showRois").checked = localStorage.getItem("laras.showRois") !== "0"; } catch (e) { /* no storage: shown */ }
+el("viewSel").onchange = () => { const v = el("viewSel").value; el("viewSel").blur(); switchView(v); };
+function cycleView() {
+  const names = ["", ...((meta && meta.views) || []).map(v => v.name)];
+  if (names.length > 1) switchView(names[(names.indexOf(curView) + 1) % names.length]);
+}
 el("showRois").onchange = () => {
   try { localStorage.setItem("laras.showRois", el("showRois").checked ? "1" : "0"); } catch (e) { /* view still changes */ }
   el("showRois").blur(); drawPose();
@@ -5690,6 +5753,7 @@ window.addEventListener("keydown", e => {
   else if (e.key === "0") setZoom(1);
   else if (e.key === "f" && !behaviors.some(b => b.key === "f")) { setFollow(!follow); if (!follow) busy("follow off"); }
   else if (e.key === "v" && !behaviors.some(b => b.key === "v")) setTool("select");
+  else if (e.key === "c" && !behaviors.some(b => b.key === "c")) cycleView();
   else if (e.key === "b" && !behaviors.some(b => b.key === "b")) setTool("paint");
   else { const b = behaviors.find(b => b.key === e.key); if (b) togglePaint(b.id); }
 });
